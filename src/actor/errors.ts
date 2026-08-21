@@ -1,0 +1,131 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 GoAkt Team
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+/**
+ * Sentinel errors returned by {@link Mailbox} implementations.
+ *
+ * These are singleton values so the overload path never allocates (creating
+ * a JavaScript `Error` captures a stack trace, which is expensive). Compare
+ * with identity (`err === ErrMailboxFull`); their stack traces are
+ * meaningless.
+ */
+
+/**
+ * Returned by `enqueue` when a bounded mailbox is at capacity. The message
+ * was not stored; the dispatcher should route it to the dead-letter stream.
+ */
+export const ErrMailboxFull: Error = new Error("mailbox is full");
+
+/**
+ * Returned by `enqueue` after the mailbox has been disposed. The message
+ * was not stored.
+ */
+export const ErrMailboxDisposed: Error = new Error("mailbox is disposed");
+
+/**
+ * Returned when a message is sent to an actor that is not running: it has
+ * not been started yet, is shutting down, or has stopped.
+ */
+export const ErrDead: Error = new Error("actor is not alive");
+
+/** Raised when Ask is given a timeout that is not a positive duration. */
+export const ErrInvalidTimeout: Error = new Error("invalid timeout");
+
+/** Raised when Ask does not receive a response before the timeout elapses. */
+export const ErrRequestTimeout: Error = new Error("request timed out");
+
+/** Completes a request issued by an actor without reentrancy configured,
+ * or with its mode set to `off`. */
+export const ErrReentrancyDisabled: Error = new Error("reentrancy is disabled");
+
+/** Raised when a reentrancy mode is not one of the supported values. */
+export const ErrInvalidReentrancyMode: Error = new Error("invalid reentrancy mode");
+
+/** Completes a request issued while the actor is already at its
+ * configured in-flight limit. */
+export const ErrReentrancyInFlightLimit: Error = new Error("reentrancy in-flight limit reached");
+
+/** Completes a request that was canceled before its reply arrived. */
+export const ErrRequestCanceled: Error = new Error("request canceled");
+
+/** Returned by `unstash` when the stash buffer holds no message. */
+export const ErrStashBufferEmpty: Error = new Error("stash buffer is empty");
+
+/**
+ * Raised when spawning an actor under a name carrying the runtime's
+ * reserved prefix.
+ */
+export const ErrReservedName: Error = new Error("actor name is reserved");
+
+/** Raised when using an actor system that has not been started. */
+export const ErrActorSystemNotStarted: Error = new Error("actor system has not started");
+
+/** Raised when creating an actor system without a name. */
+export const ErrNameRequired: Error = new Error("actor system name is required");
+
+/**
+ * Raised when an actor system name does not start with an alphanumeric
+ * character or contains characters other than alphanumerics, '-' or '_'.
+ */
+export const ErrInvalidActorSystemName: Error = new Error("invalid actor system name");
+
+/**
+ * Raised when spawning an actor under an invalid name. A valid name starts
+ * with an alphanumeric character, contains only alphanumerics, '-', '_'
+ * or '.', and is at most 255 characters long.
+ */
+export const ErrInvalidActorName: Error = new Error("invalid actor name");
+
+/** Raised when spawning an actor under a name that is already taken. */
+export const ErrActorAlreadyExists: Error = new Error("actor already exists");
+
+/**
+ * Raised when a PID argument is missing or is the NoSender sentinel,
+ * which is never a valid target for parent-child operations.
+ */
+export const ErrUndefinedActor: Error = new Error("actor is not defined");
+
+/**
+ * Raised when looking up or stopping an actor that is not in the tree
+ * as a running child of the caller.
+ */
+export class ActorNotFoundError extends Error {
+  constructor(actorName: string) {
+    super(`actor ${actorName} not found`);
+    this.name = "ActorNotFoundError";
+  }
+}
+
+/**
+ * ActorInitializationError signals that an actor failed to initialize:
+ * its `preStart` hook returned or threw an error, so the actor was never
+ * started and will receive no message. The underlying failure is carried
+ * as `cause`.
+ */
+export class ActorInitializationError extends Error {
+  constructor(actorName: string, cause: unknown) {
+    super(`actor ${actorName} failed to initialize`, { cause });
+    this.name = "ActorInitializationError";
+  }
+}
