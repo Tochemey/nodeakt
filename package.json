@@ -10,7 +10,8 @@
     "format": "biome format --write .",
     "typecheck": "tsc --noEmit",
     "coverage": "vitest run --coverage",
-    "bench": "vitest run --config vitest.bench.config.ts"
+    "bench": "vitest run --config vitest.bench.config.ts",
+    "example": "tsx"
   },
   "keywords": [],
   "author": "GoAkt Team",
@@ -31,6 +32,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "publint": "^0.3.24",
     "tsdown": "^0.22.14",
+    "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   }

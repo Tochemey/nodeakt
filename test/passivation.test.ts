@@ -240,10 +240,7 @@ describe("PassivationManager scheduling", () => {
     const timeouts = [40, 200, 120, 300];
 
     for (let i = 0; i < pids.length; i++) {
-      manager.register(
-        pids[i] as PID,
-        new TimeBasedStrategy(timeouts[i] as number),
-      );
+      manager.register(pids[i] as PID, new TimeBasedStrategy(timeouts[i] as number));
     }
 
     for (const pid of pids) {

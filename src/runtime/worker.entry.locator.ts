@@ -37,12 +37,30 @@ export function setWorkerEntry(entry: string | URL | null): void {
 
 /**
  * Returns the worker entry script the system-owned pool boots its
- * isolates from. The published package ships the built entry beside
- * its own modules, so the default resolves relative to this file;
- * {@link setWorkerEntry} overrides it for tests running from source.
+ * isolates from. The entry sits beside this locator and shares its
+ * module extension, so the same resolution works everywhere with no
+ * configuration: `worker.entry.ts` when the framework runs from
+ * TypeScript source (a TS runtime loads the worker the same way it
+ * loaded this module), and the built extension in a published package.
+ * {@link setWorkerEntry} overrides it where the entry lives elsewhere,
+ * such as tests running against a freshly built copy.
  *
  * @internal
  */
 export function workerEntry(): string | URL {
-  return override ?? new URL("./worker.entry.mjs", import.meta.url);
+  return override ?? new URL(`./worker.entry${moduleExtension(import.meta.url)}`, import.meta.url);
+}
+
+/** The file extension of a module URL, e.g. `.ts` from source or `.mjs`
+ * from a built package, so the worker entry beside it can share it. Query
+ * and hash are ignored; a URL whose final segment has no extension falls
+ * back to `.mjs`, the built extension.
+ *
+ * @internal
+ */
+export function moduleExtension(url: string): string {
+  const mark = url.search(/[?#]/);
+  const path = mark === -1 ? url : url.slice(0, mark);
+  const dot = path.lastIndexOf(".");
+  return dot > path.lastIndexOf("/") ? path.slice(dot) : ".mjs";
 }

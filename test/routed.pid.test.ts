@@ -30,7 +30,7 @@ import { completedRequest } from "../src/actor/reentrancy";
 import { ErrDead } from "../src/errors/errors";
 import { discardLogger } from "../src/logger/discard.logger";
 import { routedPid } from "../src/runtime/routed.pid";
-import { setWorkerEntry, workerEntry } from "../src/runtime/worker.entry.locator";
+import { moduleExtension, setWorkerEntry, workerEntry } from "../src/runtime/worker.entry.locator";
 
 describe("routedPid", () => {
   const system = new ActorSystem("routed", { logger: discardLogger });
@@ -106,10 +106,23 @@ describe("routedPid", () => {
 });
 
 describe("workerEntry locator", () => {
-  it("defaults to the entry shipped beside the runtime", () => {
+  it("defaults to the entry beside the runtime, matching this module's extension", () => {
     setWorkerEntry(null);
-    const entry = workerEntry();
+    const entry = String(workerEntry());
 
-    expect(String(entry).endsWith("worker.entry.mjs")).toBe(true);
+    // The entry sits next to the locator and shares its extension, so the
+    // same code resolves `.ts` from source and the built extension in a
+    // package. Under the test runner this module is TypeScript source.
+    expect(entry.endsWith("/worker.entry.ts")).toBe(true);
+  });
+
+  it("derives a module's extension, ignoring query and hash", () => {
+    expect(moduleExtension("file:///a/b/worker.entry.locator.ts")).toBe(".ts");
+    expect(moduleExtension("file:///a/b/worker.entry.locator.mjs?v=1#x")).toBe(".mjs");
+  });
+
+  it("falls back to the built extension when the final segment has none", () => {
+    expect(moduleExtension("file:///a/b/entry")).toBe(".mjs");
+    expect(moduleExtension("file:///a.b/entry")).toBe(".mjs");
   });
 });

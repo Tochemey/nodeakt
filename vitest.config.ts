@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     coverage: {
       provider: "v8",
+      // text for the terminal, lcov for coverage services such as Codecov.
+      reporter: ["text", "lcov"],
       include: ["src/**"],
       // The worker entry executes inside worker isolates only, beyond
       // the main isolate's instrumentation; it is pure wiring and the
