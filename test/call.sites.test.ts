@@ -70,4 +70,55 @@ describe("v8CallSites", () => {
       Error.prepareStackTrace = previous as typeof Error.prepareStackTrace;
     }
   });
+
+  it("answers empty on a runtime without captureStackTrace", () => {
+    const saved: typeof Error.captureStackTrace = Error.captureStackTrace;
+    delete (Error as { captureStackTrace?: unknown }).captureStackTrace;
+
+    try {
+      const sites: ReadonlyArray<CallSiteScript> = v8CallSites(() => undefined);
+      expect(sites).toEqual([]);
+    } finally {
+      Error.captureStackTrace = saved;
+    }
+  });
+
+  it("answers empty when the runtime ignores the prepareStackTrace hook", () => {
+    const saved: typeof Error.captureStackTrace = Error.captureStackTrace;
+    Error.captureStackTrace = (target: object): void => {
+      (target as { stack?: unknown }).stack = "a plain formatted stack string";
+    };
+
+    try {
+      const sites: ReadonlyArray<CallSiteScript> = v8CallSites(() => undefined);
+      expect(sites).toEqual([]);
+    } finally {
+      Error.captureStackTrace = saved;
+    }
+  });
+
+  it("falls back through the script accessors a frame may lack", () => {
+    const saved: typeof Error.captureStackTrace = Error.captureStackTrace;
+    Error.captureStackTrace = (target: object): void => {
+      (target as { stack?: unknown }).stack = [
+        { getFileName: (): string => "/from/get-file-name.ts" },
+        {
+          getFileName: (): null => null,
+          getScriptNameOrSourceURL: (): string => "file:///from/source-url.ts",
+        },
+        { getFileName: (): null => null },
+      ];
+    };
+
+    try {
+      const sites: ReadonlyArray<CallSiteScript> = v8CallSites(() => undefined);
+      expect(sites.map((site: CallSiteScript): string => site.scriptName)).toEqual([
+        "/from/get-file-name.ts",
+        "file:///from/source-url.ts",
+        "",
+      ]);
+    } finally {
+      Error.captureStackTrace = saved;
+    }
+  });
 });

@@ -232,6 +232,41 @@ describe("WorkerRuntime", () => {
     channel.port1.close();
   });
 
+  it("stops cleanly on a control port without a close method", async () => {
+    // Some worker-threads compatibility layers hand the boot port over
+    // without close(); the stop sequence must still complete.
+    const bare = new MessageChannel();
+    const bareReceived: WorkerMessage[] = [];
+    bare.port1.on("message", (message: unknown) => {
+      bareReceived.push(message as WorkerMessage);
+    });
+
+    const closeless = {
+      postMessage: (message: unknown): void => bare.port2.postMessage(message),
+      on: (event: "message", listener: (value: unknown) => void): void => {
+        bare.port2.on(event, listener);
+      },
+    };
+
+    const system = new ActorSystem("sys", { logger: discardLogger });
+    await system.start();
+    const local = new WorkerRuntime(
+      system,
+      new MessageRegistry(),
+      closeless as unknown as MessagePort,
+      2,
+    );
+
+    bare.port1.postMessage({ kind: "stop" });
+
+    await expect.poll(() => bareReceived.some((m) => m.kind === "stopped")).toBe(true);
+    expect(system.isRunning()).toBe(false);
+
+    local.mesh().close();
+    bare.port1.close();
+    bare.port2.close();
+  });
+
   it("announces the stop of a placed actor so its name frees", async () => {
     post({ kind: "spawn", seq: 1, name: "leaver", recipe: { module: echoModule, actor: "Echo" } });
     await receivedWhere((m) => m.kind === "spawned");
