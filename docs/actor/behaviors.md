@@ -2,7 +2,7 @@
 
 An actor's default behavior is its `receive` method. It can replace that handler for subsequent messages, or push a temporary handler and pop it later. Stash parks the current message to replay it after the behavior has changed.
 
-Examples: [`examples/behaviors`](../../examples/behaviors/main.ts), [`examples/stash`](../../examples/stash/main.ts).
+Examples: [`examples/behaviors`](https://github.com/Tochemey/nodeakt/blob/main/examples/behaviors/main.ts), [`examples/stash`](https://github.com/Tochemey/nodeakt/blob/main/examples/stash/main.ts).
 
 ## Behavior
 

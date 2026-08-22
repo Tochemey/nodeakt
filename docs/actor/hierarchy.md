@@ -9,7 +9,7 @@ nodeakt://sys@127.0.0.1:0/room
 nodeakt://sys@127.0.0.1:0/room/alice
 ```
 
-Example: [`examples/watch`](../../examples/watch/main.ts), [`examples/chat`](../../examples/chat/main.ts).
+Example: [`examples/watch`](https://github.com/Tochemey/nodeakt/blob/main/examples/watch/main.ts), [`examples/chat`](https://github.com/Tochemey/nodeakt/blob/main/examples/chat/main.ts).
 
 ## Spawn a child
 

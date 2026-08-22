@@ -6,7 +6,7 @@
 
 Requests are **disabled** unless the actor is spawned with a `reentrancy` option.
 
-Example: [`examples/reentrancy`](../../examples/reentrancy/main.ts).
+Example: [`examples/reentrancy`](https://github.com/Tochemey/nodeakt/blob/main/examples/reentrancy/main.ts).
 
 ```ts
 await system.spawn("client", new Client(), {
@@ -14,7 +14,7 @@ await system.spawn("client", new Client(), {
 });
 ```
 
-`reentrancy` is data (not a live object) and **may** ride a [`Props`](../multi-core/index.md) spawn.
+`reentrancy` is data (not a live object) and **may** ride a [`Props`](../multi-core/index.md) spawn. Its type is `Reentrancy`: a `mode` (a `ReentrancyMode`) plus an optional `maxInFlight`.
 
 ## Modes
 
@@ -29,6 +29,8 @@ An unknown mode throws `ErrInvalidReentrancyMode` at spawn.
 `maxInFlight`: cap on outstanding requests. A request past the cap completes with `ErrReentrancyInFlightLimit`. Zero, negative, or omitted means unlimited. Use a finite cap in production.
 
 ## Issuing a request
+
+The options argument is a `RequestOptions`: an optional `timeout` and an optional per-call `mode`.
 
 ```ts
 const call = ctx.request(peer, new GetQuote(symbol), {

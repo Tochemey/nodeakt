@@ -77,7 +77,7 @@ await system.stop();
 
 ## Documentation
 
-- [User guide](docs/README.md): actor system, actors, multi-core
+- [Documentation](https://tochemey.github.io/nodeakt/): getting started, the tour, and the full reference (source pages in [docs/](docs/))
 - [Examples](examples/README.md): small programs that match those pages
 - [Benchmarks](benchmark/README.md): tell and ask throughput, memory density, multi-core scaling
 - [Contributing](CONTRIBUTING.md): setup, conventions, and what a change needs to merge

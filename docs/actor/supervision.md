@@ -2,7 +2,7 @@
 
 When `receive` throws (or returns a rejected promise), the actor's supervisor decides what happens. The supervisor is configured on the failing actor at spawn time, not on the parent. The parent executes the directive.
 
-Example: [`examples/supervision`](../../examples/supervision/main.ts).
+Example: [`examples/supervision`](https://github.com/Tochemey/nodeakt/blob/main/examples/supervision/main.ts).
 
 ## Default
 
@@ -18,7 +18,7 @@ await system.spawn("worker", new Worker(), {
 });
 ```
 
-`Supervisor` instances are immutable and can be shared.
+`Supervisor` instances are immutable and can be shared. The constructor takes `SupervisorOptions`: a `strategy` (a `Strategy`), `directives` (pairs of `ErrorClass` and `Directive`), an `anyErrorDirective` catch-all, and the restart budget fields below. `ErrorClass` is any error constructor.
 
 ## Strategy
 
@@ -40,7 +40,8 @@ A suspended actor holds its state, queued messages, and stash, but accepts and p
 
 ## Matching errors
 
-Rules match the thrown error's exact constructor. Subclasses do not match.
+> [!IMPORTANT]
+> Rules match the thrown error's exact constructor. Subclasses do not match.
 
 ```ts
 new Supervisor({

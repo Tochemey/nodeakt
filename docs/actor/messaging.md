@@ -16,7 +16,7 @@ if (msg instanceof Greet) {
 
 A `ReceiveContext` is only valid for the current `receive` call. The runtime can recycle it after the behavior returns.
 
-Example: [`examples/helloworld`](../../examples/helloworld/main.ts).
+Example: [`examples/helloworld`](https://github.com/Tochemey/nodeakt/blob/main/examples/helloworld/main.ts).
 
 ## `ReceiveContext`
 
@@ -58,7 +58,8 @@ const total = await outside.ask(greeter, new HowMany(), 1_000);
 
 The first `response` wins; later calls are ignored. `response` is a no-op when the message was not delivered by ask.
 
-Do not ask an actor that is processing this call. It cannot reply until the current message finishes. Asking `self` from `receive` never completes. For call cycles, use [`request`](reentrancy.md).
+> [!WARNING]
+> Do not ask an actor that is processing this call. It cannot reply until the current message finishes. Asking `self` from `receive` never completes. For call cycles, use [`request`](reentrancy.md).
 
 `timeout` is a positive duration in milliseconds. The wait is a lower bound with coarse expiry: an unanswered ask is rejected between one and two timeout periods, so the send path never reads the clock.
 
@@ -87,7 +88,10 @@ ctx.request(peer, new Get(), { timeout: 1_000 }).onReply((reply, error) => {
 
 `ctx.unhandled()` routes the current message to dead letters with reason `ErrUnhandled` and continues normally. Use this when unknown messages are expected. Throwing engages supervision.
 
-`ctx.shutdown()` begins a graceful stop of the receiving actor. Do not await it from `receive`. Shutdown waits for the receive loop to go idle, so awaiting it from inside that loop never completes.
+`ctx.shutdown()` begins a graceful stop of the receiving actor.
+
+> [!WARNING]
+> Do not await `ctx.shutdown()` from `receive`. Shutdown waits for the receive loop to go idle, so awaiting it from inside that loop never completes.
 
 ```ts
 ctx.shutdown();

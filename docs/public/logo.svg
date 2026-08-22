@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" role="img" aria-label="nodeakt">
+  <!-- The glyph from assets/nodeakt.svg: a Node.js hexagon holding a
+       supervision tree, a parent actor over two children, with a message
+       envelope in flight between the children. -->
+  <g transform="translate(70,70)">
+    <path d="M0,-52 L45,-26 L45,26 L0,52 L-45,26 L-45,-26 Z"
+          fill="none" stroke="#5FA04E" stroke-width="6" stroke-linejoin="round"/>
+    <line x1="0" y1="-22" x2="-21" y2="14" stroke="#5FA04E" stroke-width="2.5" opacity="0.55"/>
+    <line x1="0" y1="-22" x2="21" y2="14" stroke="#5FA04E" stroke-width="2.5" opacity="0.55"/>
+    <circle cx="0" cy="-22" r="9" fill="#5FA04E"/>
+    <circle cx="-21" cy="14" r="8" fill="#8CC84B"/>
+    <circle cx="21" cy="14" r="8" fill="#8CC84B"/>
+    <path d="M-13,20 Q0,36 13,20" fill="none" stroke="#8CC84B" stroke-width="2.5"
+          stroke-dasharray="4 4" stroke-linecap="round"/>
+    <polygon points="15,17.5 13.1,26.2 6.9,21.2" fill="#8CC84B"/>
+    <g transform="translate(0,28)">
+      <rect x="-10" y="-7" width="20" height="14" rx="2" fill="#5FA04E"/>
+      <path d="M-8.5,-5.5 L0,2 L8.5,-5.5" stroke="#ffffff" stroke-width="2" fill="none"
+            stroke-linejoin="round" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

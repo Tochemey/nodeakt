@@ -22,9 +22,10 @@ class Greeter implements Actor {
 }
 ```
 
-Initialize state in `preStart`, not in the constructor. An instance can be constructed without ever starting. A supervisor that restarts a failed actor reuses the same instance and re-runs `preStart`.
+> [!IMPORTANT]
+> Initialize state in `preStart`, not in the constructor. An instance can be constructed without ever starting. A supervisor that restarts a failed actor reuses the same instance and re-runs `preStart`.
 
-See [`examples/helloworld`](../../examples/helloworld/main.ts).
+See [`examples/helloworld`](https://github.com/Tochemey/nodeakt/blob/main/examples/helloworld/main.ts).
 
 ## Lifecycle
 
@@ -38,7 +39,10 @@ preStart → PostStart (first mailbox message) → receive… → postStop
 | `receive` | One mailbox delivery at a time. | Engages the actor's [supervisor](supervision.md). |
 | `postStop` | After queued messages drain, before the actor is fully gone. | Logged. Does not prevent the stop. Keep the hook short. |
 
-Both hooks may be async. When `receive` returns a promise, the runtime awaits it before dequeuing the next message. Long-blocking synchronous work in `receive` stalls every actor sharing that event loop. Put CPU-bound work on another isolate. See [Multi-core](../multi-core/index.md).
+Both hooks may be async. When `receive` returns a promise, the runtime awaits it before dequeuing the next message.
+
+> [!WARNING]
+> Long-blocking synchronous work in `receive` stalls every actor sharing that event loop. Put CPU-bound work on another isolate. See [Multi-core](../multi-core/index.md).
 
 `PostStart` is delivered as the first mailbox message after start, from `system.noSender()`. Use it for work that must run inside the message loop (for example spawning children through `ctx.self`). Runtime actors created while the system itself is still starting do not receive it; every user actor does.
 
@@ -73,9 +77,7 @@ A `PID` is the handle you send to. You receive one from `spawn`, `actorOf`, `ctx
 | `restartCount()` | Times this instance has been restarted. |
 | `tell` / `ask` / `request` | See [Messaging](messaging.md). |
 | `spawnChild` / `child` / `children` / `parent` / `stop` / `watch` / `unWatch` | See [Hierarchy](hierarchy.md). |
-| `shutdown()` | Graceful stop. Queued messages drain. Children shut down with it. Repeated calls return the same promise. Shutting down an actor that never started is a no-op. An actor owned by another isolate cannot be stopped through its handle: `shutdown()` rejects with `TypeError`. |
-| `restart()` | Tear down and re-initialize this actor. Children are stopped; `postStop` runs (unless already suspended); behaviors and stash reset; `preStart` runs again; queued mailbox messages are then processed. Throws `ErrDead` if the actor is stopping, already restarting, or never started. A failed `preStart` leaves it suspended. |
-| `reinstate(target)` | Resume a suspended actor without resetting state. Pass a `PID`, or a child name relative to this actor. |
+| `shutdown` / `restart` / `reinstate` | See [below](#stop-restart-reinstate). |
 
 `PID.actor()` returns the implementation object. On a handle for an actor owned by another isolate that object is a stub, not the live instance. Send messages. Do not call methods on the stub.
 
@@ -87,6 +89,14 @@ await system.noSender().ask(pid, message, 1_000);
 ```
 
 From inside `receive`, use `ctx.tell` / `ctx.ask` / `ctx.request` so this actor is recorded as the sender.
+
+### Stop, restart, reinstate
+
+`shutdown()` is a graceful stop. Queued messages drain, and children shut down with the actor. Repeated calls return the same promise; shutting down an actor that never started is a no-op. An actor owned by another isolate cannot be stopped through its handle: `shutdown()` rejects with `TypeError`. See [Stopping from another isolate](hierarchy.md#stopping-from-another-isolate).
+
+`restart()` tears the actor down and re-initializes it: children are stopped, `postStop` runs (unless the actor is already suspended), behaviors and stash reset, `preStart` runs again, and queued mailbox messages are then processed. It throws `ErrDead` if the actor is stopping, already restarting, or never started. A failed `preStart` leaves the actor suspended.
+
+`reinstate(target)` resumes a suspended actor without resetting its state. Pass a `PID`, or a child name relative to this actor. See [Supervision](supervision.md).
 
 ## `Path`
 

@@ -16,7 +16,7 @@
     "worker-threads",
     "typescript"
   ],
-  "homepage": "https://github.com/Tochemey/nodeakt#readme",
+  "homepage": "https://tochemey.github.io/nodeakt/",
   "bugs": {
     "url": "https://github.com/Tochemey/nodeakt/issues"
   },
@@ -56,6 +56,9 @@
     "typecheck": "tsc --noEmit",
     "coverage": "vitest run --coverage",
     "bench": "vitest run --config vitest.bench.config.ts",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
     "example": "tsx",
     "prepare": "lefthook install",
     "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm build"
@@ -79,6 +82,7 @@
     "tsdown": "^0.22.14",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
+    "vitepress": "^1.6.4",
     "vitest": "^4.1.11"
   }
 }
