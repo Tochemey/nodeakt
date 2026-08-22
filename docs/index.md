@@ -3,7 +3,7 @@ layout: home
 
 hero:
   name: NodeAkt
-  text: Actor framework for Node.js
+  text: Actor framework for Node.js, Bun, and Deno
   tagline: "Typed actors, supervision, mailboxes, behaviors, an event stream, and a multi-core runtime. No locks, just messages."
   image:
     src: /logo.svg

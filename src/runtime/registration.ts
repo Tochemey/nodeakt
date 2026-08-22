@@ -24,12 +24,12 @@
 
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
-import { getCallSites } from "node:util";
 import type { Actor } from "../actor/actor";
 import type { ActorClass, Props } from "../actor/props";
 import type { SpawnOptions } from "../actor/spawn.options";
 import { ActorNotRegisteredError } from "../errors/errors";
 import { ActorRegistry } from "./actor.registry";
+import { captureCallSites } from "./call.sites";
 import { type MessageClass, MessageRegistry } from "./message.registry";
 import type { ActorRecipe } from "./protocol";
 
@@ -146,7 +146,7 @@ export function scriptUrlOf(script: string): string | undefined {
 
 /** Resolves the registration call site to the caller's module URL. */
 function callerModule(type: ActorClass): string {
-  const url = scriptUrlOf(callerScript(getCallSites(3)));
+  const url = scriptUrlOf(callerScript(captureCallSites(3)));
   if (url === undefined) {
     throw new TypeError(
       `cannot infer the module of actor class "${type.name}"; ` +

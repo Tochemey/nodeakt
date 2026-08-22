@@ -1,6 +1,6 @@
 <h2 align="center">
   <img src="assets/nodeakt.svg" alt="nodeakt" width="480"/><br/>
-  Actor framework for Node.js
+  Actor framework for Node.js, Bun, and Deno
 </h2>
 
 <p align="center">
@@ -12,68 +12,38 @@
 
 ## Overview
 
-nodeakt is an actor runtime for Node.js. An actor owns private state and a mailbox. The runtime delivers one message at a time, so that state needs no lock. Actors talk only by sending messages.
+NodeAkt is an actor runtime for Node.js, Bun, and Deno. An actor owns private state and a mailbox. The runtime delivers one message at a time, so that state needs no lock. Actors talk only by sending messages.
 
-Requires Node.js 22 or newer. ESM only (`import`, not `require`).
+Requires Node.js 22+, Bun 1.3+, or Deno 2+. ESM only (`import`, not `require`). Every runtime is exercised in CI, multi-core placement included.
 
 ## Features
 
-- **Actor system.** One logical runtime per process: `start` / `stop`, top-level `spawn` and `actorOf`.
-- **Typed messages.** Classes narrowed with `instanceof` in `receive`. `tell` is fire-and-forget; `ask` waits for `ctx.response`.
-- **Hierarchy.** Parent/child spawn, `watch` / `Terminated`, graceful stop, `PoisonPill`.
-- **Behaviors and stash.** `become` / `becomeStacked` and a per-actor stash to replay messages after a switch.
-- **Supervision.** One-for-one or one-for-all; stop, resume, restart, or escalate. Restart budget and exponential backoff.
-- **Mailboxes.** Unbounded and bounded FIFO, segmented, fair (per-sender), and priority (stable or not). Custom `Mailbox` implementations.
-- **Passivation.** Long-lived by default; optional idle timeout or processed-message count.
-- **Reentrancy.** `ctx.request` so an actor can keep working while a reply is in flight (`allowAll` or `stashNonReentrant`).
-- **Event stream.** `system.subscribe` / `unsubscribe` for runtime events. `Deadletter` is the first event kind; later kinds use the same subscription. Narrow with `instanceof`.
-- **Logging.** Structured JSON logger (`JsonLogger`). Pass `discardLogger` to silence the runtime.
-- **Multi-core.** Use all machine cores effectively and efficiently with `Props` plus `registerActor` / `registerMessage`. Same `PID` API locally and across isolates.
+- **Actor system.** One logical runtime per process that owns every actor's lifecycle, from startup through graceful shutdown.
+- **Typed messages.** Messages are plain classes, so a handler narrows them with ordinary type checks. Send and forget when no answer is needed, or ask and await a typed reply.
+- **Hierarchy.** Actors spawn children and watch any other actor, receiving a message when the watched one stops. Stopping a parent drains its whole subtree cleanly.
+- **Behaviors and stash.** An actor can swap its message handler at runtime, set aside messages it cannot serve yet, and replay them once it switches back.
+- **Supervision.** When an actor fails, its parent decides: stop it, resume it, restart it, or escalate, for the one child or for all of them, with restart budgets and exponential backoff.
+- **Mailboxes.** Unbounded and bounded FIFO, segmented, fair per-sender, and priority variants, or bring your own implementation.
+- **Passivation.** Actors live as long as you need them: keep them forever, or retire them automatically after an idle timeout or a processed-message count.
+- **Reentrancy.** An actor can keep working through its mailbox while one of its own requests is still in flight, with control over which messages may overtake the pending reply.
+- **Pipe to.** The result of any promise can be delivered to an actor's mailbox as an ordinary message once it settles; failures and timeouts become dead letters instead of crashing the actor.
+- **Event stream.** Subscribe to what the runtime observes: dead letters and actor lifecycle events such as started, stopped, restarted, and passivated.
+- **Logging.** Structured JSON logging out of the box, or silence the runtime entirely.
+- **Multi-core.** Spawn actors across every machine core without touching workers or threads yourself. An actor's address works the same locally and across cores, on Node.js, Bun, and Deno alike.
 
 The full API is in [Documentation](#documentation). What is not built yet is under [Not there yet](#not-there-yet).
 
 ## Install
 
 ```bash
+npm  install @tochemey/nodeakt
 pnpm add @tochemey/nodeakt
+yarn add @tochemey/nodeakt
+bun  add @tochemey/nodeakt
+deno add npm:@tochemey/nodeakt
 ```
 
-## Quick start
-
-```ts
-import type { Actor, ReceiveContext } from "@tochemey/nodeakt";
-import { ActorSystem, PostStart } from "@tochemey/nodeakt";
-
-class Greet {
-  constructor(readonly name: string) {}
-}
-
-class Greeter implements Actor {
-  preStart(): void {}
-
-  receive(ctx: ReceiveContext): void {
-    const msg = ctx.message;
-
-    if (msg instanceof PostStart) {
-      return;
-    }
-
-    if (msg instanceof Greet) {
-      console.log(`Hello, ${msg.name}!`);
-    }
-  }
-
-  postStop(): void {}
-}
-
-const system = new ActorSystem("hello");
-await system.start();
-
-const greeter = await system.spawn("greeter", new Greeter());
-system.noSender().tell(greeter, new Greet("Ada"));
-
-await system.stop();
-```
+Then head to [Getting started](https://tochemey.github.io/nodeakt/guide/) for a first actor.
 
 ## Documentation
 
