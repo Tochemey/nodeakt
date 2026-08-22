@@ -18,7 +18,7 @@ Requires Node.js 22 or newer. ESM only (`import`, not `require`).
 
 ## Features
 
-- **Actor system.** One logical runtime per process: `start` / `stop`, top-level `spawn` and `actorOf`, NoSender for sends from outside an actor.
+- **Actor system.** One logical runtime per process: `start` / `stop`, top-level `spawn` and `actorOf`.
 - **Typed messages.** Classes narrowed with `instanceof` in `receive`. `tell` is fire-and-forget; `ask` waits for `ctx.response`.
 - **Hierarchy.** Parent/child spawn, `watch` / `Terminated`, graceful stop, `PoisonPill`.
 - **Behaviors and stash.** `become` / `becomeStacked` and a per-actor stash to replay messages after a switch.

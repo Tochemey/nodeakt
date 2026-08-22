@@ -24,7 +24,7 @@ Example: [`examples/helloworld`](../../examples/helloworld/main.ts).
 | --- | --- |
 | `message` | The payload. Typed as `unknown`. |
 | `self` | This actor's `PID`. |
-| `sender` | Who sent it. Outside sends carry the system's NoSender (`ctx.sender === system.noSender()`). |
+| `sender` | Who sent it. When the send used `system.noSender()`, `ctx.sender === system.noSender()`. |
 | `actorSystem()` | The hosting system. |
 
 Actor-facing methods throw if called on a detached context (one not attached to a receiving actor). You do not construct contexts.
@@ -116,4 +116,4 @@ Messages already accepted **behind** a `PoisonPill` still drain before the actor
 | Waits for a reply | No | Yes (parks) | No (continuation) |
 | Receiver replies with | | `ctx.response` | `ctx.response` |
 | Safe in call cycles | Yes | No | Yes, with `allowAll` |
-| From outside an actor | `noSender().tell` | `noSender().ask` | No. Needs a reentrant actor as the issuer |
+| From code that is not `receive` | a PID's `tell` | a PID's `ask` | No. Needs a reentrant actor as the issuer |

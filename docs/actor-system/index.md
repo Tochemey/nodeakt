@@ -50,7 +50,7 @@ The runtime builds a fixed supervision tree. You never spawn these actors yourse
 ```
 root guardian
 ├── system guardian
-│   ├── NoSender
+│   ├── system.noSender()
 │   └── dead-letter actor
 └── user guardian
     └── every actor created with system.spawn(...)
@@ -58,11 +58,7 @@ root guardian
 
 Guardians are supervision structure only. They never appear in an actor's path. A top-level spawn named `greeter` is addressed as `nodeakt://<system>@127.0.0.1:0/greeter`, not under a guardian segment.
 
-Use `system.noSender()` to send from outside any actor. The receiving behavior sees that PID as `ctx.sender`, comparable with identity:
-
-```ts
-ctx.sender === ctx.actorSystem().noSender()
-```
+`system.noSender()` returns the PID that represents an absent sender. That is the only way to get it; it is not a standalone export. `ctx.sender === system.noSender()` when a delivery was sent with that PID.
 
 `noSender()` throws `ErrActorSystemNotStarted` when the system is not started.
 
@@ -112,7 +108,7 @@ const pid = system.actorOf("greeter");
 
 Returns the running top-level actor's `PID`, or `undefined` when no running top-level actor holds the name. After workers boot, the lookup includes actors placed on other isolates.
 
-Actors deeper in the hierarchy are reached through their parent (`ctx.child(name)`), not by bare name. Runtime actors (guardians, NoSender, dead letters) are not resolvable.
+Actors deeper in the hierarchy are reached through their parent (`ctx.child(name)`), not by bare name. Runtime actors (guardians, `system.noSender()`, dead letters) are not resolvable.
 
 ## Other accessors
 

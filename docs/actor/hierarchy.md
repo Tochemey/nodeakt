@@ -45,7 +45,7 @@ The child finishes its current message, drains, and runs `postStop`.
 | Failure | When |
 | --- | --- |
 | `ErrDead` | This actor is not running. |
-| `ErrUndefinedActor` | `child` is the NoSender sentinel. |
+| `ErrUndefinedActor` | `child` is the PID returned by `system.noSender()`. |
 | `ActorNotFoundError` | `child` is not a live child of this actor (not running and not suspended, or not this parent's child). |
 
 Stopping the receiving actor itself is `ctx.shutdown()` (fire-and-forget from `receive`) or `await pid.shutdown()` from outside. Children shut down with their parent.

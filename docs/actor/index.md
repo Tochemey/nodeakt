@@ -40,7 +40,7 @@ preStart → PostStart (first mailbox message) → receive… → postStop
 
 Both hooks may be async. When `receive` returns a promise, the runtime awaits it before dequeuing the next message. Long-blocking synchronous work in `receive` stalls every actor sharing that event loop. Put CPU-bound work on another isolate. See [Multi-core](../multi-core/index.md).
 
-`PostStart` is delivered as the first mailbox message after start, from the system's NoSender. Use it for work that must run inside the message loop (for example spawning children through `ctx.self`). Runtime actors created while the system itself is still starting do not receive it; every user actor does.
+`PostStart` is delivered as the first mailbox message after start, from `system.noSender()`. Use it for work that must run inside the message loop (for example spawning children through `ctx.self`). Runtime actors created while the system itself is still starting do not receive it; every user actor does.
 
 ## `Context` vs `ReceiveContext`
 
@@ -79,7 +79,7 @@ A `PID` is the handle you send to. You receive one from `spawn`, `actorOf`, `ctx
 
 `PID.actor()` returns the implementation object. On a handle for an actor owned by another isolate that object is a stub, not the live instance. Send messages. Do not call methods on the stub.
 
-From outside an actor, send on behalf of NoSender:
+From code that is not `receive`, send with a PID you hold. `system.noSender()` is the PID for an absent sender:
 
 ```ts
 system.noSender().tell(pid, message);
