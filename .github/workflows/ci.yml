@@ -1,18 +1,15 @@
 name: ci
 
-# Documentation-only changes never exercise code, so skip the pipeline
-# when a push or pull request touches nothing but Markdown.
+# The pipeline always triggers, and a first job decides whether anything
+# that follows needs to run: the build jobs are gated on an allowlist of
+# code paths, so docs, issue templates, and other non-code files can
+# never start a build or publish a nightly. An allowlist cannot rot the
+# way a blocklist does when a new non-code file type appears.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - ".github/ISSUE_TEMPLATE/**"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - ".github/ISSUE_TEMPLATE/**"
 
 # One in-flight run per ref; a newer commit cancels the older run.
 concurrency:
@@ -23,8 +20,43 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: filter changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Filter changed paths
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # "code" is true if any of these paths changed.
+          filters: |
+            code:
+              - 'src/**'
+              - 'test/**'
+              - 'benchmark/**'
+              - 'examples/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'tsconfig.json'
+              - 'tsdown.config.ts'
+              - 'vitest.config.ts'
+              - 'vitest.bench.config.ts'
+              - 'biome.json'
+              - '.github/workflows/ci.yml'
+
   quality:
     name: types and lint
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -52,6 +84,8 @@ jobs:
 
   test:
     name: test (node ${{ matrix.node }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -93,8 +127,9 @@ jobs:
     # "nightly" dist-tag. The version is stamped inside the workflow run
     # and never committed: base version plus UTC date plus short sha.
     # Changesets play no part here; they belong to the release pipeline.
+    # A skipped quality or test job (no code changed) skips this one too.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [quality, test]
+    needs: [changes, quality, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
