@@ -1,0 +1,141 @@
+name: release
+
+# The production release flow is tag-driven and this pipeline is the
+# only path that publishes a stable version. Development accumulates
+# changeset files in .changeset/; cutting a release is one act: push a
+# vX.Y.Z tag. This pipeline then folds the pending changesets into
+# package.json and CHANGELOG.md, refuses to continue if the computed
+# version does not match the tag, syncs that release commit back to
+# main, publishes to npm, and creates the GitHub release from the
+# changelog. A prerelease tag such as v1.2.0-rc.1 publishes under the
+# "next" dist-tag and is marked a prerelease; a plain tag becomes
+# "latest", the stable production release.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: types, lint, and tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+  publish:
+    name: publish to npm and GitHub
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Fold changesets into the release
+        # Consumes the pending changesets: bumps package.json, writes the
+        # CHANGELOG.md section, and deletes the changeset files. The tag
+        # is the release the maintainer intended, so a computed version
+        # that does not match it aborts before anything publishes. The
+        # release commit is pushed back to main so the repository keeps
+        # reflecting what was released. When package.json already matches
+        # the tag (a rerun, or a version bump landed by hand), everything
+        # here is already done and the step just moves on.
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version=$(node -p "require('./package.json').version")
+
+          if [ "$pkg_version" != "$tag_version" ]; then
+            pnpm changeset version
+            pkg_version=$(node -p "require('./package.json').version")
+            if [ "$pkg_version" != "$tag_version" ]; then
+              echo "changesets computed version $pkg_version but the tag says $tag_version" >&2
+              echo "either no changesets are pending, or the accumulated bumps do not add up to the tag" >&2
+              exit 1
+            fi
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "chore: release ${GITHUB_REF_NAME}"
+            git push origin HEAD:main
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to npm
+        run: |
+          case "${GITHUB_REF_NAME#v}" in
+            *-*) dist_tag=next ;;
+            *) dist_tag=latest ;;
+          esac
+          pnpm publish --tag "$dist_tag" --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create the GitHub release
+        # Release notes are the CHANGELOG.md section changesets wrote for
+        # this version, falling back to generated notes when the section
+        # cannot be found.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          prerelease=""
+          case "$version" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+
+          awk -v ver="$version" '$0 == "## " ver { grab = 1; next } grab && /^## / { exit } grab { print }' CHANGELOG.md > release-notes.md || true
+          if [ -s release-notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file release-notes.md $prerelease
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes $prerelease
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}

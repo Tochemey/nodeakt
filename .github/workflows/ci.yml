@@ -84,3 +84,46 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info
           fail_ci_if_error: false
+
+  nightly:
+    name: nightly release
+    # Every green push to main ships a prerelease to npm under the
+    # "nightly" dist-tag. The version is stamped inside the workflow run
+    # and never committed: base version plus UTC date plus short sha.
+    # Changesets play no part here; they belong to the release pipeline.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [quality, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Stamp nightly version
+        run: |
+          base=$(node -p "require('./package.json').version")
+          version="${base}-nightly.$(date -u +%Y%m%d).${GITHUB_SHA::7}"
+          node -e "const fs = require('node:fs'); const pkg = require('./package.json'); pkg.version = process.argv[1]; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');" "$version"
+          echo "Publishing \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish to npm under the nightly dist-tag
+        run: pnpm publish --tag nightly --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

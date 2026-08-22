@@ -1,9 +1,51 @@
 {
   "name": "nodeakt",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "0.0.0",
+  "description": "Actor framework for Node.js: typed actors, supervision, mailboxes, behaviors, an event stream, and a multi-core runtime",
+  "keywords": [
+    "actor",
+    "actors",
+    "actor-model",
+    "actor-system",
+    "concurrency",
+    "message-passing",
+    "supervision",
+    "mailbox",
+    "event-stream",
+    "multicore",
+    "worker-threads",
+    "typescript"
+  ],
+  "homepage": "https://github.com/Tochemey/nodeakt#readme",
+  "bugs": {
+    "url": "https://github.com/Tochemey/nodeakt/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tochemey/nodeakt.git"
+  },
+  "license": "MIT",
+  "author": "GoAkt Team",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
+    "build": "tsdown",
     "test": "vitest run",
     "lint": "biome check .",
     "fix": "biome check --write .",
@@ -12,11 +54,9 @@
     "coverage": "vitest run --coverage",
     "bench": "vitest run --config vitest.bench.config.ts",
     "example": "tsx",
-    "prepare": "lefthook install"
+    "prepare": "lefthook install",
+    "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm build"
   },
-  "keywords": [],
-  "author": "GoAkt Team",
-  "license": "MIT",
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
@@ -24,10 +64,10 @@
       "onFail": "download"
     }
   },
-  "type": "module",
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
     "@biomejs/biome": "^2.5.9",
+    "@changesets/changelog-github": "^1.0.0",
     "@changesets/cli": "^3.0.1",
     "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.11",

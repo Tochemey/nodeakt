@@ -6,11 +6,11 @@
 TSX := node_modules/.bin/tsx
 
 .DEFAULT_GOAL := help
-.PHONY: help helloworld behaviors chat supervision reentrancy watch stash props multicore
+.PHONY: help helloworld behaviors chat supervision reentrancy watch stash props multicore bench bench-baseline
 
 help: ## list the available example targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-13s\033[0m %s\n", $$1, $$2}'
+		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
 helloworld: ## actors own their state; tell and ask
 	@$(TSX) examples/helloworld/main.ts
@@ -38,3 +38,9 @@ props: ## construction is data (Props.create)
 
 multicore: ## every core, invisibly (Props actors in parallel)
 	@$(TSX) examples/multicore/main.ts
+
+bench: ## run the full benchmark suite (see benchmark/README.md)
+	@pnpm bench
+
+bench-baseline: ## the plain tell and ask numbers, messages per second
+	@pnpm exec vitest run --config vitest.bench.config.ts benchmark/baseline.bench.ts

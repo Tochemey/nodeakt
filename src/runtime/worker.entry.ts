@@ -37,21 +37,27 @@ import type { WorkerBootData } from "./protocol";
 import { defaultMessageRegistry } from "./registration";
 import { applySetup, WorkerRuntime } from "./worker.runtime";
 
-const boot = workerData as WorkerBootData;
+const boot = workerData as WorkerBootData | null;
 
-void (async () => {
-  // The isolate's transports must read from the very registry the
-  // module-scope `registerMessage` lines write to, so that importing an
-  // actor's module (which imports its message modules) is what makes the
-  // registrations propagate here. A private registry would leave every
-  // registered message undecodable on this side.
-  const registry = defaultMessageRegistry;
-  if (boot.setup !== null) {
-    await applySetup(registry, boot.setup);
-  }
+// Bundling can share this module's chunk with main-isolate code, so it
+// may be evaluated outside a worker, where there is no parent port and
+// no boot data. Booting is meaningful only as an actual worker entry;
+// anywhere else this module must load as an inert collection of exports.
+if (parentPort !== null && boot !== null) {
+  void (async () => {
+    // The isolate's transports must read from the very registry the
+    // module-scope `registerMessage` lines write to, so that importing an
+    // actor's module (which imports its message modules) is what makes the
+    // registrations propagate here. A private registry would leave every
+    // registered message undecodable on this side.
+    const registry = defaultMessageRegistry;
+    if (boot.setup !== null) {
+      await applySetup(registry, boot.setup);
+    }
 
-  const system = new ActorSystem(boot.systemName, boot.quiet ? { logger: discardLogger } : {});
-  await system.start();
-  const runtime = new WorkerRuntime(system, registry, parentPort as MessagePort, boot.workerId);
-  runtime.announce();
-})();
+    const system = new ActorSystem(boot.systemName, boot.quiet ? { logger: discardLogger } : {});
+    await system.start();
+    const runtime = new WorkerRuntime(system, registry, parentPort as MessagePort, boot.workerId);
+    runtime.announce();
+  })();
+}
