@@ -1,6 +1,6 @@
-# Getting started
+# Introduction
 
-nodeakt is an actor framework for Node.js. An actor owns private state and a mailbox. The runtime delivers one message at a time to that actor, so the state needs no lock. Actors talk only by sending messages.
+NodeAkt is an actor framework for Node.js. An actor owns private state and a mailbox. The runtime delivers one message at a time to that actor, so the state needs no lock. Actors talk only by sending messages.
 
 > [!NOTE]
 > nodeakt is pre-1.0. The API is settling and minor versions may still move it. Every green push to `main` publishes a nightly build; see [Releases](https://github.com/Tochemey/nodeakt#releases).
@@ -12,9 +12,27 @@ nodeakt is an actor framework for Node.js. An actor owns private state and a mai
 
 ## Install
 
-```bash
+::: code-group
+
+```sh [📦 npm]
+npm install @tochemey/nodeakt
+```
+
+```sh [⚡ pnpm]
 pnpm add @tochemey/nodeakt
 ```
+
+```sh [🧶 yarn]
+yarn add @tochemey/nodeakt
+```
+
+```sh [🍞 bun]
+bun add @tochemey/nodeakt
+```
+
+:::
+
+Then import from the package:
 
 ```ts
 import { ActorSystem } from "@tochemey/nodeakt";
@@ -71,7 +89,7 @@ The same program, with expected output, is [`examples/helloworld`](https://githu
 
 ## Read next
 
-The reference covers the public API from `nodeakt`. Read it in this order:
+The reference covers NodeAkt's public API. Read it in this order:
 
 1. [Actor system](../actor-system/index.md): create the runtime, start it, spawn top-level actors, log, and observe dead letters.
 2. [Actors](../actor/index.md): implement an actor, send messages, switch behavior, supervise children, and choose a mailbox.

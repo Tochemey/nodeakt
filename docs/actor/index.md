@@ -46,6 +46,8 @@ Both hooks may be async. When `receive` returns a promise, the runtime awaits it
 
 `PostStart` is delivered as the first mailbox message after start, from `system.noSender()`. Use it for work that must run inside the message loop (for example spawning children through `ctx.self`). Runtime actors created while the system itself is still starting do not receive it; every user actor does.
 
+The full sequence, including restart, suspend, reinstate, and the system messages that drive each transition, is in [Lifecycle](lifecycle.md).
+
 ## `Context` vs `ReceiveContext`
 
 `Context` is handed to `preStart` and `postStop`. It describes the actor, not a message:
@@ -72,11 +74,12 @@ A `PID` is the handle you send to. You receive one from `spawn`, `actorOf`, `ctx
 | `kind()` | Constructor name of the implementation (`"Object"` for object-literal actors). |
 | `actorSystem()` | The hosting system. |
 | `equals(other)` | Same name and location. Does not compare incarnation (`uid`). |
-| `isRunning()` | Started, not stopping, not suspended. A handle for an actor on another isolate always reports `false`. Liveness across isolates is not synchronously knowable. [Watch](hierarchy.md) it instead. |
+| `isRunning()` | Started, not stopping, not suspended. A handle for an actor on another isolate always reports `false`. Liveness across isolates is not synchronously knowable. [Watch](death-watch.md) it instead. |
 | `isSuspended()` | Faulted: holds state but processes nothing until restarted or reinstated. |
 | `restartCount()` | Times this instance has been restarted. |
 | `tell` / `ask` / `request` | See [Messaging](messaging.md). |
-| `spawnChild` / `child` / `children` / `parent` / `stop` / `watch` / `unWatch` | See [Hierarchy](hierarchy.md). |
+| `spawnChild` / `child` / `children` / `parent` / `stop` | See [Hierarchy](hierarchy.md). |
+| `watch` / `unWatch` | See [Death watch](death-watch.md). |
 | `shutdown` / `restart` / `reinstate` | See [below](#stop-restart-reinstate). |
 
 `PID.actor()` returns the implementation object. On a handle for an actor owned by another isolate that object is a stub, not the live instance. Send messages. Do not call methods on the stub.
@@ -136,9 +139,13 @@ Live options (`mailbox`, `supervisor`, `passivationStrategy`) apply only to inst
 
 ## Pages in this section
 
+- [Spawning](spawning.md): the two ways to spawn, instances vs `Props`, naming, options, and lookup
+- [Lifecycle](lifecycle.md): spawn, start, restart, suspend, stop, and the system messages that drive them
 - [Messaging](messaging.md): `tell`, `ask`, `request`, system messages, `unhandled`, `forward`
+- [PipeTo](pipeto.md): deliver an async result back to an actor as a message
 - [Behaviors and stash](behaviors.md)
-- [Hierarchy, watch, and stop](hierarchy.md)
+- [Hierarchy and stop](hierarchy.md)
+- [Death watch](death-watch.md): `watch` / `unWatch` and the `Terminated` message
 - [Supervision](supervision.md)
 - [Mailboxes](mailboxes.md)
 - [Passivation](passivation.md)

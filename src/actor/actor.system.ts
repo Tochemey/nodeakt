@@ -281,6 +281,30 @@ export class ActorSystem {
   }
 
   /**
+   * Reports whether anything is subscribed to the runtime event stream.
+   * Lifecycle publishers consult it first so an idle stream costs only
+   * this check, never the work of building an event nobody reads.
+   * Runtime plumbing for the PID lifecycle; developers observe events by
+   * subscribing.
+   *
+   * @internal
+   */
+  hasEventSubscribers(): boolean {
+    return this._events.subscribersCount(eventsTopic) > 0;
+  }
+
+  /**
+   * Publishes one runtime event to every subscriber of the event stream.
+   * Runtime plumbing for the PID lifecycle; developers observe events by
+   * subscribing.
+   *
+   * @internal
+   */
+  publishEvent(event: unknown): void {
+    this._events.publish(eventsTopic, event);
+  }
+
+  /**
    * Asks the dead-letter actor how many dead letters the given receiver
    * has accumulated, by canonical path string, or the system-wide total
    * when no receiver is given. Counts live in the dead-letter actor and

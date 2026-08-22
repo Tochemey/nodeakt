@@ -162,7 +162,7 @@ export class PassivationManager {
       }
 
       this.entries.delete(entry.pid);
-      void entry.pid.shutdown();
+      void entry.pid.passivate();
     }
 
     this.arm();

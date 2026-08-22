@@ -45,6 +45,13 @@ import { Context } from "./context";
 import type { Mailbox } from "./mailbox";
 // biome-ignore format: one line per import
 import {
+  ActorChildCreated,
+  ActorPassivated,
+  ActorReinstated,
+  ActorRestarted,
+  ActorStarted,
+  ActorStopped,
+  ActorSuspended,
   Panicking,
   PanicSignal,
   PoisonPill,
@@ -424,6 +431,10 @@ export class PID {
     this._latestActivity = Date.now();
     this.tree().addNode(this._parent, this);
 
+    if (this.canEmit()) {
+      this._actorSystem.publishEvent(new ActorStarted(this._path.toString(), Date.now()));
+    }
+
     // PostStart is enqueued before anyone else can send, so it is the
     // very first message every actor processes. Runtime actors start
     // while the system itself is still starting and receive no
@@ -514,6 +525,10 @@ export class PID {
     // retained handle to this actor keeps nothing else alive.
     this._tree = null;
 
+    if (this.canEmit()) {
+      this._actorSystem.publishEvent(new ActorStopped(this._path.toString(), Date.now()));
+    }
+
     const listeners = this._stopListeners;
     if (listeners !== null) {
       this._stopListeners = null;
@@ -521,6 +536,27 @@ export class PID {
         listener();
       }
     }
+  }
+
+  /**
+   * Stops the actor because it stayed idle past its passivation strategy.
+   * It is a graceful stop like {@link shutdown}: the mailbox drains,
+   * children stop, `postStop` runs, and watchers receive `Terminated`. An
+   * {@link ActorPassivated} event marks the stop as idle-triggered,
+   * published ahead of the {@link ActorStopped} the stop itself emits.
+   * Runtime plumbing for the passivation scheduler.
+   *
+   * @internal
+   */
+  passivate(): Promise<void> {
+    // A count-based budget can trip passivate again while the graceful
+    // stop already begun by the first trip is still draining the backlog;
+    // the stopping flag keeps that from publishing a second event.
+    if (!this._stopping && this.canEmit()) {
+      this._actorSystem.publishEvent(new ActorPassivated(this._path.toString(), Date.now()));
+    }
+
+    return this.shutdown();
   }
 
   /**
@@ -581,6 +617,10 @@ export class PID {
       this._suspended = false;
       this._restartCount++;
       this._latestActivity = Date.now();
+
+      if (this.canEmit()) {
+        this._actorSystem.publishEvent(new ActorRestarted(this._path.toString(), Date.now()));
+      }
 
       if (!this.mailboxEmpty()) {
         this.schedule();
@@ -987,6 +1027,13 @@ export class PID {
 
     await child.start();
     this._actorSystem.schedulePassivation(child);
+
+    if (this.canEmit()) {
+      this._actorSystem.publishEvent(
+        new ActorChildCreated(path.toString(), this._path.toString(), Date.now()),
+      );
+    }
+
     return child;
   }
 
@@ -1456,7 +1503,7 @@ export class PID {
     }
 
     if (this._maxMessages !== 0 && this._processedCount >= this._maxMessages) {
-      void this.shutdown();
+      void this.passivate();
     }
 
     return true;
@@ -1475,7 +1522,7 @@ export class PID {
       return;
     }
 
-    this.suspend();
+    this.suspend(err instanceof Error ? err.message : String(err));
 
     // Without a directive or a parent there is nobody to decide; the
     // actor stays suspended until it is restarted or reinstated.
@@ -1567,7 +1614,7 @@ export class PID {
     if (maxRetries > 0 && window > 0 && faults > maxRetries) {
       for (const member of group) {
         if (member !== cid && member.isRunning()) {
-          member.suspend();
+          member.suspend("restart budget exhausted");
         }
       }
 
@@ -1637,9 +1684,14 @@ export class PID {
   }
 
   /** Puts the actor in suspension: it holds its state but accepts and
-   * processes no message. */
-  private suspend(): void {
+   * processes no message. The reason is carried on the published
+   * {@link ActorSuspended} event. */
+  private suspend(reason: string): void {
     this._suspended = true;
+
+    if (this.canEmit()) {
+      this._actorSystem.publishEvent(new ActorSuspended(this._path.toString(), reason, Date.now()));
+    }
   }
 
   /** Lifts a suspension and resumes processing of the queued messages. */
@@ -1651,9 +1703,21 @@ export class PID {
     this._suspended = false;
     this._latestActivity = Date.now();
 
+    if (this.canEmit()) {
+      this._actorSystem.publishEvent(new ActorReinstated(this._path.toString(), Date.now()));
+    }
+
     if (!this.mailboxEmpty()) {
       this.schedule();
     }
+  }
+
+  /** Reports whether this actor should publish lifecycle events: it must
+   * be a user actor, not one of the runtime's own, and the event stream
+   * must have a subscriber. The subscriber check keeps an idle stream from
+   * paying to build events nobody reads. */
+  private canEmit(): boolean {
+    return !isSystemName(this._path.name()) && this._actorSystem.hasEventSubscribers();
   }
 
   /** Parks the caller until the receive loop reports idle. */

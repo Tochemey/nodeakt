@@ -2,15 +2,15 @@
 layout: home
 
 hero:
-  name: nodeakt
+  name: NodeAkt
   text: Actor framework for Node.js
   tagline: "Typed actors, supervision, mailboxes, behaviors, an event stream, and a multi-core runtime. No locks, just messages."
   image:
     src: /logo.svg
-    alt: nodeakt
+    alt: NodeAkt
   actions:
     - theme: brand
-      text: Get started
+      text: Introduction
       link: /guide/
     - theme: alt
       text: Reference

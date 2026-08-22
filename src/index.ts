@@ -34,6 +34,13 @@ export {
 } from "./actor/fair.mailbox";
 export type { Mailbox } from "./actor/mailbox";
 export {
+  ActorChildCreated,
+  ActorPassivated,
+  ActorReinstated,
+  ActorRestarted,
+  ActorStarted,
+  ActorStopped,
+  ActorSuspended,
   Deadletter,
   PanicSignal,
   PoisonPill,

@@ -21,6 +21,39 @@ The runtime awaits a returned promise before the next message, same as `receive`
 | `ctx.unBecome()` | Discard every installed behavior and return to `receive`. |
 | `ctx.unBecomeStacked()` | Pop the top stacked behavior. |
 
+The switch applies to the **next** message. The message being handled when you call `become` finishes under the behavior that was already running; the new one takes over on the following delivery.
+
+Reach for `become` when the actor moves to a new state it stays in, so the previous handler is no longer wanted, an unauthenticated actor becoming authenticated, for example. Reach for `becomeStacked` when a handler is a temporary overlay you will pop back out of, a confirmation step or a one-off protocol phase, so the handler underneath resumes untouched.
+
+```ts
+class Account implements Actor {
+  private balance = 0;
+
+  preStart(): void {}
+
+  // Default state: only a login is accepted.
+  receive(ctx: ReceiveContext): void {
+    if (ctx.message instanceof Login) {
+      ctx.become((c) => this.authenticated(c));
+    } else {
+      ctx.unhandled();
+    }
+  }
+
+  private authenticated(ctx: ReceiveContext): void {
+    if (ctx.message instanceof Deposit) {
+      this.balance += ctx.message.amount;
+    } else if (ctx.message instanceof Logout) {
+      ctx.unBecome(); // back to the default handler
+    } else {
+      ctx.unhandled();
+    }
+  }
+
+  postStop(): void {}
+}
+```
+
 A [restart](supervision.md) resets the behavior stack back to `receive`.
 
 ## Stash
@@ -35,6 +68,31 @@ The stash is a private unbounded buffer on the actor, independent of the mailbox
 
 Re-delivered messages join the **mailbox tail**: messages already queued run before them; messages arriving afterwards run behind them.
 
-For example, stash messages the current behavior does not handle, `become` the behavior that can, then `unstashAll`.
+The classic pattern pairs stash with a behavior switch: buffer the messages the current state cannot serve, `become` the state that can, then `unstashAll` to replay them in arrival order.
+
+```ts
+class Gate implements Actor {
+  private open = false;
+
+  preStart(): void {}
+
+  receive(ctx: ReceiveContext): void {
+    if (ctx.message instanceof Open) {
+      this.open = true;
+      ctx.unstashAll(); // replay everything buffered while closed
+    } else if (ctx.message instanceof Request) {
+      if (this.open) {
+        // serve it
+      } else {
+        ctx.stash(); // not ready: buffer for later
+      }
+    }
+  }
+
+  postStop(): void {}
+}
+```
+
+`pid.stashSize()` reports how many messages are currently buffered, which is useful for metrics or applying backpressure when the buffer grows without bound. The [`stashNonReentrant`](reentrancy.md) reentrancy mode uses the same buffer automatically, stashing user messages while a request is in flight and replaying them when it completes.
 
 A restart disposes the stash. A suspended actor keeps its stash until it is restarted, reinstated, or stopped.

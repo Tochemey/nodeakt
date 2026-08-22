@@ -21,7 +21,52 @@ A subscriber that throws is logged (`event subscriber failed`) and does not stop
 
 `stop()` closes the stream.
 
-## When a message becomes a dead letter
+## Observability
+
+The event stream is the runtime's built-in observation channel: an in-process, synchronous topic the system publishes its own events to, separate from the messages your actors exchange. Subscribe to watch what the runtime is doing and feed it into logging, metrics, or a dashboard, without coupling that plumbing to any actor.
+
+The stream carries two families of events: **dead letters** (`Deadletter`, below), the signal for lost work, and **lifecycle events**, one per transition an actor makes. A rising dead-letter rate means senders are outrunning a mailbox, addressing stopped actors, or sending messages nobody handles. Lifecycle events let you count live actors, trace restarts, or watch passivation without touching actor code. Narrow each with `instanceof` and turn it into a metric or a log line from the subscriber.
+
+Delivery is synchronous on the publisher's stack, so subscribers must stay fast. Hand slow work such as a network or disk write to something outside the callback rather than blocking the publisher.
+
+Publishing is free when nothing is subscribed: the runtime builds a lifecycle event only once the stream has a subscriber, so an unobserved system pays nothing for them.
+
+## Lifecycle events
+
+Each lifecycle event names the actor it is about through `actorPath`, the actor's canonical path string, and carries a `timestamp` in milliseconds since the epoch. They are published for **user actors only**; the runtime's own guardians and the dead-letter sink stay silent.
+
+| Event | Published when | Extra fields |
+| --- | --- | --- |
+| `ActorStarted` | The actor has run `preStart`, is registered, and is ready to receive. | |
+| `ActorChildCreated` | An actor spawns a child. The child's own `ActorStarted` is published alongside it. | `parent`: the parent's canonical path string. |
+| `ActorStopped` | The actor has fully stopped: mailbox drained, `postStop` run, left the tree. Every stop publishes it, whatever the cause. | |
+| `ActorPassivated` | The actor is stopped because it stayed idle past its [passivation](../actor/passivation.md) strategy. Published ahead of the same actor's `ActorStopped`, marking that stop as idle-triggered. | |
+| `ActorRestarted` | A faulted actor was [restarted](../actor/supervision.md) in place: same path, `preStart` re-run, processing resumed. No `Terminated` is sent, because the actor did not stop. | |
+| `ActorSuspended` | A fault left the actor [suspended](../actor/supervision.md): it holds its state but processes nothing until restarted or reinstated. | `reason`: the failing error's message, or `"restart budget exhausted"`. |
+| `ActorReinstated` | A suspended actor was revived without resetting its state. | |
+
+```ts
+import { ActorStarted, ActorStopped, ActorRestarted } from "@tochemey/nodeakt";
+
+const live = new Set<string>();
+
+system.subscribe((event) => {
+  if (event instanceof ActorStarted) {
+    live.add(event.actorPath);
+  } else if (event instanceof ActorStopped) {
+    live.delete(event.actorPath);
+  } else if (event instanceof ActorRestarted) {
+    console.warn(`restarted ${event.actorPath}`);
+  }
+});
+```
+
+Two pairings follow from how the runtime actually moves an actor:
+
+- An idle actor publishes `ActorPassivated` and then `ActorStopped`. A subscriber counting live actors keys on `ActorStarted` and `ActorStopped` and treats `ActorPassivated` as extra context.
+- A supervised restart publishes `ActorSuspended` and then `ActorRestarted`. A fault always suspends the actor first; the supervisor then decides, and a restart holds it suspended through any backoff before reviving it in place. An actor left suspended for good (no matching directive, or the restart budget spent) publishes `ActorSuspended` with no `ActorRestarted` to follow.
+
+## Dead-letter causes
 
 A **user** message that the runtime could not hand to its receiver is published as `Deadletter`. Typical reasons:
 

@@ -27,7 +27,7 @@ if (err === ErrDead || err === ErrMailboxFull) {
 | `ErrMailboxDisposed` | Enqueue on a [mailbox](actor/mailboxes.md) after the actor stopped, or [`ctx.stash`](actor/behaviors.md) while the actor is stopping. |
 | `ErrMailboxFull` | A bounded [mailbox](actor/mailboxes.md) is at capacity. |
 | `ErrNameRequired` | The [system name](actor-system/index.md) is empty. |
-| `ErrPipeTimeout` | A [pipe](actor/messaging.md)'s timeout expired before its task settled. The reason on the resulting dead letter; nothing is delivered. |
+| `ErrPipeTimeout` | A [pipe](actor/pipeto.md)'s timeout expired before its task settled. The reason on the resulting dead letter; nothing is delivered. |
 | `ErrReentrancyDisabled` | [`ctx.request`](actor/reentrancy.md) without a `reentrancy` config, or with mode `off`. |
 | `ErrReentrancyInFlightLimit` | A [request](actor/reentrancy.md) past the actor's `maxInFlight` cap. |
 | `ErrRequestCanceled` | A [request](actor/reentrancy.md) completed by `cancel()`. |
@@ -35,7 +35,7 @@ if (err === ErrDead || err === ErrMailboxFull) {
 | `ErrReservedName` | A name starting with the reserved prefix `NodeAkt`. |
 | `ErrStashBufferEmpty` | [`ctx.unstash`](actor/behaviors.md) with nothing stashed. |
 | `ErrUndefinedActor` | [`ctx.stop`](actor/hierarchy.md) on the PID that represents an absent sender. |
-| `ErrUndefinedTask` | [`pipeTo`](actor/messaging.md) or `pipeToName` given a null or undefined task. The reason on the resulting dead letter; nothing is delivered. |
+| `ErrUndefinedTask` | [`pipeTo`](actor/pipeto.md) or `pipeToName` given a null or undefined task. The reason on the resulting dead letter; nothing is delivered. |
 | `ErrUnhandled` | The `Deadletter` reason after [`ctx.unhandled`](actor-system/events.md). |
 
 ## Classes
@@ -45,7 +45,7 @@ Class errors are constructed per failure and carry context. Inspect them with `i
 | Class | Arises when |
 | --- | --- |
 | `ActorInitializationError` | `preStart` failed during [spawn](actor-system/index.md) or system start. The underlying failure is on `error.cause`; the actor is not registered. |
-| `ActorNotFoundError` | [`ctx.child`](actor/hierarchy.md) with no running child of that name, `ctx.stop` on a PID that is not a live child of this actor, or a [`pipeToName`](actor/messaging.md) settling when no running top-level actor holds the name. |
+| `ActorNotFoundError` | [`ctx.child`](actor/hierarchy.md) with no running child of that name, `ctx.stop` on a PID that is not a live child of this actor, or a [`pipeToName`](actor/pipeto.md) settling when no running top-level actor holds the name. |
 | `ActorNotRegisteredError` | A [`Props`](multi-core/index.md) spawn whose class was never `registerActor`'d. |
 
 ## Standard errors

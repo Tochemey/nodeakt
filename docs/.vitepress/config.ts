@@ -1,15 +1,36 @@
 import { defineConfig } from "vitepress";
 
 // The site is served from GitHub Pages under /nodeakt/.
+// Mermaid diagrams are rendered client-side by the theme (see theme/index.ts),
+// which imports mermaid at runtime, so no build-time plugin is needed.
 export default defineConfig({
-  title: "nodeakt",
+  title: "NodeAkt",
   description:
     "Actor framework for Node.js: typed actors, supervision, mailboxes, behaviors, an event stream, and a multi-core runtime",
   base: "/nodeakt/",
   cleanUrls: true,
   lastUpdated: true,
   sitemap: { hostname: "https://tochemey.github.io/nodeakt/" },
-  head: [["link", { rel: "icon", type: "image/svg+xml", href: "/nodeakt/logo.svg" }]],
+  head: [
+    ["link", { rel: "icon", type: "image/svg+xml", href: "/nodeakt/logo.svg" }],
+    ["link", { rel: "preconnect", href: "https://fonts.googleapis.com" }],
+    ["link", { rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: "" }],
+    [
+      "link",
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap",
+      },
+    ],
+    // Point VitePress's font variables at Geist. `!important` on the custom
+    // property definitions makes them win over the theme defaults regardless
+    // of stylesheet order.
+    [
+      "style",
+      {},
+      ':root{--vp-font-family-base:"Geist",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif!important;--vp-font-family-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace!important}',
+    ],
+  ],
   themeConfig: {
     logo: "/logo.svg",
     nav: [
@@ -20,7 +41,7 @@ export default defineConfig({
       {
         text: "Guide",
         items: [
-          { text: "Getting started", link: "/guide/" },
+          { text: "Introduction", link: "/guide/" },
           { text: "Tour", link: "/guide/tour" },
         ],
       },
@@ -36,9 +57,13 @@ export default defineConfig({
         text: "Actors",
         items: [
           { text: "Overview", link: "/actor/" },
+          { text: "Spawning", link: "/actor/spawning" },
+          { text: "Lifecycle", link: "/actor/lifecycle" },
           { text: "Messaging", link: "/actor/messaging" },
+          { text: "PipeTo", link: "/actor/pipeto" },
           { text: "Behaviors and stash", link: "/actor/behaviors" },
-          { text: "Hierarchy, watch, and stop", link: "/actor/hierarchy" },
+          { text: "Hierarchy and stop", link: "/actor/hierarchy" },
+          { text: "Death watch", link: "/actor/death-watch" },
           { text: "Supervision", link: "/actor/supervision" },
           { text: "Mailboxes", link: "/actor/mailboxes" },
           { text: "Passivation", link: "/actor/passivation" },

@@ -60,9 +60,9 @@ new Supervisor({
 
 `directive(err)` returns `undefined` when neither a rule nor a catch-all applies; the runtime then suspends.
 
-## Restart budget and backoff
+## `RestartDirective`
 
-Used with `RestartDirective`.
+These fields tune how `RestartDirective` retries: its budget and its backoff.
 
 | Option | Default | Meaning |
 | --- | --- | --- |

@@ -75,6 +75,115 @@ export class Deadletter {
 }
 
 /**
+ * ActorStarted is published on the event stream once an actor has
+ * started: its `preStart` hook has run and it is registered and ready to
+ * receive. Consume it through `ActorSystem.subscribe`. The runtime's own
+ * actors (the guardians and the dead-letter sink) do not announce their
+ * lifecycle.
+ */
+export class ActorStarted {
+  constructor(
+    /** The canonical path string of the started actor. */
+    readonly actorPath: string,
+    /** When the actor started, in milliseconds since the epoch. */
+    readonly timestamp: number,
+  ) {}
+}
+
+/**
+ * ActorStopped is published on the event stream when an actor has fully
+ * stopped: its mailbox has drained, `postStop` has run, and it has left
+ * the tree. Every stop publishes it, whatever the cause. When the stop
+ * was triggered by idleness an {@link ActorPassivated} follows.
+ */
+export class ActorStopped {
+  constructor(
+    /** The canonical path string of the stopped actor. */
+    readonly actorPath: string,
+    /** When the actor stopped, in milliseconds since the epoch. */
+    readonly timestamp: number,
+  ) {}
+}
+
+/**
+ * ActorPassivated is published on the event stream when an actor is
+ * stopped because it stayed idle past its passivation strategy. It
+ * accompanies the {@link ActorStopped} of the same actor, marking the
+ * stop as idle-triggered rather than explicit.
+ */
+export class ActorPassivated {
+  constructor(
+    /** The canonical path string of the passivated actor. */
+    readonly actorPath: string,
+    /** When the actor was passivated, in milliseconds since the epoch. */
+    readonly timestamp: number,
+  ) {}
+}
+
+/**
+ * ActorChildCreated is published on the event stream when an actor spawns
+ * a child. The child's own {@link ActorStarted} is published alongside
+ * it; this event additionally names the parent.
+ */
+export class ActorChildCreated {
+  constructor(
+    /** The canonical path string of the newly spawned child. */
+    readonly actorPath: string,
+    /** The canonical path string of the parent that spawned it. */
+    readonly parent: string,
+    /** When the child was created, in milliseconds since the epoch. */
+    readonly timestamp: number,
+  ) {}
+}
+
+/**
+ * ActorRestarted is published on the event stream when a faulted actor
+ * has been restarted in place: it kept its path and position in the tree,
+ * re-ran `preStart`, and resumed processing. Watchers get no
+ * {@link Terminated}, because the actor did not stop.
+ */
+export class ActorRestarted {
+  constructor(
+    /** The canonical path string of the restarted actor. */
+    readonly actorPath: string,
+    /** When the actor was restarted, in milliseconds since the epoch. */
+    readonly timestamp: number,
+  ) {}
+}
+
+/**
+ * ActorSuspended is published on the event stream when an actor faults
+ * and its supervisor neither resumes nor stops it: the actor holds its
+ * state, mailbox, and stash but processes nothing until it is restarted
+ * or reinstated.
+ */
+export class ActorSuspended {
+  constructor(
+    /** The canonical path string of the suspended actor. */
+    readonly actorPath: string,
+    /** Why the actor was suspended, the failing error's message. */
+    readonly reason: string,
+    /** When the actor was suspended, in milliseconds since the epoch. */
+    readonly timestamp: number,
+  ) {}
+}
+
+/**
+ * ActorReinstated is published on the event stream when a suspended actor
+ * is revived without resetting its state, the counterpart to a restart's
+ * full re-initialization. The actor resumes processing its queued
+ * messages.
+ */
+export class ActorReinstated {
+  constructor(
+    /** The canonical path string of the reinstated actor. */
+    readonly actorPath: string,
+    /** When the actor was reinstated, in milliseconds since the epoch. */
+    readonly timestamp: number,
+  ) {}
+}
+
+/**
  * RuntimeCommand is the internal base of messages the runtime consumes in
  * the receive loop without delivering them to a behavior. Sharing one
  * base keeps the hot path at a single `instanceof` check per message.

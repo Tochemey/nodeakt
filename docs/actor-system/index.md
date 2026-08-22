@@ -68,37 +68,9 @@ Guardians are supervision structure only. They never appear in an actor's path. 
 const pid = await system.spawn(name, actor, options?);
 ```
 
-`actor` is either a live `Actor` instance or [`Props`](../multi-core/index.md). A live instance always runs on this isolate. `Props` is construction as data, so the runtime can build the actor on another isolate.
+`actor` is either a live `Actor` instance or [`Props`](../multi-core/index.md): a live instance is pinned to this isolate, while `Props` lets the runtime build the actor on whichever isolate it chooses, possibly this one. The actor becomes a child of the user guardian, receives a `PostStart` message before anything else, and is returned as a `PID` once its `preStart` resolves.
 
-The actor becomes a child of the user guardian and receives a `PostStart` message before anything else.
-
-`name` must:
-
-- start with an alphanumeric character
-- contain only alphanumerics, `-`, `_`, or `.`
-- be at most 255 characters
-- not start with the reserved prefix `NodeAkt`
-
-Top-level names are unique in the system. Once a worker pool is active, uniqueness is across every isolate.
-
-| Failure | When |
-| --- | --- |
-| `ErrActorSystemNotStarted` | The system is not running. |
-| `ErrReservedName` | The name starts with `NodeAkt`. |
-| `ErrInvalidActorName` | Empty, longer than 255 characters, or invalid syntax. |
-| `ErrActorAlreadyExists` | The name is still held, including by a suspended or currently stopping actor. |
-| `ActorInitializationError` | `preStart` failed. The cause is on `error.cause`; the actor is not registered. |
-| `ActorNotRegisteredError` | `actor` is `Props` whose class was never `registerActor`'d. |
-| `TypeError` | `Props` spawn with a live `mailbox`, `supervisor`, or `passivationStrategy`, or with constructor arguments that cannot be structured-cloned. |
-
-`SpawnOptions` (all optional):
-
-| Option | Default | Notes |
-| --- | --- | --- |
-| `mailbox` | `UnboundedMailbox` | Live object. Refused on `Props` spawns. See [Mailboxes](../actor/mailboxes.md). |
-| `passivationStrategy` | `LongLivedStrategy` | Live object. Refused on `Props` spawns. See [Passivation](../actor/passivation.md). |
-| `supervisor` | any failure **stops** the actor | Live object. Refused on `Props` spawns. See [Supervision](../actor/supervision.md). |
-| `reentrancy` | requests disabled | Data. Allowed on `Props` spawns. See [Reentrancy](../actor/reentrancy.md). |
+Spawning has its own page covering both spawn entry points, instances versus `Props`, the name rules, every `SpawnOptions` field, and the failures a spawn can raise: **[Spawning](../actor/spawning.md)**.
 
 ## Look up a top-level actor
 
