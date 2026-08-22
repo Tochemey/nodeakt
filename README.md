@@ -27,6 +27,7 @@ Requires Node.js 22+, Bun 1.3+, or Deno 2+. ESM only (`import`, not `require`). 
 - **Passivation.** Actors live as long as you need them: keep them forever, or retire them automatically after an idle timeout or a processed-message count.
 - **Reentrancy.** An actor can keep working through its mailbox while one of its own requests is still in flight, with control over which messages may overtake the pending reply.
 - **Pipe to.** The result of any promise can be delivered to an actor's mailbox as an ordinary message once it settles; failures and timeouts become dead letters instead of crashing the actor.
+- **Scheduling.** Send a message to an actor after a delay or on a repeating interval, and cancel, pause, or resume it by reference. A schedule created inside an actor is cancelled automatically when that actor stops.
 - **Event stream.** Subscribe to what the runtime observes: dead letters and actor lifecycle events such as started, stopped, restarted, and passivated.
 - **Logging.** Structured JSON logging out of the box, or silence the runtime entirely.
 - **Multi-core.** Spawn actors across every machine core without touching workers or threads yourself. An actor's address works the same locally and across cores, on Node.js, Bun, and Deno alike.
@@ -66,7 +67,7 @@ nodeakt runs everything on one machine. Multi-core uses worker threads behind on
 - **Remoting and clustering.** No transport to another machine, no discovery, no cluster sharding. Remoting is planned as its own layer that reuses the existing envelope semantics and type registry with a wire codec of its own.
 - **Persistence.** Actor state is in-memory only. There is no event sourcing or durable state.
 - **Virtual actors (grains).** Actors are explicitly spawned and addressed. There is no on-demand activation model.
-- **Scheduled messages.** No delayed or cron-style sends. Use timers inside an actor.
+- **Cron schedules.** `schedule` and `scheduleOnce` cover delayed and repeating sends; cron-expression schedules do not exist yet.
 - **Routers.** No pool or broadcast routers as public API.
 - **Metrics.** Structured logging exists. Metrics and tracing hooks do not.
 

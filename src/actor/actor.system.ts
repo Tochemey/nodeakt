@@ -60,6 +60,8 @@ import {
   userGuardianName,
 } from "./reserved";
 import { RootGuardian } from "./root.guardian";
+import type { ScheduleOptions } from "./schedule.options";
+import { Scheduler } from "./scheduler";
 import type { SpawnOptions } from "./spawn.options";
 import { SystemGuardian } from "./system.guardian";
 import { UserGuardian } from "./user.guardian";
@@ -94,6 +96,7 @@ export class ActorSystem {
   private readonly _address: PathAddress;
   private readonly _tree = new PidTree();
   private readonly _passivation = new PassivationManager();
+  private readonly _scheduler = new Scheduler();
   private readonly _logger: Logger;
   private readonly _events: EventStream;
 
@@ -417,6 +420,7 @@ export class ActorSystem {
       await placement.stop();
     }
 
+    this._scheduler.stop();
     this._passivation.stop();
     await this._rootGuardian?.shutdown();
 
@@ -446,6 +450,189 @@ export class ActorSystem {
     }
 
     return this._noSender;
+  }
+
+  /**
+   * Delivers `message` to `pid` repeatedly, every `interval`
+   * milliseconds, the first delivery one interval from now. The
+   * schedule runs until it is cancelled or the system stops; delivery
+   * goes through the normal send path, so a tick to an actor that has
+   * stopped by fire time becomes a dead letter like any other
+   * undeliverable send. Every tick is an independent send: nothing
+   * suppresses a tick because the previous message is still queued.
+   *
+   * The message carries the sender from `opts.sender`, or the system's
+   * NoSender actor by default. Give the schedule a reference through
+   * `opts.reference` to cancel, pause, or resume it later.
+   *
+   * @returns A promise that settles once the schedule is registered. It
+   * rejects with the {@link ErrActorSystemNotStarted} sentinel when the
+   * system is not running, the {@link ErrInvalidInterval} sentinel when
+   * `interval` is not a positive number, the
+   * {@link ErrScheduleAlreadyExists} sentinel when the reference is
+   * already held by another schedule, and the {@link ErrDead} sentinel
+   * when the target has already stopped.
+   */
+  async schedule(
+    message: unknown,
+    pid: PID,
+    interval: number,
+    opts?: ScheduleOptions,
+  ): Promise<void> {
+    if (!this.isRunning()) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    this._scheduler.schedule(
+      message,
+      pid,
+      interval,
+      opts?.sender ?? this.noSender(),
+      null,
+      opts?.reference,
+    );
+  }
+
+  /**
+   * Delivers `message` to `pid` once, `delay` milliseconds from now.
+   * Delivery goes through the normal send path, so a target that has
+   * stopped by fire time receives nothing and the message becomes a
+   * dead letter.
+   *
+   * The message carries the sender from `opts.sender`, or the system's
+   * NoSender actor by default. Give the schedule a reference through
+   * `opts.reference` to cancel, pause, or resume it before it fires.
+   *
+   * @returns A promise that settles once the schedule is registered. It
+   * rejects with the {@link ErrActorSystemNotStarted} sentinel when the
+   * system is not running, the {@link ErrInvalidInterval} sentinel when
+   * `delay` is not a positive number, the
+   * {@link ErrScheduleAlreadyExists} sentinel when the reference is
+   * already held by another schedule, and the {@link ErrDead} sentinel
+   * when the target has already stopped.
+   */
+  async scheduleOnce(
+    message: unknown,
+    pid: PID,
+    delay: number,
+    opts?: ScheduleOptions,
+  ): Promise<void> {
+    if (!this.isRunning()) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    this._scheduler.scheduleOnce(
+      message,
+      pid,
+      delay,
+      opts?.sender ?? this.noSender(),
+      null,
+      opts?.reference,
+    );
+  }
+
+  /**
+   * Cancels the schedule held under `reference`: nothing fires after
+   * the returned promise settles.
+   *
+   * @returns A promise that settles once the schedule is cancelled. It
+   * rejects with the {@link ErrActorSystemNotStarted} sentinel when the
+   * system is not running and the {@link ErrScheduleNotFound} sentinel
+   * when no schedule holds the reference.
+   */
+  async cancelSchedule(reference: string): Promise<void> {
+    if (!this.isRunning()) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    this._scheduler.cancel(reference);
+  }
+
+  /**
+   * Pauses the schedule held under `reference`; a paused schedule fires
+   * nothing until it is resumed. Pausing a paused schedule is a no-op.
+   * A paused one-shot keeps the delay it had left; a paused repeating
+   * schedule fires one full interval after it is resumed.
+   *
+   * @returns A promise that settles once the schedule is paused. It
+   * rejects with the {@link ErrActorSystemNotStarted} sentinel when the
+   * system is not running and the {@link ErrScheduleNotFound} sentinel
+   * when no schedule holds the reference.
+   */
+  async pauseSchedule(reference: string): Promise<void> {
+    if (!this.isRunning()) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    this._scheduler.pause(reference);
+  }
+
+  /**
+   * Resumes the schedule held under `reference`. Resuming a schedule
+   * that is not paused is a no-op.
+   *
+   * @returns A promise that settles once the schedule is resumed. It
+   * rejects with the {@link ErrActorSystemNotStarted} sentinel when the
+   * system is not running and the {@link ErrScheduleNotFound} sentinel
+   * when no schedule holds the reference.
+   */
+  async resumeSchedule(reference: string): Promise<void> {
+    if (!this.isRunning()) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    this._scheduler.resume(reference);
+  }
+
+  /**
+   * Registers a repeating schedule owned by `owner`: it is cancelled
+   * when that actor fully stops, and the delivered messages carry the
+   * owner as sender unless `opts.sender` overrides it. Runtime plumbing
+   * for `ReceiveContext.schedule`.
+   *
+   * @internal
+   */
+  async scheduleFrom(
+    owner: PID,
+    message: unknown,
+    pid: PID,
+    interval: number,
+    opts?: ScheduleOptions,
+  ): Promise<void> {
+    if (!this.isRunning()) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    this._scheduler.schedule(message, pid, interval, opts?.sender ?? owner, owner, opts?.reference);
+  }
+
+  /**
+   * Registers a one-shot schedule owned by `owner`: it is cancelled
+   * when that actor fully stops, and the delivered message carries the
+   * owner as sender unless `opts.sender` overrides it. Runtime plumbing
+   * for `ReceiveContext.scheduleOnce`.
+   *
+   * @internal
+   */
+  async scheduleOnceFrom(
+    owner: PID,
+    message: unknown,
+    pid: PID,
+    delay: number,
+    opts?: ScheduleOptions,
+  ): Promise<void> {
+    if (!this.isRunning()) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    this._scheduler.scheduleOnce(
+      message,
+      pid,
+      delay,
+      opts?.sender ?? owner,
+      owner,
+      opts?.reference,
+    );
   }
 
   /**

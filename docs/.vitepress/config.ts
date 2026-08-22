@@ -6,7 +6,7 @@ import { defineConfig } from "vitepress";
 export default defineConfig({
   title: "NodeAkt",
   description:
-    "Actor framework for Node.js: typed actors, supervision, mailboxes, behaviors, an event stream, and a multi-core runtime",
+    "Actor framework for Node, Deno and Bun: typed actors, supervision, mailboxes, behaviors, an event stream, and a multi-core runtime",
   base: "/nodeakt/",
   cleanUrls: true,
   lastUpdated: true,
@@ -61,6 +61,7 @@ export default defineConfig({
           { text: "Lifecycle", link: "/actor/lifecycle" },
           { text: "Messaging", link: "/actor/messaging" },
           { text: "PipeTo", link: "/actor/pipeto" },
+          { text: "Scheduling", link: "/actor/scheduling" },
           { text: "Behaviors and stash", link: "/actor/behaviors" },
           { text: "Hierarchy and stop", link: "/actor/hierarchy" },
           { text: "Death watch", link: "/actor/death-watch" },

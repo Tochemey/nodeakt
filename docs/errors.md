@@ -18,10 +18,11 @@ if (err === ErrDead || err === ErrMailboxFull) {
 | Sentinel | Arises when |
 | --- | --- |
 | `ErrActorAlreadyExists` | [`system.spawn`](actor-system/index.md) with a top-level name that is still held, including by a suspended or currently stopping actor. |
-| `ErrActorSystemNotStarted` | `spawn`, `noSender`, `subscribe`, or `unsubscribe` on a [system](actor-system/index.md) that is not running. |
-| `ErrDead` | The actor is not running: [`tell` / `ask`](actor/messaging.md) to a stopped target, or `spawnChild`, `ctx.child`, `ctx.stop`, `restart` through a stopped actor. |
+| `ErrActorSystemNotStarted` | `spawn`, `noSender`, `subscribe`, `unsubscribe`, or any [scheduling call](actor/scheduling.md) on a [system](actor-system/index.md) that is not running. |
+| `ErrDead` | The actor is not running: [`tell` / `ask`](actor/messaging.md) to a stopped target, registering a [schedule](actor/scheduling.md) whose target has stopped, or `spawnChild`, `ctx.child`, `ctx.stop`, `restart` through a stopped actor. |
 | `ErrInvalidActorName` | An [actor name](actor-system/index.md) is empty, longer than 255 characters, or syntactically invalid. |
 | `ErrInvalidActorSystemName` | A [system name](actor-system/index.md) violates the system-name syntax (stricter than actor names). |
+| `ErrInvalidInterval` | [`schedule` / `scheduleOnce`](actor/scheduling.md) with a delay or interval that is not a positive number. |
 | `ErrInvalidReentrancyMode` | An unknown [reentrancy](actor/reentrancy.md) mode at spawn or on request options. |
 | `ErrInvalidTimeout` | [`ask`](actor/messaging.md) with a timeout that is not positive. |
 | `ErrMailboxDisposed` | Enqueue on a [mailbox](actor/mailboxes.md) after the actor stopped, or [`ctx.stash`](actor/behaviors.md) while the actor is stopping. |
@@ -33,6 +34,8 @@ if (err === ErrDead || err === ErrMailboxFull) {
 | `ErrRequestCanceled` | A [request](actor/reentrancy.md) completed by `cancel()`. |
 | `ErrRequestTimeout` | An [`ask`](actor/messaging.md) or [`request`](actor/reentrancy.md) unanswered within one to two timeout periods. |
 | `ErrReservedName` | A name starting with the reserved prefix `NodeAkt`. |
+| `ErrScheduleAlreadyExists` | [Registering a schedule](actor/scheduling.md) under a reference that is already held. |
+| `ErrScheduleNotFound` | [`cancelSchedule`, `pauseSchedule`, or `resumeSchedule`](actor/scheduling.md) with a reference no schedule holds. |
 | `ErrStashBufferEmpty` | [`ctx.unstash`](actor/behaviors.md) with nothing stashed. |
 | `ErrUndefinedActor` | [`ctx.stop`](actor/hierarchy.md) on the PID that represents an absent sender. |
 | `ErrUndefinedTask` | [`pipeTo`](actor/pipeto.md) or `pipeToName` given a null or undefined task. The reason on the resulting dead letter; nothing is delivered. |

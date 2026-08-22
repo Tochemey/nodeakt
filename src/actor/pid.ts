@@ -1327,6 +1327,18 @@ export class PID {
   }
 
   /**
+   * Reports whether this PID is the routed handle of an actor owned by
+   * another isolate. A routed actor's liveness is not synchronously
+   * knowable on this isolate, so local state checks do not apply to it.
+   * Runtime plumbing.
+   *
+   * @internal
+   */
+  isRouted(): boolean {
+    return this._route !== null;
+  }
+
+  /**
    * Routes the given delivery to dead letters as unhandled. Runtime
    * plumbing for `ReceiveContext.unhandled`.
    *

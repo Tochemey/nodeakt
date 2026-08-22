@@ -6,7 +6,7 @@
 TSX := node_modules/.bin/tsx
 
 .DEFAULT_GOAL := help
-.PHONY: help helloworld behaviors chat supervision reentrancy pipeto watch stash props multicore bench bench-baseline
+.PHONY: help helloworld behaviors chat supervision reentrancy pipeto scheduling watch stash props multicore bench bench-baseline
 
 help: ## list the available example targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -29,6 +29,9 @@ reentrancy: ## ask without freezing (request + onReply)
 
 pipeto: ## deliver an async result as a message (pipeTo)
 	@$(TSX) examples/pipeto/main.ts
+
+scheduling: ## send a message later or on a repeat (schedule / scheduleOnce)
+	@$(TSX) examples/scheduling/main.ts
 
 watch: ## death is a message (watch / Terminated)
 	@$(TSX) examples/watch/main.ts
