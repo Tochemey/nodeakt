@@ -1,4 +1,4 @@
-name: CI
+name: ci
 
 # Documentation-only changes never exercise code, so skip the pipeline
 # when a push or pull request touches nothing but Markdown.
