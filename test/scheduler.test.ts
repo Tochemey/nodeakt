@@ -24,10 +24,14 @@
 
 import { describe, expect, it } from "vitest";
 import type { Actor } from "../src/actor/actor";
+import type { IsolateRoute } from "../src/actor/actor.ref";
 import { ActorSystem } from "../src/actor/actor.system";
 import { Deadletter, PostStart } from "../src/actor/messages";
-import type { PID } from "../src/actor/pid";
+import { newPath, newPathAt } from "../src/actor/path";
+import { PID } from "../src/actor/pid";
 import type { ReceiveContext } from "../src/actor/receive.context";
+import { completedRequest } from "../src/actor/reentrancy";
+import { Scheduler } from "../src/actor/scheduler";
 import {
   ErrActorSystemNotStarted,
   ErrDead,
@@ -35,6 +39,7 @@ import {
   ErrScheduleAlreadyExists,
   ErrScheduleNotFound,
 } from "../src/errors/errors";
+import { routedPid } from "../src/runtime/routed.pid";
 
 class Tick {}
 
@@ -425,5 +430,96 @@ describe("ReceiveContext scheduling", () => {
       .toBe(ErrScheduleNotFound);
 
     await system.stop();
+  });
+});
+
+// These exercise the Scheduler directly, the way passivation.test drives
+// the PassivationManager, to reach receiver states an actor spawned through
+// a started system cannot stably hold: a suspended local actor and a routed
+// handle to another isolate.
+describe("Scheduler receiver states", () => {
+  // A real but unstarted system: standalone PIDs receive no PostStart, and
+  // their dead letters are a safe no-op because no dead-letter actor exists.
+  const system: ActorSystem = new ActorSystem("sched");
+
+  let nextName = 0;
+
+  function makePid(actor: Actor): PID {
+    return new PID(actor, newPath(`actor-${nextName++}`, "sched", "127.0.0.1", 0), system);
+  }
+
+  // The sender for schedules told from outside an actor. It never starts;
+  // tell only checks the receiver's state.
+  const external: PID = makePid(new Collector());
+
+  it("keeps a suspended receiver's repeating schedule instead of dropping it", async () => {
+    class Faulty extends Collector {
+      override receive(ctx: ReceiveContext): void {
+        if (ctx.message === "boom") {
+          throw new Error("boom");
+        }
+
+        super.receive(ctx);
+      }
+    }
+
+    const scheduler: Scheduler = new Scheduler();
+    const actor: Faulty = new Faulty();
+    const pid: PID = makePid(actor);
+    await pid.start();
+
+    scheduler.schedule(new Tick(), pid, 20, external, null, "hb");
+
+    // A fault with no parent to decide the directive suspends the actor.
+    external.tell(pid, "boom");
+    await expect.poll(() => pid.isSuspended()).toBe(true);
+
+    // Ticks fire while it is suspended: each dead-letters, but the schedule
+    // is kept, not pruned, because a suspended actor may be reinstated.
+    await pause(80);
+    expect(pid.isSuspended()).toBe(true);
+
+    // Reinstated, the kept schedule delivers again with no re-registration.
+    const before: number = actor.received.length;
+    pid.reinstate(pid);
+    await expect.poll(() => actor.received.length > before, { timeout: 2000 }).toBe(true);
+    expect(actor.received.at(-1)).toBeInstanceOf(Tick);
+
+    scheduler.stop();
+  });
+
+  it("registers and repeatedly fires a routed receiver", async () => {
+    const calls: string[] = [];
+    const route: IsolateRoute = {
+      workerId: 3,
+      tell: (to, message) => {
+        calls.push(`${to.name()}:${String(message)}`);
+        return null;
+      },
+      ask: (to, message) => Promise.resolve(`${to.name()}:${String(message)}`),
+      request: () => completedRequest(ErrDead),
+      watch: () => {},
+      unwatch: () => {},
+    };
+    const handle: PID = routedPid(
+      system,
+      newPathAt("far", { system: "sched", host: "127.0.0.1", port: 0 }, undefined, "1"),
+      route,
+    );
+
+    const scheduler: Scheduler = new Scheduler();
+
+    // A routed handle reports isRunning() false locally, yet registration
+    // must accept it and every tick must fire through the route.
+    scheduler.schedule("tick", handle, 20, external, null, "routed");
+    await expect.poll(() => calls.length >= 2, { timeout: 2000 }).toBe(true);
+    expect(calls[0]).toBe("far:tick");
+
+    scheduler.cancel("routed");
+    const delivered: number = calls.length;
+    await pause(80);
+    expect(calls.length).toBe(delivered);
+
+    scheduler.stop();
   });
 });
