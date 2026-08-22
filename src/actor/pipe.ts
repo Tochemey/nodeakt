@@ -210,12 +210,12 @@ function undeliverable(pipe: Pipe, result: unknown, err: Error): void {
 }
 
 /** The deadline fired before the task settled: abort the task and
- * dead-letter the pipe with the timeout reason. */
+ * dead-letter the pipe with the timeout reason. Only the still-armed
+ * timer reaches here, since any earlier settlement clears it, so this
+ * settle always wins; call it for its bookkeeping and ignore the
+ * guaranteed-true result. */
 function expire(pipe: Pipe): void {
-  if (!settle(pipe)) {
-    return;
-  }
-
+  settle(pipe);
   pipe.controller?.abort();
   abandon(pipe, ErrPipeTimeout);
 }

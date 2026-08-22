@@ -320,6 +320,26 @@ describe("pipeTo", () => {
     expect(recorder.received).toHaveLength(0);
   });
 
+  it("drops a rejection arriving after the timeout", async () => {
+    const recorder: Recorder = new Recorder();
+    const target: PID = await system.spawn("target", recorder);
+    const piper: PID = await system.spawn("piper", new Piper());
+    const task: Deferred<Order> = deferred<Order>();
+
+    // The timeout settles the pipe first; the task's own later rejection
+    // finds the pipe already settled and adds no second dead letter.
+    piper.pipeTo(target, task.promise, { timeout: 20 });
+
+    await expect.poll(() => letters.length).toBe(1);
+    expect(letters[0]?.reason).toBe(ErrPipeTimeout.message);
+
+    task.reject(new Error("too late"));
+    await pause(30);
+
+    expect(letters).toHaveLength(1);
+    expect(recorder.received).toHaveLength(0);
+  });
+
   it("drops a result arriving after the timeout", async () => {
     const recorder: Recorder = new Recorder();
     const target: PID = await system.spawn("target", recorder);
