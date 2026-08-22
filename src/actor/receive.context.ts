@@ -27,6 +27,8 @@ import type { Actor } from "./actor";
 import type { ActorSystem } from "./actor.system";
 import type { Behavior } from "./behavior.stack";
 import type { PID } from "./pid";
+import type { PipeTask } from "./pipe";
+import type { PipeOptions } from "./pipe.options";
 import type { RequestCall, RequestOptions } from "./reentrancy";
 import type { SpawnOptions } from "./spawn.options";
 
@@ -230,6 +232,49 @@ export class ReceiveContext {
    */
   request(to: PID, message: unknown, options?: RequestOptions): RequestCall {
     return this.pid().request(to, message, options);
+  }
+
+  /**
+   * Runs `task` off this actor's message processing and delivers its
+   * resolution value to `to` as an ordinary message, with this actor
+   * recorded as the sender. The call returns immediately; the actor
+   * keeps processing messages while the task runs, and delivery happens
+   * on the target's own turn, the same guarantee `onReply` gives.
+   *
+   * The task is a promise, or a thunk returning one; the thunk receives
+   * an `AbortSignal` that fires when the pipe's timeout expires. A pipe
+   * never throws and a failing pipe delivers nothing: a dead target, a
+   * rejected task, and an expired timeout all route to dead letters
+   * carrying the failing reason. To receive a failure as a message
+   * instead, map the rejection before piping:
+   * `task.catch((err) => new LoadFailed(err))`.
+   *
+   * Stopping this actor does not cancel the task: the promise is
+   * already running, and its result is still delivered when it settles.
+   *
+   * ```ts
+   * if (ctx.message instanceof Load) {
+   *   ctx.pipeTo(ctx.self as PID, fetchOrder(ctx.message.id));
+   * }
+   *
+   * if (ctx.message instanceof Order) {
+   *   // the fetched result, delivered like any other message
+   * }
+   * ```
+   */
+  pipeTo(to: PID, task: PipeTask, options?: PipeOptions): void {
+    this.pid().pipeTo(to, task, options);
+  }
+
+  /**
+   * Pipes like {@link pipeTo}, addressing the target by name instead of
+   * by handle: when the task settles, the name is resolved among the
+   * running top-level actors and the result is delivered to whoever
+   * holds it then. When no running top-level actor holds the name, the
+   * result becomes a dead letter carrying an `ActorNotFoundError`.
+   */
+  pipeToName(actorName: string, task: PipeTask, options?: PipeOptions): void {
+    this.pid().pipeToName(actorName, task, options);
   }
 
   /**

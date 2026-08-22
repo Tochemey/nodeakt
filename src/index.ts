@@ -49,6 +49,8 @@ export {
 } from "./actor/passivation";
 export type { Path } from "./actor/path";
 export { PID } from "./actor/pid";
+export type { PipeTask } from "./actor/pipe";
+export type { PipeOptions } from "./actor/pipe.options";
 export {
   BoundedPriorityMailbox,
   BoundedStablePriorityMailbox,
@@ -94,6 +96,7 @@ export {
   ErrMailboxDisposed,
   ErrMailboxFull,
   ErrNameRequired,
+  ErrPipeTimeout,
   ErrReentrancyDisabled,
   ErrReentrancyInFlightLimit,
   ErrRequestCanceled,
@@ -101,6 +104,7 @@ export {
   ErrReservedName,
   ErrStashBufferEmpty,
   ErrUndefinedActor,
+  ErrUndefinedTask,
   ErrUnhandled,
 } from "./errors/errors";
 export { EventStream, type StreamSubscriber } from "./eventstream/eventstream";
