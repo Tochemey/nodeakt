@@ -15,12 +15,12 @@ nodeakt is an actor runtime for Node.js. An actor owns private state and a mailb
 Requires Node.js 22 or newer. ESM only.
 
 ```bash
-pnpm add nodeakt
+pnpm add @tochemey/nodeakt
 ```
 
 ```ts
-import type { Actor, ReceiveContext } from "nodeakt";
-import { ActorSystem, PostStart } from "nodeakt";
+import type { Actor, ReceiveContext } from "@tochemey/nodeakt";
+import { ActorSystem, PostStart } from "@tochemey/nodeakt";
 
 class Greet {
   constructor(readonly name: string) {}
@@ -60,7 +60,7 @@ await system.stop();
 
 nodeakt is pre-1.0: the API is settling and minor versions may still move it.
 
-- **Nightly.** Every green push to `main` publishes a build to npm under the `nightly` dist-tag, versioned `X.Y.Z-nightly.<date>.<sha>`. Install it with `pnpm add nodeakt@nightly`. Nightlies never touch `latest`.
+- **Nightly.** Every green push to `main` publishes a build to npm under the `nightly` dist-tag, versioned `X.Y.Z-nightly.<date>.<sha>`. Install it with `pnpm add @tochemey/nodeakt@nightly`. Nightlies never touch `latest`.
 - **Stable.** A stable release is cut by pushing a version tag. The release pipeline folds the accumulated [changesets](https://github.com/changesets/changesets) into `CHANGELOG.md`, publishes to npm as `latest` with provenance, and creates the GitHub release from the changelog.
 
 ## Not there yet

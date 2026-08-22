@@ -3,7 +3,7 @@
 Subscribe to the system's runtime event stream after `start`. The first event kind is `Deadletter`; later runtime events use the same subscription. Narrow with `instanceof`, the same type switch as `ctx.message`.
 
 ```ts
-import { ActorSystem, Deadletter } from "nodeakt";
+import { ActorSystem, Deadletter } from "@tochemey/nodeakt";
 
 const system = new ActorSystem("orders");
 await system.start();

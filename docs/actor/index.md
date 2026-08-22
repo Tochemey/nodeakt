@@ -3,7 +3,7 @@
 An actor owns private state and a mailbox. It communicates only through messages. The runtime processes those messages one at a time, so the state needs no lock. Do not share that state or mutate it outside `receive`.
 
 ```ts
-import type { Actor, Context, ReceiveContext } from "nodeakt";
+import type { Actor, Context, ReceiveContext } from "@tochemey/nodeakt";
 
 class Greeter implements Actor {
   private count = 0;

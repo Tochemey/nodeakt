@@ -3,7 +3,7 @@
 The runtime reports through a `Logger`. Configure it when constructing the actor system; every actor can reach the same logger from a lifecycle `Context` via `ctx.logger()`.
 
 ```ts
-import { ActorSystem, JsonLogger, discardLogger } from "nodeakt";
+import { ActorSystem, JsonLogger, discardLogger } from "@tochemey/nodeakt";
 
 const system = new ActorSystem("orders", {
   logger: new JsonLogger({ level: "debug" }),

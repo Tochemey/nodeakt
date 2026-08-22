@@ -5,7 +5,7 @@ Passivation is a graceful stop of an idle actor: queued messages drain, `postSto
 Passivation strategies are live objects. They cannot ride a [`Props`](../multi-core/index.md) spawn.
 
 ```ts
-import { DefaultPassivationTimeout, MessagesCountBasedStrategy, TimeBasedStrategy } from "nodeakt";
+import { DefaultPassivationTimeout, MessagesCountBasedStrategy, TimeBasedStrategy } from "@tochemey/nodeakt";
 
 await system.spawn("cache", new Cache(), {
   passivationStrategy: new TimeBasedStrategy(DefaultPassivationTimeout), // 120_000 ms

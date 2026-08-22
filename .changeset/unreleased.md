@@ -1,5 +1,5 @@
 ---
-"nodeakt": minor
+"@tochemey/nodeakt": minor
 ---
 
 Initial implementation of nodeakt, a high-performance actor library for Node.js.

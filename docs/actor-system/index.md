@@ -3,7 +3,7 @@
 `ActorSystem` is the runtime that hosts actors: one logical system per process. Create it, `start` it, `spawn` actors, and `stop` it when you are done.
 
 ```ts
-import { ActorSystem } from "nodeakt";
+import { ActorSystem } from "@tochemey/nodeakt";
 
 const system = new ActorSystem("orders");
 await system.start();

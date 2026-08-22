@@ -16,11 +16,11 @@ Matching programs are in [`examples/`](../examples/README.md).
 - ESM (`"type": "module"`)
 
 ```bash
-pnpm add nodeakt
+pnpm add @tochemey/nodeakt
 ```
 
 ```ts
-import { ActorSystem } from "nodeakt";
+import { ActorSystem } from "@tochemey/nodeakt";
 ```
 
 ## How to read this
@@ -30,7 +30,7 @@ Each page lists method names, defaults, thrown sentinels, and the cases that dif
 Sentinel errors are singleton `Error` values. Compare them by identity:
 
 ```ts
-import { ErrDead, ErrMailboxFull } from "nodeakt";
+import { ErrDead, ErrMailboxFull } from "@tochemey/nodeakt";
 
 const err = outside.tell(target, message);
 if (err === ErrDead || err === ErrMailboxFull) {
@@ -43,8 +43,8 @@ Class errors (`ActorInitializationError`, `ActorNotFoundError`, `ActorNotRegiste
 ## Quick start
 
 ```ts
-import type { Actor, ReceiveContext } from "nodeakt";
-import { ActorSystem, PostStart } from "nodeakt";
+import type { Actor, ReceiveContext } from "@tochemey/nodeakt";
+import { ActorSystem, PostStart } from "@tochemey/nodeakt";
 
 class Greet {
   constructor(readonly name: string) {}
