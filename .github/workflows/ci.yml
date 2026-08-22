@@ -156,7 +156,11 @@ jobs:
       - name: Stamp nightly version
         run: |
           base=$(node -p "require('./package.json').version")
-          version="${base}-nightly.$(date -u +%Y%m%d).${GITHUB_SHA::7}"
+          # The short sha is prefixed with "g" (the git-describe convention)
+          # so the identifier is always alphanumeric. An all-digit sha such
+          # as 0203847 would otherwise be read as a numeric identifier, which
+          # semver forbids from carrying a leading zero, failing the publish.
+          version="${base}-nightly.$(date -u +%Y%m%d).g${GITHUB_SHA::7}"
           node -e "const fs = require('node:fs'); const pkg = require('./package.json'); pkg.version = process.argv[1]; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');" "$version"
           echo "Publishing \`$version\`" >> "$GITHUB_STEP_SUMMARY"
 
