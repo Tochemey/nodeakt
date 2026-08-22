@@ -121,6 +121,69 @@ jobs:
           files: ./coverage/lcov.info
           fail_ci_if_error: false
 
+  runtimes:
+    name: smoke (${{ matrix.runtime }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [bun, deno]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Set up Bun
+        if: matrix.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Set up Deno
+        if: matrix.runtime == 'deno'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Every example runs straight from TypeScript source, covering the
+      # source worker entry and actor registration on this runtime.
+      - name: Run examples from source
+        run: |
+          for main in examples/*/main.ts; do
+            echo "::group::$main"
+            if [ "${{ matrix.runtime }}" = "bun" ]; then
+              bun run "$main"
+            else
+              deno run -A "$main"
+            fi
+            echo "::endgroup::"
+          done
+
+      # The packed smoke test covers what an npm consumer gets: the dist
+      # entry, the packaged worker entry, and resolution by package name.
+      - name: Run packaged smoke test
+        run: |
+          if [ "${{ matrix.runtime }}" = "bun" ]; then
+            test/smoke/run.sh bun
+          else
+            test/smoke/run.sh deno run -A
+          fi
+
   nightly:
     name: nightly release
     # Every green push to main ships a prerelease to npm under the
@@ -129,7 +192,7 @@ jobs:
     # Changesets play no part here; they belong to the release pipeline.
     # A skipped quality or test job (no code changed) skips this one too.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [changes, quality, test]
+    needs: [changes, quality, test, runtimes]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -1,14 +1,19 @@
 # Introduction
 
-NodeAkt is an actor framework for Node.js. An actor owns private state and a mailbox. The runtime delivers one message at a time to that actor, so the state needs no lock. Actors talk only by sending messages.
+NodeAkt is an actor framework for Node.js, Bun, and Deno. An actor owns private state and a mailbox. The runtime delivers one message at a time to that actor, so the state needs no lock. Actors talk only by sending messages.
 
 > [!NOTE]
 > nodeakt is pre-1.0. The API is settling and minor versions may still move it. Every green push to `main` publishes a nightly build; see [Releases](https://github.com/Tochemey/nodeakt#releases).
 
 ## Requirements
 
+One of these runtimes:
+
 - Node.js 22 or newer
-- ESM (`"type": "module"`)
+- Bun 1.3 or newer
+- Deno 2.0 or newer
+
+And ESM (`"type": "module"`). Everything works the same on all three, including multi-core placement with `Props`; CI runs the example suite and a packaged smoke test on each runtime.
 
 ## Install
 
@@ -28,6 +33,10 @@ yarn add @tochemey/nodeakt
 
 ```sh [🍞 bun]
 bun add @tochemey/nodeakt
+```
+
+```sh [🦕 deno]
+deno add npm:@tochemey/nodeakt
 ```
 
 :::

@@ -374,7 +374,13 @@ export class WorkerRuntime {
     this._mesh.close();
     await this._system.stop();
     this.post({ kind: "stopped" });
-    this._control.close();
+
+    // Deno's worker-threads compatibility layer omits close() on the
+    // boot port; the pool terminates the isolate after "stopped", so
+    // skipping the close there leaks nothing.
+    if (typeof this._control.close === "function") {
+      this._control.close();
+    }
   }
 
   /** Encodes a forwarded dead letter's message, falling back to a
