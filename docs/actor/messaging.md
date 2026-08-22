@@ -20,12 +20,12 @@ Example: [`examples/helloworld`](https://github.com/Tochemey/nodeakt/blob/main/e
 
 ## `ReceiveContext`
 
-| Member | Meaning |
-| --- | --- |
-| `message` | The payload. Typed as `unknown`. |
-| `self` | This actor's `PID`. |
-| `sender` | Who sent it. When the send used `system.noSender()`, `ctx.sender === system.noSender()`. |
-| `actorSystem()` | The hosting system. |
+| Member          | Meaning                                                                                  |
+|-----------------|------------------------------------------------------------------------------------------|
+| `message`       | The payload. Typed as `unknown`.                                                         |
+| `self`          | This actor's `PID`.                                                                      |
+| `sender`        | Who sent it. When the send used `system.noSender()`, `ctx.sender === system.noSender()`. |
+| `actorSystem()` | The hosting system.                                                                      |
 
 Actor-facing methods throw if called on a detached context (one not attached to a receiving actor). You do not construct contexts.
 
@@ -63,12 +63,12 @@ The first `response` wins; later calls are ignored. `response` is a no-op when t
 
 `timeout` is a positive duration in milliseconds. The wait is a lower bound with coarse expiry: an unanswered ask is rejected between one and two timeout periods, so the send path never reads the clock.
 
-| Failure | When |
-| --- | --- |
-| `ErrDead` | Target not running. |
-| `ErrInvalidTimeout` | `timeout` is not positive. |
-| `ErrRequestTimeout` | No reply in time. |
-| mailbox error | Delivery rejected (`ErrMailboxFull`, …). |
+| Failure             | When                                     |
+|---------------------|------------------------------------------|
+| `ErrDead`           | Target not running.                      |
+| `ErrInvalidTimeout` | `timeout` is not positive.               |
+| `ErrRequestTimeout` | No reply in time.                        |
+| mailbox error       | Delivery rejected (`ErrMailboxFull`, …). |
 
 `ctx.ask` forwards to `PID.ask` and rejects with the same errors.
 
@@ -81,6 +81,63 @@ ctx.request(peer, new Get(), { timeout: 1_000 }).onReply((reply, error) => {
   // serialized with this actor's messages
 });
 ```
+
+## PipeTo
+
+Actors constantly need results of asynchronous work: a database read, an HTTP call, a file load. Making `receive` async parks the actor for the whole operation. `pipeTo(to, task, options)` runs the task off the actor's message processing and delivers its resolution value to `to` as an ordinary message, through the normal send path. The call returns immediately; the actor keeps processing messages while the task runs, and delivery happens on the target's own turn.
+
+```ts
+class Loader implements Actor {
+  receive(ctx: ReceiveContext): void {
+    if (ctx.message instanceof Load) {
+      ctx.pipeTo(ctx.self as PID, fetchOrder(ctx.message.id));
+    }
+
+    if (ctx.message instanceof Order) {
+      // the fetched result, delivered like any other message
+    }
+  }
+}
+```
+
+The piped message arrives with the piping actor as `ctx.sender`. Both `ReceiveContext` and `PID` carry `pipeTo`, so code outside `receive` can pipe on behalf of an actor it holds a handle to.
+
+Example: [`examples/pipeto`](https://github.com/Tochemey/nodeakt/blob/main/examples/pipeto/main.ts).
+
+The task is a `PipeTask`: the promise itself, or a thunk returning one. Prefer the thunk when the pipe has a timeout; it receives an `AbortSignal` that fires when the deadline expires, so the task can stop the underlying work. A thunk runs on the piping actor's own turn, so it should return its promise promptly rather than do heavy synchronous work first.
+
+The options argument is a `PipeOptions` with an optional `timeout` in milliseconds (no deadline when omitted or non-positive):
+
+```ts
+ctx.pipeTo(worker, (signal) => fetchOrder(id, { signal }), { timeout: 5_000 });
+```
+
+### By name
+
+`pipeToName(actorName, task, options)` addresses the target by name instead of by handle: how an actor targets a peer it never resolved to a `PID`. The name is resolved among the running [top-level actors](../actor-system/index.md) when the task settles, and the result is delivered to whoever holds it then.
+
+### Failures
+
+A pipe never throws, and a failing pipe delivers nothing; failures go to [dead letters](../actor-system/events.md), the runtime's uniform channel for undeliverable and failed sends:
+
+| Failure                                   | Dead letter reason                                                                        |
+|-------------------------------------------|-------------------------------------------------------------------------------------------|
+| Task rejected                             | The rejection, also logged. Nothing is delivered.                                         |
+| Target not running when the task settles  | `ErrDead`, also logged; the result is the dead letter's message.                          |
+| No running top-level actor holds the name | `ActorNotFoundError`, also logged; the result is the dead letter's message.               |
+| Timeout expired first                     | `ErrPipeTimeout`; the task's `AbortSignal` fires, and a result arriving later is dropped. |
+| Task is null or undefined                 | `ErrUndefinedTask`; nothing runs and nothing is delivered.                                |
+
+A handler that wants the failure as a message maps the rejection before piping, which keeps the failure channel uniform:
+
+```ts
+ctx.pipeTo(ctx.self as PID, fetchOrder(id).catch((err) => new LoadFailed(err)));
+```
+
+The rejection handler is attached before `pipeTo` returns, so a piped task never produces an unhandled rejection warning.
+
+> [!NOTE]
+> Stopping the piping actor does not cancel the task: the promise is already running, and its result is still delivered when it settles. A task that must stop with the pipe observes the timeout's abort signal.
 
 ## Forward, unhandled, shutdown
 
@@ -103,21 +160,21 @@ From outside, `await pid.shutdown()`.
 
 Handle these with `instanceof` alongside your own classes.
 
-| Message | Delivered to behavior? | Meaning |
-| --- | --- | --- |
-| `PostStart` | Yes | First message after start. |
-| `Terminated` | Yes | An actor this one [watched](hierarchy.md) has stopped. Carries `actorPath: string`. |
-| `PanicSignal` | Yes | [Escalated](supervision.md) failure. `reason` is the error. The sender is the failing actor. |
-| `PoisonPill` | **No** | Instructs a graceful stop. Travels through the mailbox so everything ahead of it runs first. The runtime consumes it; it is never passed to `receive`. Send with `tell(pid, new PoisonPill())`. |
-| `Deadletter` | No (event) | Published on the [event stream](../actor-system/events.md), not delivered to the original receiver. |
+| Message       | Delivered to behavior? | Meaning                                                                                                                                                                                         |
+|---------------|------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `PostStart`   | Yes                    | First message after start.                                                                                                                                                                      |
+| `Terminated`  | Yes                    | An actor this one [watched](hierarchy.md) has stopped. Carries `actorPath: string`.                                                                                                             |
+| `PanicSignal` | Yes                    | [Escalated](supervision.md) failure. `reason` is the error. The sender is the failing actor.                                                                                                    |
+| `PoisonPill`  | **No**                 | Instructs a graceful stop. Travels through the mailbox so everything ahead of it runs first. The runtime consumes it; it is never passed to `receive`. Send with `tell(pid, new PoisonPill())`. |
+| `Deadletter`  | No (event)             | Published on the [event stream](../actor-system/events.md), not delivered to the original receiver.                                                                                             |
 
 Messages already accepted **behind** a `PoisonPill` still drain before the actor stops. Sends arriving after the pill is consumed are rejected.
 
 ## Compare send APIs
 
-| | `tell` | `ask` | `request` |
-| --- | --- | --- | --- |
-| Waits for a reply | No | Yes (parks) | No (continuation) |
-| Receiver replies with | | `ctx.response` | `ctx.response` |
-| Safe in call cycles | Yes | No | Yes, with `allowAll` |
-| From code that is not `receive` | a PID's `tell` | a PID's `ask` | No. Needs a reentrant actor as the issuer |
+|                                 | `tell`         | `ask`          | `request`                                 | `pipeTo`                           |
+|---------------------------------|----------------|----------------|-------------------------------------------|------------------------------------|
+| Waits for a reply               | No             | Yes (parks)    | No (continuation)                         | No (task result becomes a message) |
+| Receiver replies with           |                | `ctx.response` | `ctx.response`                            |                                    |
+| Safe in call cycles             | Yes            | No             | Yes, with `allowAll`                      | Yes                                |
+| From code that is not `receive` | a PID's `tell` | a PID's `ask`  | No. Needs a reentrant actor as the issuer | a PID's `pipeTo`                   |

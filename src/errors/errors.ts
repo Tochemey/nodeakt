@@ -69,6 +69,14 @@ export const ErrReentrancyInFlightLimit: Error = new Error("reentrancy in-flight
 /** Completes a request that was canceled before its reply arrived. */
 export const ErrRequestCanceled: Error = new Error("request canceled");
 
+/** The reason a pipe carries to dead letters when its timeout expires
+ * before the piped task settles; nothing is delivered to the target. */
+export const ErrPipeTimeout: Error = new Error("pipe timed out");
+
+/** The reason a pipe carries to dead letters when it is given no task to
+ * run: `pipeTo` or `pipeToName` called with a null or undefined task. */
+export const ErrUndefinedTask: Error = new Error("pipe task is not defined");
+
 /** The reason a message routed to dead letters carries when its
  * receiver marked it unhandled. */
 export const ErrUnhandled: Error = new Error("unhandled message");

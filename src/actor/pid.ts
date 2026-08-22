@@ -60,6 +60,8 @@ import {
 } from "./passivation";
 import { addressOf, isValidActorName, newPathAt, type Path } from "./path";
 import { PidTree } from "./pid.tree";
+import { type PipeTask, runPipe } from "./pipe";
+import type { PipeOptions } from "./pipe.options";
 import {
   cancelAsk,
   createAskContext,
@@ -792,6 +794,57 @@ export class PID {
     this.admitRequest(handle);
     to.schedule();
     return handle;
+  }
+
+  /**
+   * Runs `task` off this actor's message processing and delivers its
+   * resolution value to `to` as an ordinary message, with this actor
+   * recorded as the sender. The call returns immediately: this actor
+   * keeps processing messages while the task runs, and delivery happens
+   * on the target's own turn through the normal send path.
+   *
+   * The task is a promise, or a thunk returning one; the thunk receives
+   * an `AbortSignal` that fires when the pipe's timeout expires. A pipe
+   * never throws and a failing pipe delivers nothing: when the target
+   * is not running when the task settles, the result becomes a dead
+   * letter carrying the failing reason; a rejected task is logged and
+   * routed to dead letters with the rejection as the reason; and a pipe
+   * whose timeout expires first dead-letters with {@link ErrPipeTimeout}.
+   * To receive a failure as a message instead, map the rejection before
+   * piping: `task.catch((err) => new LoadFailed(err))`.
+   *
+   * The rejection handler is attached before the call returns, so a
+   * piped task can never produce an unhandled rejection warning.
+   *
+   * Stopping this actor does not cancel the task: the promise is
+   * already running, and its result is still delivered when it settles.
+   * A task that must stop with the pipe observes the timeout's abort
+   * signal.
+   *
+   * @param to - The PID of the actor receiving the result.
+   * @param task - The promise, or a thunk returning it.
+   * @param options - The pipe configuration; `timeout` is the deadline
+   * in milliseconds, with no deadline when omitted or non-positive.
+   */
+  pipeTo(to: PID, task: PipeTask, options?: PipeOptions): void {
+    runPipe(this, to, null, task, options);
+  }
+
+  /**
+   * Pipes like {@link pipeTo}, addressing the target by name instead of
+   * by handle: when the task settles, the name is resolved among the
+   * running top-level actors and the result is delivered to whoever
+   * holds it then. When no running top-level actor holds the name, the
+   * result becomes a dead letter carrying an {@link ActorNotFoundError}.
+   *
+   * @param actorName - The name of the top-level actor receiving the
+   * result.
+   * @param task - The promise, or a thunk returning it.
+   * @param options - The pipe configuration; `timeout` is the deadline
+   * in milliseconds, with no deadline when omitted or non-positive.
+   */
+  pipeToName(actorName: string, task: PipeTask, options?: PipeOptions): void {
+    runPipe(this, null, actorName, task, options);
   }
 
   /**
