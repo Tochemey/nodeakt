@@ -22,10 +22,10 @@
  * SOFTWARE.
  */
 
+import { ErrRequestTimeout } from "../errors/errors";
 import type { Actor } from "./actor";
 import type { ActorSystem } from "./actor.system";
 import type { Behavior } from "./behavior.stack";
-import { ErrRequestTimeout } from "./errors";
 import type { PID } from "./pid";
 import type { RequestCall, RequestOptions } from "./reentrancy";
 import type { SpawnOptions } from "./spawn.options";
@@ -303,6 +303,16 @@ export class ReceiveContext {
   }
 
   /**
+   * Marks the current message as unhandled: it is routed to the
+   * system's dead letters carrying `ErrUnhandled` as the reason, and
+   * processing continues normally. Prefer this over throwing when
+   * unknown messages are expected; a throw engages supervision.
+   */
+  unhandled(): void {
+    this.pid().unhandled(this);
+  }
+
+  /**
    * Forwards the current message to `to`, preserving the original sender.
    * The receiving behavior sees `ctx.sender` as whoever sent the message
    * here, not this actor.
@@ -405,7 +415,9 @@ function armAskTimer(list: AskList): void {
  * The context of one ask delivery: a receive context extended with the
  * reply channel and its place in the pending-ask list. Keeping this
  * state on a subclass means a plain tell never carries or allocates any
- * of it.
+ * of it. The class never leaves this module.
+ *
+ * @internal
  */
 class AskContext extends ReceiveContext {
   /** Completes the ask; null once the ask has been settled, so the first

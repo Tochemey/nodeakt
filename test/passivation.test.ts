@@ -1,7 +1,30 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 GoAkt Team
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 import { describe, expect, it } from "vitest";
 import type { Actor } from "../src/actor/actor";
 import { ActorSystem } from "../src/actor/actor.system";
-import { ErrDead } from "../src/actor/errors";
 import {
   LongLivedStrategy,
   MessagesCountBasedStrategy,
@@ -12,6 +35,7 @@ import { PassivationManager } from "../src/actor/passivation.manager";
 import { newPath } from "../src/actor/path";
 import { PID } from "../src/actor/pid";
 import type { ReceiveContext } from "../src/actor/receive.context";
+import { ErrDead } from "../src/errors/errors";
 
 // A real but never started system: standalone PIDs receive no PostStart
 // announcement because the NoSender actor does not exist.
@@ -43,7 +67,7 @@ function makePid(actor: Actor, strategy?: PassivationStrategy): PID {
   );
 }
 
-function sleep(ms: number): Promise<void> {
+function pause(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -85,7 +109,7 @@ describe("PassivationManager", () => {
     manager.register(pid, new TimeBasedStrategy(60));
 
     const ping = setInterval(() => external.tell(pid, "ping"), 15);
-    await sleep(200);
+    await pause(200);
     expect(pid.isRunning()).toBe(true);
     clearInterval(ping);
 
@@ -105,7 +129,7 @@ describe("PassivationManager", () => {
     manager.register(pid, new TimeBasedStrategy(40));
     manager.unregister(pid);
 
-    await sleep(120);
+    await pause(120);
     expect(pid.isRunning()).toBe(true);
     expect(actor.stopped).toBe(0);
 
@@ -121,7 +145,7 @@ describe("PassivationManager", () => {
 
     manager.register(pid, pid.passivationStrategy());
 
-    await sleep(100);
+    await pause(100);
     expect(pid.isRunning()).toBe(true);
 
     manager.stop();
@@ -137,7 +161,7 @@ describe("PassivationManager", () => {
     manager.register(pid, new TimeBasedStrategy(40));
     manager.stop();
 
-    await sleep(120);
+    await pause(120);
     expect(pid.isRunning()).toBe(true);
 
     await pid.shutdown();
@@ -216,7 +240,10 @@ describe("PassivationManager scheduling", () => {
     const timeouts = [40, 200, 120, 300];
 
     for (let i = 0; i < pids.length; i++) {
-      manager.register(pids[i] as PID, new TimeBasedStrategy(timeouts[i] as number));
+      manager.register(
+        pids[i] as PID,
+        new TimeBasedStrategy(timeouts[i] as number),
+      );
     }
 
     for (const pid of pids) {
@@ -272,7 +299,7 @@ describe("PassivationManager scheduling", () => {
       preStart(): void {}
 
       async receive(): Promise<void> {
-        await sleep(140);
+        await pause(140);
         this.done++;
       }
 
@@ -287,7 +314,7 @@ describe("PassivationManager scheduling", () => {
     external.tell(pid, "work");
 
     // The deadline passes while the message is still being processed.
-    await sleep(80);
+    await pause(80);
     expect(pid.isRunning()).toBe(true);
 
     await expect.poll(() => pid.isRunning(), { timeout: 2000 }).toBe(false);
@@ -319,7 +346,7 @@ describe("PassivationManager scheduling", () => {
     await expect.poll(() => pid.isSuspended()).toBe(true);
 
     // The schedule is kept paused, not pruned, while suspended.
-    await sleep(120);
+    await pause(120);
     expect(pid.isSuspended()).toBe(true);
 
     // Once reinstated, the kept schedule passivates the idle actor.
@@ -338,7 +365,9 @@ describe("PassivationManager scheduling", () => {
 
     // Force the inconsistent state the guard protects against: the entry
     // is tracked but claims not to be enqueued.
-    const internals = manager as unknown as { entries: Map<string, { index: number }> };
+    const internals = manager as unknown as {
+      entries: Map<string, { index: number }>;
+    };
     for (const entry of internals.entries.values()) {
       entry.index = -1;
     }

@@ -22,7 +22,119 @@
  * SOFTWARE.
  */
 
+import { execSync } from "node:child_process";
+import { arch, availableParallelism, cpus, platform, release, totalmem } from "node:os";
 import { PerformanceObserver } from "node:perf_hooks";
+
+/** Reads one sysctl value, or undefined where sysctl does not exist. */
+function sysctl(name: string): string | undefined {
+  try {
+    return execSync(`sysctl -n ${name}`, { stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim();
+  } catch {
+    return undefined;
+  }
+}
+
+let machinePrinted = false;
+
+/** Left margin on every printed line, so each report reads as one framed
+ * block rather than text flush against the terminal edge. */
+const INDENT = "  ";
+
+/** The gutter between table columns. */
+const GUTTER = "  ";
+
+/**
+ * Prints the machine the numbers were measured on: CPU brand and model,
+ * core topology (performance and efficiency cores where the OS exposes
+ * them), memory, and the runtime versions, as two dense lines: hardware
+ * then software. Throughput numbers mean nothing without this context,
+ * so every report leads with it; printing is once per process.
+ */
+export function printMachine(): void {
+  if (machinePrinted) {
+    return;
+  }
+
+  machinePrinted = true;
+  const processors = cpus();
+  const brand = processors[0]?.model ?? "unknown cpu";
+
+  let topology = `${processors.length} cores`;
+  const model = platform() === "darwin" ? sysctl("hw.model") : undefined;
+  const performance = platform() === "darwin" ? sysctl("hw.perflevel0.logicalcpu") : undefined;
+  const efficiency = platform() === "darwin" ? sysctl("hw.perflevel1.logicalcpu") : undefined;
+  if (performance !== undefined && efficiency !== undefined) {
+    topology += ` (${performance}P + ${efficiency}E)`;
+  }
+
+  const hardware = [
+    brand,
+    `${model ?? platform()} (${arch()})`,
+    topology,
+    `${Math.round(totalmem() / 1024 ** 3)} GB`,
+  ];
+  const software = [
+    `node ${process.version}`,
+    `v8 ${process.versions.v8}`,
+    `${platform()} ${release()}`,
+    `availableParallelism ${availableParallelism()}`,
+  ];
+
+  console.log("");
+  console.log(INDENT + hardware.join("  ·  "));
+  console.log(INDENT + software.join("  ·  "));
+}
+
+/**
+ * Prints one titled table block: a heading over a full-width rule, the
+ * table with a per-column underline and right-aligned value columns, and
+ * an optional caption. Every benchmark report is one or more of these, so
+ * the whole suite reads with a single consistent frame.
+ */
+export function printBlock(
+  title: string,
+  headers: string[],
+  rows: string[][],
+  caption?: string | string[],
+): void {
+  const widths = headers.map((header, column) =>
+    Math.max(header.length, ...rows.map((row) => (row[column] ?? "").length)),
+  );
+  const width = widths.reduce((sum, w) => sum + w, 0) + GUTTER.length * (widths.length - 1);
+  const cell = (cells: string[]): string =>
+    INDENT +
+    cells
+      .map((value, column) =>
+        column === 0
+          ? (value ?? "").padEnd(widths[column] as number)
+          : (value ?? "").padStart(widths[column] as number),
+      )
+      .join(GUTTER);
+
+  const out: string[] = [""];
+  out.push(INDENT + title);
+  out.push(INDENT + "─".repeat(Math.max(width, title.length)));
+  out.push(cell(headers));
+  out.push(INDENT + widths.map((w) => "─".repeat(w)).join(GUTTER));
+  for (const row of rows) {
+    out.push(cell(row));
+  }
+
+  if (caption !== undefined) {
+    out.push("");
+    const lines = (Array.isArray(caption) ? caption : [caption]).flatMap((line) =>
+      line.split("\n"),
+    );
+    for (const line of lines) {
+      out.push(INDENT + INDENT + line);
+    }
+  }
+
+  console.log(out.join("\n"));
+}
 
 /**
  * One measurable workload: an operation that sends and fully processes
@@ -156,17 +268,14 @@ function formatBytes(bytes: number | null): string {
   return bytes === null ? "n/a" : `${Math.round(bytes)} B`;
 }
 
-/** Prints the scenario reports as an aligned, human-readable table. */
-export function printReport(reports: ScenarioReport[]): void {
-  const headers = [
-    "scenario",
-    "msgs/sec",
-    "mean/op",
-    "p99/op",
-    "spread",
-    "alloc/msg",
-    "gc while sampling",
-  ];
+/**
+ * Prints one benchmark suite: the machine header (once per process), the
+ * titled table of scenarios, and the methodology notes under it.
+ */
+export function printReport(reports: ScenarioReport[], heading: string): void {
+  printMachine();
+
+  const headers = ["scenario", "msgs/sec", "mean", "p99", "spread", "alloc", "gc (count / time)"];
   const rows = reports.map((report) => [
     report.name,
     formatRate(report.messagesPerSecond),
@@ -174,40 +283,16 @@ export function printReport(reports: ScenarioReport[]): void {
     `${report.p99Ms.toFixed(2)} ms`,
     `±${report.spreadPercent.toFixed(1)}%`,
     formatBytes(report.bytesPerMessage),
-    `${report.gcCount} runs, ${report.gcTimeMs.toFixed(1)} ms`,
+    `${report.gcCount} / ${report.gcTimeMs.toFixed(1)} ms`,
   ]);
 
-  const widths = headers.map((header, column) =>
-    Math.max(header.length, ...rows.map((row) => (row[column] as string).length)),
-  );
-
-  const line = (cells: string[]): string =>
-    cells
-      .map((cell, column) =>
-        column === 0 ? cell.padEnd(widths[0] as number) : cell.padStart(widths[column] as number),
-      )
-      .join("   ");
-
-  const out: string[] = [];
-  out.push("");
-  out.push(line(headers));
-  out.push(widths.map((width) => "-".repeat(width)).join("   "));
-
-  for (const row of rows) {
-    out.push(line(row));
-  }
-
-  out.push("");
-  out.push(
-    `each op sends one batch and awaits full processing; ${SAMPLE_OPS} ops sampled after ${WARMUP_OPS} warmup ops`,
-  );
-  out.push(
-    "spread is the relative standard deviation of the sampled op times; rate deltas inside it are noise, not regressions",
-  );
-  out.push(
+  const notes = [
+    `each op sends and fully processes one batch (${SAMPLE_OPS} sampled, ${WARMUP_OPS} warmup)`,
+    "spread is the relative standard deviation of op times; deltas within it are noise, not regressions",
     exposedGc === undefined
-      ? "alloc/msg needs --expose-gc; run through `pnpm bench`"
-      : `alloc/msg is the median heap growth of ${ALLOC_OPS} freshly collected ops, divided by the batch size`,
-  );
-  console.log(out.join("\n"));
+      ? "alloc needs --expose-gc; run through `pnpm bench`"
+      : `alloc is the median heap growth of ${ALLOC_OPS} freshly collected ops, divided by batch size`,
+  ].map((note) => `·  ${note}`);
+
+  printBlock(heading, headers, rows, notes);
 }

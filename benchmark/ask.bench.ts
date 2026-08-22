@@ -147,6 +147,6 @@ describe("ask", () => {
       reports.push(await runScenario(scenario));
     }
 
-    printReport(reports);
+    printReport(reports, "ask  ·  request / response round trips");
   });
 });

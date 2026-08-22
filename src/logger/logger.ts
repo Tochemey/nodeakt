@@ -46,6 +46,8 @@ export type Fields = Record<string, unknown>;
 export type LazyFields = Fields | (() => Fields);
 
 /** The numeric weight of each level; entries at or above a logger's
+ *
+ * @internal
  * configured weight are emitted. */
 export const levelWeight: Record<Level, number> = {
   debug: 10,

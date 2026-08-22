@@ -51,9 +51,35 @@ export class Terminated {
 }
 
 /**
+ * Deadletter is the event published for a message the runtime could not
+ * hand to its receiver: the target was not running, or its mailbox
+ * rejected the delivery. Consume these through `ActorSystem.subscribe`.
+ *
+ * Runtime announcements (`PostStart`, `Terminated`, and internal
+ * commands) never become dead letters.
+ */
+export class Deadletter {
+  constructor(
+    /** The canonical path string of the sending actor, or undefined for
+     * a detached delivery that carried no sender. */
+    readonly sender: string | undefined,
+    /** The canonical path string of the actor that could not receive. */
+    readonly receiver: string,
+    /** The message that was not handled. */
+    readonly message: unknown,
+    /** When the failed send happened, in milliseconds since the epoch. */
+    readonly sendTime: number,
+    /** Why the message was not handled, the failing error's message. */
+    readonly reason: string,
+  ) {}
+}
+
+/**
  * RuntimeCommand is the internal base of messages the runtime consumes in
  * the receive loop without delivering them to a behavior. Sharing one
  * base keeps the hot path at a single `instanceof` check per message.
+ *
+ * @internal
  */
 export class RuntimeCommand {}
 
@@ -74,6 +100,8 @@ export class PoisonPill extends RuntimeCommand {}
  * in-actor request back through the requester's mailbox, so the
  * continuation runs on the requester's own turn. The runtime consumes it
  * in the receive loop; it is never delivered to a behavior.
+ *
+ * @internal
  */
 export class RequestReply extends RuntimeCommand {
   constructor(
@@ -102,6 +130,8 @@ export class PanicSignal {
  * Panicking is the internal control message a failing actor sends to its
  * parent after resolving a supervision directive. The runtime consumes it
  * in the parent's receive loop; it is never delivered to a behavior.
+ *
+ * @internal
  */
 export class Panicking extends RuntimeCommand {
   constructor(

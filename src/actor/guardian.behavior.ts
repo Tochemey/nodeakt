@@ -34,6 +34,8 @@ import { isSystemName } from "./reserved";
  * honor its guarantees. Every other message (PostStart, Terminated, and
  * strays) is acknowledged without action until logging and death-watch
  * handling arrive.
+ *
+ * @internal
  */
 export function guardianReceive(ctx: ReceiveContext): void {
   const msg = ctx.message;

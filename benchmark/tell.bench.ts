@@ -231,6 +231,6 @@ describe("tell", () => {
       reports.push(await runScenario(scenario));
     }
 
-    printReport(reports);
+    printReport(reports, "tell  ·  fire-and-forget throughput");
   });
 });

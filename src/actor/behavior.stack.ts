@@ -39,6 +39,8 @@ export type Behavior = (ctx: ReceiveContext) => void | Promise<void>;
  * previous behavior and makes the new one current; popping discards the
  * current behavior and reverts to the previous one; resetting empties the
  * stack so the actor falls back to its default receive handler.
+ *
+ * @internal
  */
 export class BehaviorStack {
   private readonly items: Behavior[] = [];

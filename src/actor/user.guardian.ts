@@ -32,6 +32,8 @@ import type { ReceiveContext } from "./receive.context";
  *
  * It currently acknowledges lifecycle notifications without action;
  * supervision of user actors builds on it as the runtime grows.
+ *
+ * @internal
  */
 export class UserGuardian implements Actor {
   preStart(): void {}

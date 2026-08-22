@@ -28,24 +28,47 @@
  * enforces this at spawn time.
  */
 
-/** Prefix that marks an actor name as belonging to the runtime. */
+/** Prefix that marks an actor name as belonging to the runtime.
+ *
+ * @internal
+ */
 export const reservedNamesPrefix = "NodeAkt";
 
-/** Name of the root guardian, the top of the actor tree. */
+/** Name of the root guardian, the top of the actor tree.
+ *
+ * @internal
+ */
 export const rootGuardianName = "NodeAktRootGuardian";
 
-/** Name of the system guardian, the ancestor of runtime-created actors. */
+/** Name of the system guardian, the ancestor of runtime-created actors.
+ *
+ * @internal
+ */
 export const systemGuardianName = "NodeAktSystemGuardian";
 
-/** Name of the user guardian, the ancestor of user-created actors. */
+/** Name of the user guardian, the ancestor of user-created actors.
+ *
+ * @internal
+ */
 export const userGuardianName = "NodeAktUserGuardian";
 
-/** Name of the NoSender sentinel PID. */
+/** Name of the NoSender sentinel PID.
+ *
+ * @internal
+ */
 export const noSenderName = "NodeAktNoSender";
+
+/** Name of the dead-letter actor, the sink of unhandled messages.
+ *
+ * @internal
+ */
+export const deadletterName = "NodeAktDeadletter";
 
 /**
  * Reports whether the given actor name belongs to the runtime, that is,
  * whether it carries the reserved prefix.
+ *
+ * @internal
  */
 export function isSystemName(name: string): boolean {
   return name.startsWith(reservedNamesPrefix);

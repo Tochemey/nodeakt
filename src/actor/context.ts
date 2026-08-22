@@ -42,6 +42,13 @@ export class Context {
   private readonly _actorSystem: ActorSystem;
   private readonly _actorName: string;
 
+  /**
+   * Runtime plumbing: the actor system builds a Context around an actor
+   * and hands it to `preStart` and `postStop`. Developers receive it;
+   * they never construct one.
+   *
+   * @internal
+   */
   constructor(actorSystem: ActorSystem, actorName: string) {
     this._actorName = actorName;
     this._actorSystem = actorSystem;

@@ -29,32 +29,12 @@ export type { Behavior } from "./actor/behavior.stack";
 export { BoundedMailbox } from "./actor/bounded.mailbox";
 export { Context } from "./actor/context";
 export {
-  ActorInitializationError,
-  ActorNotFoundError,
-  ErrActorAlreadyExists,
-  ErrActorSystemNotStarted,
-  ErrDead,
-  ErrInvalidActorName,
-  ErrInvalidActorSystemName,
-  ErrInvalidReentrancyMode,
-  ErrInvalidTimeout,
-  ErrMailboxDisposed,
-  ErrMailboxFull,
-  ErrNameRequired,
-  ErrReentrancyDisabled,
-  ErrReentrancyInFlightLimit,
-  ErrRequestCanceled,
-  ErrRequestTimeout,
-  ErrReservedName,
-  ErrStashBufferEmpty,
-  ErrUndefinedActor,
-} from "./actor/errors";
-export {
   type SenderKeyFunc,
   UnboundedFairMailbox,
 } from "./actor/fair.mailbox";
 export type { Mailbox } from "./actor/mailbox";
 export {
+  Deadletter,
   PanicSignal,
   PoisonPill,
   PostStart,
@@ -76,6 +56,7 @@ export {
   UnboundedPriorityMailbox,
   UnboundedStablePriorityMailbox,
 } from "./actor/priority.mailbox";
+export { Props } from "./actor/props";
 export { ReceiveContext } from "./actor/receive.context";
 export type {
   Reentrancy,
@@ -99,6 +80,31 @@ export {
   type SupervisorOptions,
 } from "./actor/supervisor";
 export { UnboundedMailbox } from "./actor/unbounded.mailbox";
+export {
+  ActorInitializationError,
+  ActorNotFoundError,
+  ActorNotRegisteredError,
+  ErrActorAlreadyExists,
+  ErrActorSystemNotStarted,
+  ErrDead,
+  ErrInvalidActorName,
+  ErrInvalidActorSystemName,
+  ErrInvalidReentrancyMode,
+  ErrInvalidTimeout,
+  ErrMailboxDisposed,
+  ErrMailboxFull,
+  ErrNameRequired,
+  ErrReentrancyDisabled,
+  ErrReentrancyInFlightLimit,
+  ErrRequestCanceled,
+  ErrRequestTimeout,
+  ErrReservedName,
+  ErrStashBufferEmpty,
+  ErrUndefinedActor,
+  ErrUnhandled,
+} from "./errors/errors";
+export { EventStream, type StreamSubscriber } from "./eventstream/eventstream";
 export { discardLogger } from "./logger/discard.logger";
 export { defaultLogger, JsonLogger, type JsonLoggerOptions } from "./logger/json.logger";
 export type { EntryLevel, Fields, LazyFields, Level, Logger } from "./logger/logger";
+export { registerActor, registerMessage } from "./runtime/registration";

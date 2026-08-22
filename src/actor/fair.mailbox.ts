@@ -22,7 +22,7 @@
  * SOFTWARE.
  */
 
-import { ErrMailboxDisposed } from "./errors";
+import { ErrMailboxDisposed } from "../errors/errors";
 import type { Mailbox } from "./mailbox";
 import type { ReceiveContext } from "./receive.context";
 import { UnboundedMailbox } from "./unbounded.mailbox";

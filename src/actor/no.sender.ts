@@ -31,6 +31,8 @@ import type { Actor } from "./actor";
  * sender of every message sent from outside an actor.
  *
  * It never reacts to a message: anything told to it is ignored.
+ *
+ * @internal
  */
 export class NoSender implements Actor {
   preStart(): void {}

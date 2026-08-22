@@ -22,7 +22,7 @@
  * SOFTWARE.
  */
 
-import { ErrMailboxDisposed, ErrMailboxFull } from "./errors";
+import { ErrMailboxDisposed, ErrMailboxFull } from "../errors/errors";
 import type { Mailbox } from "./mailbox";
 import type { ReceiveContext } from "./receive.context";
 

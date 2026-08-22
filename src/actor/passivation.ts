@@ -92,5 +92,7 @@ export type PassivationStrategy =
  * lived, never passivated. Silently stopping an actor after an idle
  * window is surprising as a default, so passivation must be chosen
  * deliberately per actor.
+ *
+ * @internal
  */
 export const defaultPassivationStrategy: PassivationStrategy = new LongLivedStrategy();

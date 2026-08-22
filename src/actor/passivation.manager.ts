@@ -53,6 +53,8 @@ interface Entry {
  *
  * The shared timer is unreferenced, so a pending passivation never keeps
  * the process alive on its own.
+ *
+ * @internal
  */
 export class PassivationManager {
   private readonly entries = new Map<PID, Entry>();

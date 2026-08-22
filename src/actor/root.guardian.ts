@@ -35,6 +35,8 @@ import type { ReceiveContext } from "./receive.context";
  * signals a panic while the system is running, the whole actor system is
  * shut down: a dead runtime actor means the system can no longer honor
  * its guarantees.
+ *
+ * @internal
  */
 export class RootGuardian implements Actor {
   preStart(): void {}

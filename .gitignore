@@ -36,3 +36,6 @@ Thumbs.db
 *.swo
 *~
 pkg/
+.claude/
+.cusor/
+.cache/

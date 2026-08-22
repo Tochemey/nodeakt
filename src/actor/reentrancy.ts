@@ -22,7 +22,7 @@
  * SOFTWARE.
  */
 
-import { ErrRequestCanceled } from "./errors";
+import { ErrRequestCanceled } from "../errors/errors";
 import type { PID } from "./pid";
 import { cancelAsk, type ReceiveContext } from "./receive.context";
 

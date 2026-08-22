@@ -25,6 +25,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import type { Actor } from "../src/actor/actor";
 import { ActorSystem } from "../src/actor/actor.system";
+import { printBlock, printMachine } from "./harness";
 
 /**
  * Resident density of idle actors: how much heap one spawned, started,
@@ -86,7 +87,23 @@ describe("idle actor density", () => {
       gcExposed: typeof gc === "function",
     };
 
-    console.log(JSON.stringify(report, null, 2));
+    printMachine();
+    printBlock(
+      "density  ·  idle empty actor heap footprint",
+      ["measure", "value"],
+      [
+        ["idle actors", report.count.toLocaleString()],
+        ["heap per actor", `${report.heapBytesPerActor} B`],
+        ["rss per actor", `${report.rssBytesPerActor} B`],
+        ["heap total", `${report.heapMB} MB`],
+        ["rss total", `${report.rssMB} MB`],
+        ["heap at 1M actors", `${report.millionActorsHeapGB} GB`],
+        ["rss at 1M actors", `${report.millionActorsRssGB} GB`],
+      ],
+      report.gcExposed
+        ? "·  target: idle actor heap <= 512 B"
+        : "·  figures need --expose-gc for accurate heap; run through `pnpm bench`",
+    );
 
     expect(heapPer, "idle actor heap target is ≤ 512 bytes").toBeLessThanOrEqual(512);
   });

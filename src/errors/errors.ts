@@ -69,6 +69,10 @@ export const ErrReentrancyInFlightLimit: Error = new Error("reentrancy in-flight
 /** Completes a request that was canceled before its reply arrived. */
 export const ErrRequestCanceled: Error = new Error("request canceled");
 
+/** The reason a message routed to dead letters carries when its
+ * receiver marked it unhandled. */
+export const ErrUnhandled: Error = new Error("unhandled message");
+
 /** Returned by `unstash` when the stash buffer holds no message. */
 export const ErrStashBufferEmpty: Error = new Error("stash buffer is empty");
 
@@ -105,6 +109,36 @@ export const ErrActorAlreadyExists: Error = new Error("actor already exists");
  * which is never a valid target for parent-child operations.
  */
 export const ErrUndefinedActor: Error = new Error("actor is not defined");
+
+/**
+ * Raised when a message would cross an isolate boundary but its class
+ * is not in the message registry, either while encoding on the sending
+ * side or while decoding on the receiving side. Register the class on
+ * every isolate that sends or receives it.
+ *
+ * @internal
+ */
+export class TypeNotRegisteredError extends Error {
+  constructor(type: string) {
+    super(`message type "${type}" is not registered`);
+    this.name = "TypeNotRegisteredError";
+  }
+}
+
+/**
+ * Raised when spawning `Props` whose actor class was never registered.
+ * Without a registration the runtime cannot know which module another
+ * isolate must import to construct the actor; call `registerActor` at
+ * module scope in the file that defines the class.
+ */
+export class ActorNotRegisteredError extends Error {
+  constructor(actorName: string) {
+    super(
+      `actor class "${actorName}" is not registered; call registerActor(${actorName}) in its module`,
+    );
+    this.name = "ActorNotRegisteredError";
+  }
+}
 
 /**
  * Raised when looking up or stopping an actor that is not in the tree

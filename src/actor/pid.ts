@@ -22,10 +22,6 @@
  * SOFTWARE.
  */
 
-import type { Actor } from "./actor";
-import type { ActorSystem } from "./actor.system";
-import { type Behavior, BehaviorStack } from "./behavior.stack";
-import { Context } from "./context";
 import {
   ActorInitializationError,
   ActorNotFoundError,
@@ -39,7 +35,13 @@ import {
   ErrReservedName,
   ErrStashBufferEmpty,
   ErrUndefinedActor,
-} from "./errors";
+  ErrUnhandled,
+} from "../errors/errors";
+import type { Actor } from "./actor";
+import { ActorRef, type IsolateRoute } from "./actor.ref";
+import type { ActorSystem } from "./actor.system";
+import { type Behavior, BehaviorStack } from "./behavior.stack";
+import { Context } from "./context";
 import type { Mailbox } from "./mailbox";
 // biome-ignore format: one line per import
 import {
@@ -209,6 +211,16 @@ export class PID {
   /** Created on first idle wait; only shutdown and restart ever park. */
   private _idleResolvers: Array<() => void> | null = null;
 
+  /** Created on first {@link onStopped} registration; invoked once when
+   * shutdown completes. */
+  private _stopListeners: Array<() => void> | null = null;
+
+  /** The transport of a PID whose actor lives on another isolate; null
+   * for every local actor, so the hot paths pay one predictable null
+   * check. Set once by the runtime's routed-handle factory, never for
+   * an actor of this isolate. */
+  private _route: IsolateRoute | null = null;
+
   private _latestActivity = 0;
   private _processedCount = 0;
   private _restartCount = 0;
@@ -236,6 +248,15 @@ export class PID {
    * with reentrancy enabled. */
   private readonly _reentrancy: ReentrancyState | null;
 
+  /**
+   * Runtime plumbing: the actor system mints a PID as it spawns an
+   * actor, wiring the instance to its mailbox, supervisor, and tree.
+   * Developers receive PIDs from `spawn` and `ctx.self`; they never
+   * construct one, because a hand-built PID sits in no tree and drives
+   * no receive loop.
+   *
+   * @internal
+   */
   constructor(
     actor: Actor,
     path: Path,
@@ -417,9 +438,17 @@ export class PID {
    * logged and does not prevent the stop.
    *
    * Repeated calls return the same promise; shutting down an actor that
-   * never started is a no-op.
+   * never started is a no-op. An actor owned by another isolate cannot
+   * be stopped through its handle: the rejection is loud instead of a
+   * silent no-op that would differ from local behavior.
    */
   shutdown(): Promise<void> {
+    if (this._route !== null) {
+      return Promise.reject(
+        new TypeError("an actor owned by another isolate cannot be stopped through its handle"),
+      );
+    }
+
     if (this._shutdown !== null) {
       return this._shutdown;
     }
@@ -482,6 +511,14 @@ export class PID {
     // A dead PID must not pin the hierarchy: drop the tree reference so a
     // retained handle to this actor keeps nothing else alive.
     this._tree = null;
+
+    const listeners = this._stopListeners;
+    if (listeners !== null) {
+      this._stopListeners = null;
+      for (const listener of listeners) {
+        listener();
+      }
+    }
   }
 
   /**
@@ -551,10 +588,36 @@ export class PID {
     }
   }
 
-  /** Revives the given suspended actor, letting it process messages
-   * again. A no-op when `cid` is not suspended. */
-  reinstate(cid: PID): void {
-    cid.doReinstate();
+  /**
+   * Revives a suspended actor, letting it process messages again. Pass
+   * the actor's `PID` to reinstate a handle the caller already holds, or
+   * a `string` to reinstate a child of this actor by the name it was
+   * spawned under. Reinstating an actor that is not suspended is a no-op.
+   *
+   * @param target - The suspended actor's PID, or the name of a
+   * suspended child of this actor.
+   *
+   * @throws The {@link ErrDead} sentinel when a name is given and this
+   * actor is not running.
+   * @throws {@link ActorNotFoundError} when a name is given and this
+   * actor has no child under it.
+   */
+  reinstate(target: PID | string): void {
+    if (typeof target === "string") {
+      if (!this.isRunning()) {
+        throw ErrDead;
+      }
+
+      const cid = this._tree?.child(this, target);
+      if (cid === undefined) {
+        throw new ActorNotFoundError(target);
+      }
+
+      cid.doReinstate();
+      return;
+    }
+
+    target.doReinstate();
   }
 
   /**
@@ -573,6 +636,11 @@ export class PID {
    * message (for example a bounded mailbox at capacity).
    */
   tell(to: PID, message: unknown): Error | null {
+    const route = to._route;
+    if (route !== null) {
+      return route.tell(to._path, message, this);
+    }
+
     return to.doReceive(createReceiveContext(message, to, this));
   }
 
@@ -602,7 +670,13 @@ export class PID {
    * the mailbox rejection error when delivery fails.
    */
   ask(to: PID, message: unknown, timeout: number): Promise<unknown> {
+    const route = to._route;
+    if (route !== null) {
+      return route.ask(to._path, message, timeout, this);
+    }
+
     if (!to.isRunning()) {
+      to.deadletter(this, message, ErrDead);
       return Promise.reject(ErrDead);
     }
 
@@ -617,11 +691,51 @@ export class PID {
     const err = to._mailbox.enqueue(ctx);
     if (err !== null) {
       cancelAsk(ctx);
+      to.deadletter(this, message, err);
       return Promise.reject(err);
     }
 
     to.schedule();
     return reply;
+  }
+
+  /**
+   * Delivers a message to this actor and routes the response into
+   * callbacks instead of a promise: `resolve` receives the value passed
+   * to `ReceiveContext.response`, `reject` the failure, or the coarse
+   * expiry when `timeout` is positive. Runtime plumbing for the
+   * receiving side of a transport, where the response must travel back
+   * as an envelope rather than settle a local promise.
+   *
+   * @returns `null` when the message entered the mailbox, the
+   * {@link ErrDead} sentinel when this actor is not running, or the
+   * mailbox rejection error. On a failure the message is routed to
+   * dead letters here and neither callback runs.
+   *
+   * @internal
+   */
+  deliverAsk(
+    message: unknown,
+    sender: PID,
+    timeout: number,
+    resolve: (value: unknown) => void,
+    reject: (reason: Error) => void,
+  ): Error | null {
+    if (!this.isRunning()) {
+      this.deadletter(sender, message, ErrDead);
+      return ErrDead;
+    }
+
+    const ctx = createRequestContext(message, this, sender, timeout, resolve, reject);
+    const err = this._mailbox.enqueue(ctx);
+    if (err !== null) {
+      cancelAsk(ctx);
+      this.deadletter(sender, message, err);
+      return err;
+    }
+
+    this.schedule();
+    return null;
   }
 
   /**
@@ -633,32 +747,25 @@ export class PID {
    * @internal
    */
   request(to: PID, message: unknown, options?: RequestOptions): RequestCall {
-    const state = this._reentrancy;
-    if (state === null) {
-      return completedRequest(ErrReentrancyDisabled);
+    const route = to._route;
+    if (route !== null) {
+      return route.request(to._path, message, this, options);
     }
 
-    const mode = options?.mode ?? state.mode;
-    if (mode === "off") {
-      return completedRequest(ErrReentrancyDisabled);
-    }
-
-    if (!isValidReentrancyMode(mode)) {
-      return completedRequest(ErrInvalidReentrancyMode);
-    }
-
-    if (state.maxInFlight !== 0 && state.inFlight >= state.maxInFlight) {
-      return completedRequest(ErrReentrancyInFlightLimit);
+    const opened = this.openRequest(options);
+    if (opened instanceof Error) {
+      return completedRequest(opened);
     }
 
     if (!to.isRunning()) {
+      to.deadletter(this, message, ErrDead);
       return completedRequest(ErrDead);
     }
 
     // The handle severs its delivery link the moment the outcome is
     // decided at the source, so a cancel can never touch a context the
     // target's loop has already recycled.
-    const handle = new RequestHandle(this, mode === "stashNonReentrant");
+    const handle = opened;
     const ctx = createRequestContext(
       message,
       to,
@@ -678,16 +785,64 @@ export class PID {
     const err = to._mailbox.enqueue(ctx);
     if (err !== null) {
       cancelAsk(ctx);
+      to.deadletter(this, message, err);
       return completedRequest(err);
     }
 
+    this.admitRequest(handle);
+    to.schedule();
+    return handle;
+  }
+
+  /**
+   * Runs request admission for this actor and mints the handle of one
+   * request whose delivery the caller performs: reentrancy must be
+   * enabled, the mode valid, and the in-flight cap not reached. The
+   * returned handle is not yet counted; call {@link admitRequest} once
+   * delivery has been accepted. Runtime plumbing shared by
+   * {@link request} and the transport layer.
+   *
+   * @returns The open handle, or the typed sentinel refusing admission.
+   *
+   * @internal
+   */
+  openRequest(options?: RequestOptions): RequestHandle | Error {
+    const state = this._reentrancy;
+    if (state === null) {
+      return ErrReentrancyDisabled;
+    }
+
+    const mode = options?.mode ?? state.mode;
+    if (mode === "off") {
+      return ErrReentrancyDisabled;
+    }
+
+    if (!isValidReentrancyMode(mode)) {
+      return ErrInvalidReentrancyMode;
+    }
+
+    if (state.maxInFlight !== 0 && state.inFlight >= state.maxInFlight) {
+      return ErrReentrancyInFlightLimit;
+    }
+
+    return new RequestHandle(this, mode === "stashNonReentrant");
+  }
+
+  /**
+   * Commits an admitted request into this actor's in-flight bookkeeping
+   * once its delivery has been accepted; the count drops again when the
+   * handle settles on this actor's turn. Runtime plumbing shared by
+   * {@link request} and the transport layer.
+   *
+   * @internal
+   */
+  admitRequest(handle: RequestHandle): void {
+    const state = this._reentrancy as ReentrancyState;
     state.inFlight++;
+
     if (handle.stashMode) {
       state.paused++;
     }
-
-    to.schedule();
-    return handle;
   }
 
   /**
@@ -855,6 +1010,12 @@ export class PID {
    * alive.
    */
   watch(cid: PID): void {
+    const route = cid._route;
+    if (route !== null) {
+      route.watch(cid._path, this);
+      return;
+    }
+
     if (!cid.isRunning()) {
       return;
     }
@@ -864,7 +1025,31 @@ export class PID {
 
   /** Cancels a {@link watch} registration on `cid`. */
   unWatch(cid: PID): void {
+    const route = cid._route;
+    if (route !== null) {
+      route.unwatch(cid._path, this);
+      return;
+    }
+
     cid._tree?.removeWatcher(cid, this);
+  }
+
+  /**
+   * Registers a listener invoked once this actor's shutdown has fully
+   * completed: children stopped, `postStop` run, watchers notified. A
+   * restart is not a stop and never fires it. Runtime plumbing for the
+   * bookkeeping that must observe an actor's end without being an
+   * actor, such as freeing a placed top-level name; developers watch
+   * actors with {@link watch} instead.
+   *
+   * @internal
+   */
+  onStopped(listener: () => void): void {
+    if (this._stopListeners === null) {
+      this._stopListeners = [];
+    }
+
+    this._stopListeners.push(listener);
   }
 
   /**
@@ -966,17 +1151,89 @@ export class PID {
   /** Enqueues a receive context and schedules the receive loop. */
   private doReceive(ctx: ReceiveContext): Error | null {
     if (!this.isRunning()) {
+      this.deadletter(ctx.sender, ctx.message, ErrDead);
       return ErrDead;
     }
 
     const err = this._mailbox.enqueue(ctx);
     if (err !== null) {
-      // TODO: deadletter later on
+      this.deadletter(ctx.sender, ctx.message, err);
       return err;
     }
 
     this.schedule();
     return null;
+  }
+
+  /**
+   * Publishes a {@link Deadletter} for a message this actor could not
+   * receive. Runtime announcements and internal commands are skipped:
+   * they are the runtime talking to itself, and their loss is already
+   * handled where they are sent.
+   */
+  private deadletter(sender: PID | undefined, message: unknown, err: Error): void {
+    this._actorSystem.toDeadletter(sender?.path().toString(), this._path.toString(), message, err);
+  }
+
+  /**
+   * Returns an {@link ActorRef} addressing this actor, pinned to its
+   * current incarnation: once this actor stops, the ref is dead even
+   * when a new actor reuses the name. Runtime plumbing for the
+   * transport layer; developers interact with actors through PIDs.
+   *
+   * @internal
+   */
+  ref(): ActorRef {
+    return new ActorRef(this._actorSystem, this._path, this._route);
+  }
+
+  /**
+   * Registers `watcher` to receive a {@link Terminated} message when
+   * this actor stops, without consulting the watcher's own routing:
+   * the receiving-side half of a cross-isolate watch, where the
+   * watcher is a routed handle and the registration must land in this
+   * local actor's tree. Watching a non-running actor is a no-op,
+   * mirroring {@link watch}.
+   *
+   * @internal
+   */
+  addWatcher(watcher: PID): void {
+    if (!this.isRunning()) {
+      return;
+    }
+
+    this.tree().addWatcher(this, watcher);
+  }
+
+  /** Cancels an {@link addWatcher} registration; unknown watchers and
+   * stopped actors are a no-op.
+   *
+   * @internal
+   */
+  removeWatcher(watcher: PID): void {
+    this._tree?.removeWatcher(this, watcher);
+  }
+
+  /**
+   * Marks this PID as the handle of an actor owned by another isolate:
+   * every send, watch, and request routes through the given transport
+   * instead of this isolate's tree. Runtime plumbing for the routed
+   * handle factory; never call it on a local actor's PID.
+   *
+   * @internal
+   */
+  setRoute(route: IsolateRoute): void {
+    this._route = route;
+  }
+
+  /**
+   * Routes the given delivery to dead letters as unhandled. Runtime
+   * plumbing for `ReceiveContext.unhandled`.
+   *
+   * @internal
+   */
+  unhandled(ctx: ReceiveContext): void {
+    this.deadletter(ctx.sender, ctx.message, ErrUnhandled);
   }
 
   /**

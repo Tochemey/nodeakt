@@ -1,8 +1,37 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 GoAkt Team
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Actor } from "../src/actor/actor";
 import { ActorSystem } from "../src/actor/actor.system";
 import { BoundedMailbox } from "../src/actor/bounded.mailbox";
 import type { Context } from "../src/actor/context";
+import { newPath } from "../src/actor/path";
+import { PID } from "../src/actor/pid";
+import { createReceiveContext, type ReceiveContext } from "../src/actor/receive.context";
+import type { SpawnOptions } from "../src/actor/spawn.options";
+import { ResumeDirective, Supervisor } from "../src/actor/supervisor";
 import {
   ActorInitializationError,
   ActorNotFoundError,
@@ -10,12 +39,7 @@ import {
   ErrMailboxFull,
   ErrStashBufferEmpty,
   ErrUndefinedActor,
-} from "../src/actor/errors";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import { createReceiveContext, type ReceiveContext } from "../src/actor/receive.context";
-import type { SpawnOptions } from "../src/actor/spawn.options";
-import { ResumeDirective, Supervisor } from "../src/actor/supervisor";
+} from "../src/errors/errors";
 
 // A real but never started system: standalone PIDs receive no PostStart
 // announcement because the NoSender actor does not exist.
@@ -291,6 +315,48 @@ describe("PID shutdown", () => {
       this.stopped++;
     }
   }
+
+  it("ignores transport watch registrations on a non-running actor", () => {
+    const pid = makePid(new Collector(), "unwatched-target");
+    const watcher = makePid(new Collector(), "transport-watcher");
+
+    // Never started: registering and removing are both no-ops.
+    pid.addWatcher(watcher);
+    pid.removeWatcher(watcher);
+    expect(pid.isRunning()).toBe(false);
+  });
+
+  it("invokes onStopped listeners once shutdown completes, in order", async () => {
+    const pid = makePid(new Collector());
+    await pid.start();
+
+    const calls: string[] = [];
+    pid.onStopped(() => calls.push("first"));
+    pid.onStopped(() => calls.push("second"));
+
+    await pid.shutdown();
+    expect(calls).toEqual(["first", "second"]);
+
+    // Shutting down again must not refire the listeners.
+    await pid.shutdown();
+    expect(calls).toEqual(["first", "second"]);
+  });
+
+  it("does not treat a restart as a stop", async () => {
+    const pid = makePid(new Collector());
+    await pid.start();
+
+    let stops = 0;
+    pid.onStopped(() => {
+      stops++;
+    });
+
+    await pid.restart();
+    expect(stops).toBe(0);
+
+    await pid.shutdown();
+    expect(stops).toBe(1);
+  });
 
   it("drains the mailbox before running postStop", async () => {
     const actor = new Slow();

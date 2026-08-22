@@ -38,6 +38,8 @@ import type { PID } from "./pid";
  * whole subtree iteratively (no recursion) and drops the tree's
  * references to those actors. Replacing a registration detaches that
  * actor without taking its children.
+ *
+ * @internal
  */
 export class PidTree {
   /** Unparented actors in this tree: the true root plus any actor whose

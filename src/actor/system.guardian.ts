@@ -33,6 +33,8 @@ import type { ReceiveContext } from "./receive.context";
  * Like the root guardian, it shuts the whole actor system down when a
  * runtime actor signals a panic while the system is running, since the
  * runtime cannot operate correctly with one of its own actors dead.
+ *
+ * @internal
  */
 export class SystemGuardian implements Actor {
   preStart(): void {}

@@ -40,6 +40,8 @@ import { UnboundedMailbox } from "./unbounded.mailbox";
  * The buffer is unbounded FIFO. Re-delivery is the owner's job: the actor
  * runtime feeds what `unstash`/`unstashAll` return back into message
  * processing.
+ *
+ * @internal
  */
 export class Stash {
   private readonly buffer = new UnboundedMailbox();

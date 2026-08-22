@@ -240,6 +240,8 @@ export class Supervisor {
 }
 
 /** The supervisor applied to actors spawned without one: any failure
+ *
+ * @internal
  * stops the failing actor. */
 export const defaultSupervisor = new Supervisor();
 
@@ -247,6 +249,8 @@ export const defaultSupervisor = new Supervisor();
  * Computes the exponential backoff delay for the nth consecutive fault:
  * `min(initialDelay * 2^(n-1), maxDelay)` milliseconds. Returns `0` when
  * backoff is disabled or there is no fault.
+ *
+ * @internal
  */
 export function backoffDelay(faults: number, initialDelay: number, maxDelay: number): number {
   if (initialDelay <= 0 || faults < 1) {
