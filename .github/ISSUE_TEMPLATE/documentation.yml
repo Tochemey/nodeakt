@@ -1,0 +1,47 @@
+name: 📘 Documentation
+description: Something in the docs, README, or examples is wrong, unclear, or missing.
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation reports are as valuable as code fixes: if it confused you, it will
+        confuse the next reader too.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem
+      options:
+        - Wrong or outdated (the docs say something the code does not do)
+        - Unclear (correct, but had to be read three times)
+        - Missing (a behavior or API is not documented at all)
+        - Broken example (a snippet or example program does not run)
+        - Typo or formatting
+    validations:
+      required: true
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      description: A link or path to the page, section, or example.
+      placeholder: docs/actor/passivation.md, or the README quickstart
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong or missing
+      description: Quote the current text where it helps.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested improvement
+      description: Optional. How would you phrase or structure it instead?
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to open a pull request for this.

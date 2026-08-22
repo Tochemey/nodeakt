@@ -1,0 +1,55 @@
+name: ✨ Feature request
+description: Propose a new capability or an improvement to an existing one.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before the solution: the strongest feature requests explain
+        a real use case the runtime cannot serve today. The README's "Not there yet"
+        section lists known roadmap items (remoting, persistence, grains, scheduled
+        messages, routers, metrics); a use case for one of those is exactly what helps
+        order that roadmap, so file it here.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you building, and where does nodeakt stop you today?
+      placeholder: I need to broadcast one message to a group of workers, and today I keep the list by hand...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: Optional. A sketch of how you would want to write it. Do not worry about internals.
+      render: TypeScript
+      placeholder: |
+        const pool = await system.spawnRouter("workers", Props.create(Worker), { size: 8, strategy: "roundRobin" });
+        pool.tell(job);
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Workarounds you tried, other libraries' takes on it, and why they fall short.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Actors and messaging (tell / ask / request)
+        - Mailboxes
+        - Supervision and lifecycle
+        - Multi-core runtime (Props, isolates)
+        - Event stream and dead letters
+        - Logging
+        - Documentation and examples
+        - Something else
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to implement this behind a reviewed design.

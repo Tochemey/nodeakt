@@ -7,10 +7,12 @@ on:
     branches: [main]
     paths-ignore:
       - "**/*.md"
+      - ".github/ISSUE_TEMPLATE/**"
   pull_request:
     branches: [main]
     paths-ignore:
       - "**/*.md"
+      - ".github/ISSUE_TEMPLATE/**"
 
 # One in-flight run per ref; a newer commit cancels the older run.
 concurrency:

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Quick question or discussion
+    url: https://join.slack.com/t/oss-r2l2029/shared_invite/zt-42zcqua8y-unSUH0tFlOQzwT_smzYfOQ
+    about: The community Slack is the fastest place for questions, ideas, and help.
+  - name: 🔒 Security vulnerability
+    url: https://github.com/Tochemey/nodeakt/security/policy
+    about: Never report security issues in the public tracker; follow the security policy instead.

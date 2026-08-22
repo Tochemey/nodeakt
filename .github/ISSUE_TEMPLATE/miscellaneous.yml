@@ -1,0 +1,21 @@
+name: 🧩 Miscellaneous
+description: Anything that is not a bug, feature, documentation, or performance report.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Build tooling, CI, packaging, project process, or something that simply does not
+        fit the other forms. For quick questions the community Slack (linked from the
+        README) usually answers faster than an issue.
+  - type: textarea
+    id: description
+    attributes:
+      label: What is on your mind
+      description: Say it plainly; context and links welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Optional. Environment, versions, or related issues if they matter here.

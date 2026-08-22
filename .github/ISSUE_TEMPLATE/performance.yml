@@ -1,0 +1,66 @@
+name: ⚡ Performance
+description: A slowdown, a regression between versions, or throughput below what the benchmarks promise.
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Performance work starts from numbers, so this form asks for them. The repository
+        ships a benchmark suite (see
+        [benchmark/README.md](https://github.com/Tochemey/nodeakt/blob/main/benchmark/README.md));
+        `make bench-baseline` prints sustained tell and ask rates together with the
+        machine line that gives them meaning. A report with measured numbers on a named
+        machine is actionable; "feels slow" is not.
+  - type: textarea
+    id: observation
+    attributes:
+      label: What is slow
+      description: The workload, what rate or latency you observe, and what you expected instead.
+      placeholder: Sequential asks through one actor sustain 1.2M/s on my machine, while the baseline table shows 5.5M/s...
+    validations:
+      required: true
+  - type: textarea
+    id: numbers
+    attributes:
+      label: Measured numbers
+      description: Benchmark output, timings, or profile summaries. Include the machine line the harness prints (CPU, cores, memory, Node version).
+      render: shell
+      placeholder: |
+        Apple M1  ·  8 cores (4P + 4E)  ·  16 GB
+        node v24.19.0
+        tell  5.00 s  119,500,000  23,881,581 msgs/sec
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to reproduce the measurement
+      description: The benchmark or program that produced the numbers, so the same thing can be measured before and after a fix.
+      render: TypeScript
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Version(s)
+      description: For a regression, name the last fast version and the first slow one; nightly stamps narrow it to a commit.
+      placeholder: fast on 0.1.0, slow since 0.2.0-nightly.20260901.ab12cd3
+    validations:
+      required: true
+  - type: dropdown
+    id: shape
+    attributes:
+      label: Workload shape
+      options:
+        - Tell-heavy (fire and forget)
+        - Ask-heavy (request / response)
+        - Many actors (density, spawn / stop churn)
+        - Multi-core (Props spawns, cross-isolate messaging)
+        - Mixed or other
+    validations:
+      required: true
+  - type: textarea
+    id: profile
+    attributes:
+      label: Profiling data
+      description: Optional. Flame graphs, `--cpu-prof` output, GC logs; anything that points at where the time goes.

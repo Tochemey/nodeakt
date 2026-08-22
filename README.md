@@ -31,9 +31,11 @@ class Greeter implements Actor {
 
   receive(ctx: ReceiveContext): void {
     const msg = ctx.message;
+    
     if (msg instanceof PostStart) {
       return;
     }
+
     if (msg instanceof Greet) {
       console.log(`Hello, ${msg.name}!`);
     }

@@ -1,0 +1,80 @@
+name: 🐛 Bug report
+description: Something behaves differently from what the documentation promises.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. A report with a small reproduction
+        is usually fixed in a fraction of the time, so the form asks for one.
+        The [examples](https://github.com/Tochemey/nodeakt/tree/main/examples) are good
+        starting points to build a reproduction from.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, and what went wrong?
+      placeholder: Spawning a child from postStop resolves instead of rejecting with ErrDead...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead? Quote the documentation if it makes a promise.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: The smallest self-contained program that shows the problem.
+      render: TypeScript
+      placeholder: |
+        import { ActorSystem } from "@tochemey/nodeakt";
+
+        const system = new ActorSystem("repro");
+        await system.start();
+        // ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: nodeakt version
+      description: The exact published version, including nightly stamps.
+      placeholder: 0.1.0, or 0.1.0-nightly.20260822.3c7aaa7
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version and platform
+      placeholder: node 24.19.0, macOS arm64
+    validations:
+      required: true
+  - type: dropdown
+    id: multicore
+    attributes:
+      label: Does the problem involve multi-core actors?
+      description: Actors spawned with Props may run on another isolate, which narrows the search a lot.
+      options:
+        - "No, everything is local (instance spawns only)"
+        - "Yes, Props spawns / cross-isolate messaging are involved"
+        - "Unsure"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and stack traces
+      description: Anything the runtime printed, including JsonLogger output and dead letters.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and this is not a duplicate.
+          required: true
+        - label: I can reproduce it on the latest nightly (`pnpm add @tochemey/nodeakt@nightly`).
