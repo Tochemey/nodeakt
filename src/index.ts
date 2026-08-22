@@ -73,6 +73,7 @@ export type {
   RequestCall,
   RequestOptions,
 } from "./actor/reentrancy";
+export type { ScheduleOptions } from "./actor/schedule.options";
 export { UnboundedSegmentedMailbox } from "./actor/segmented.mailbox";
 export type { SpawnOptions } from "./actor/spawn.options";
 export {
@@ -98,6 +99,7 @@ export {
   ErrDead,
   ErrInvalidActorName,
   ErrInvalidActorSystemName,
+  ErrInvalidInterval,
   ErrInvalidReentrancyMode,
   ErrInvalidTimeout,
   ErrMailboxDisposed,
@@ -109,6 +111,8 @@ export {
   ErrRequestCanceled,
   ErrRequestTimeout,
   ErrReservedName,
+  ErrScheduleAlreadyExists,
+  ErrScheduleNotFound,
   ErrStashBufferEmpty,
   ErrUndefinedActor,
   ErrUndefinedTask,

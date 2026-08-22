@@ -112,6 +112,18 @@ export const ErrInvalidActorName: Error = new Error("invalid actor name");
 /** Raised when spawning an actor under a name that is already taken. */
 export const ErrActorAlreadyExists: Error = new Error("actor already exists");
 
+/** Raised when a schedule's delay or interval is not a positive number
+ * of milliseconds. */
+export const ErrInvalidInterval: Error = new Error("invalid interval");
+
+/** Raised when registering a schedule under a reference that is already
+ * held by an active or paused schedule. */
+export const ErrScheduleAlreadyExists: Error = new Error("schedule already exists");
+
+/** Raised when cancelling, pausing, or resuming a schedule and no
+ * schedule holds the given reference. */
+export const ErrScheduleNotFound: Error = new Error("schedule not found");
+
 /**
  * Raised when a PID argument is missing or is the NoSender sentinel,
  * which is never a valid target for parent-child operations.

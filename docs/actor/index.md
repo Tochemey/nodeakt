@@ -143,6 +143,7 @@ Live options (`mailbox`, `supervisor`, `passivationStrategy`) apply only to inst
 - [Lifecycle](lifecycle.md): spawn, start, restart, suspend, stop, and the system messages that drive them
 - [Messaging](messaging.md): `tell`, `ask`, `request`, system messages, `unhandled`, `forward`
 - [PipeTo](pipeto.md): deliver an async result back to an actor as a message
+- [Scheduling](scheduling.md): delayed and repeating sends with cancel, pause, and resume
 - [Behaviors and stash](behaviors.md)
 - [Hierarchy and stop](hierarchy.md)
 - [Death watch](death-watch.md): `watch` / `unWatch` and the `Terminated` message

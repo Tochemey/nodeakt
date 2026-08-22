@@ -17,7 +17,34 @@ const answers = await Promise.all(
   counters.map((counter) => me.ask(counter, new CountPrimes(100_000), 30_000)),
 );
 
+// A scheduled one-shot must fire on every runtime: the scheduler's
+// shared timer is the same machinery repeating schedules use.
+let resolveTick;
+const ticked = new Promise((resolve) => {
+  resolveTick = resolve;
+});
+const probe = await system.spawn("probe", {
+  preStart() {},
+  receive(ctx) {
+    // The first delivery is the PostStart announcement; the scheduled
+    // tick is the string sent below.
+    if (ctx.message === "tick") {
+      resolveTick(ctx.message);
+    }
+  },
+  postStop() {},
+});
+await system.scheduleOnce("tick", probe, 50);
+const deadline = setTimeout(() => resolveTick("timeout"), 10_000);
+const tick = await ticked;
+clearTimeout(deadline);
+
 await system.stop();
+
+if (tick !== "tick") {
+  console.error(`FAIL: expected the scheduled tick, got ${tick}`);
+  process.exit(1);
+}
 
 for (const answer of answers) {
   if (answer.count !== 9592) {
@@ -26,4 +53,4 @@ for (const answer of answers) {
   }
 }
 
-console.log("smoke OK: 2 cross-core asks answered correctly");
+console.log("smoke OK: 2 cross-core asks answered correctly and a scheduled tick fired");

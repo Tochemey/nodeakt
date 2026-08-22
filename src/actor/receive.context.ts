@@ -30,6 +30,7 @@ import type { PID } from "./pid";
 import type { PipeTask } from "./pipe";
 import type { PipeOptions } from "./pipe.options";
 import type { RequestCall, RequestOptions } from "./reentrancy";
+import type { ScheduleOptions } from "./schedule.options";
 import type { SpawnOptions } from "./spawn.options";
 
 /**
@@ -275,6 +276,92 @@ export class ReceiveContext {
    */
   pipeToName(actorName: string, task: PipeTask, options?: PipeOptions): void {
     this.pid().pipeToName(actorName, task, options);
+  }
+
+  /**
+   * Delivers `message` to `to` repeatedly, every `interval`
+   * milliseconds, the first delivery one interval from now. The
+   * schedule is owned by this actor: when this actor fully stops, the
+   * schedule is cancelled with it, so no timer cleanup is needed in
+   * `postStop`. A restart is not a stop and keeps the schedule running.
+   * This actor is recorded as the sender unless `opts.sender` overrides
+   * it.
+   *
+   * Give the schedule a reference through `opts.reference` to cancel,
+   * pause, or resume it later; references live in one flat, system-wide
+   * namespace.
+   *
+   * @returns A promise that settles once the schedule is registered. It
+   * rejects with the {@link ErrActorSystemNotStarted} sentinel when the
+   * system is not running, the {@link ErrInvalidInterval} sentinel when
+   * `interval` is not a positive number, the
+   * {@link ErrScheduleAlreadyExists} sentinel when the reference is
+   * already held by another schedule, and the {@link ErrDead} sentinel
+   * when the target has already stopped.
+   */
+  schedule(message: unknown, to: PID, interval: number, opts?: ScheduleOptions): Promise<void> {
+    const self: PID = this.pid();
+    return self.actorSystem().scheduleFrom(self, message, to, interval, opts);
+  }
+
+  /**
+   * Delivers `message` to `to` once, `delay` milliseconds from now. The
+   * schedule is owned by this actor: when this actor fully stops before
+   * the delay elapses, nothing fires. This actor is recorded as the
+   * sender unless `opts.sender` overrides it, so a message scheduled to
+   * `ctx.self` arrives as a tick from the actor to itself.
+   *
+   * @returns A promise that settles once the schedule is registered. It
+   * rejects with the {@link ErrActorSystemNotStarted} sentinel when the
+   * system is not running, the {@link ErrInvalidInterval} sentinel when
+   * `delay` is not a positive number, the
+   * {@link ErrScheduleAlreadyExists} sentinel when the reference is
+   * already held by another schedule, and the {@link ErrDead} sentinel
+   * when the target has already stopped.
+   */
+  scheduleOnce(message: unknown, to: PID, delay: number, opts?: ScheduleOptions): Promise<void> {
+    const self: PID = this.pid();
+    return self.actorSystem().scheduleOnceFrom(self, message, to, delay, opts);
+  }
+
+  /**
+   * Cancels the schedule held under `reference`, whichever actor or
+   * code created it: references live in one flat, system-wide
+   * namespace.
+   *
+   * @returns A promise that settles once the schedule is cancelled. It
+   * rejects with the {@link ErrActorSystemNotStarted} sentinel when the
+   * system is not running and the {@link ErrScheduleNotFound} sentinel
+   * when no schedule holds the reference.
+   */
+  cancelSchedule(reference: string): Promise<void> {
+    return this.pid().actorSystem().cancelSchedule(reference);
+  }
+
+  /**
+   * Pauses the schedule held under `reference`; a paused schedule fires
+   * nothing until it is resumed. Pausing a paused schedule is a no-op.
+   *
+   * @returns A promise that settles once the schedule is paused. It
+   * rejects with the {@link ErrActorSystemNotStarted} sentinel when the
+   * system is not running and the {@link ErrScheduleNotFound} sentinel
+   * when no schedule holds the reference.
+   */
+  pauseSchedule(reference: string): Promise<void> {
+    return this.pid().actorSystem().pauseSchedule(reference);
+  }
+
+  /**
+   * Resumes the schedule held under `reference`. Resuming a schedule
+   * that is not paused is a no-op.
+   *
+   * @returns A promise that settles once the schedule is resumed. It
+   * rejects with the {@link ErrActorSystemNotStarted} sentinel when the
+   * system is not running and the {@link ErrScheduleNotFound} sentinel
+   * when no schedule holds the reference.
+   */
+  resumeSchedule(reference: string): Promise<void> {
+    return this.pid().actorSystem().resumeSchedule(reference);
   }
 
   /**
