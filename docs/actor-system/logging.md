@@ -17,17 +17,17 @@ Pass `discardLogger` to drop every entry. The worker pool stays quiet when the s
 | Method | Meaning |
 | --- | --- |
 | `debug` / `info` / `warn` / `error` | Emit a message and optional structured fields. |
-| `level()` | Minimum level this logger emits (`debug`, `info`, `warn`, `error`, or `off`). |
+| `level()` | Minimum level this logger emits: a `Level` (`debug`, `info`, `warn`, `error`, or `off`). `EntryLevel` excludes `off`: the levels an entry can carry. |
 | `enabled(level)` | Whether an entry at that level would be written. |
 | `with(fields)` | Returns a logger whose every entry also carries those fields. |
 
-Fields are `Record<string, unknown>`. Pass a function when building them is expensive: the function runs only if that level is enabled.
+`Fields` is `Record<string, unknown>`. Per-entry fields are `LazyFields`: ready-made `Fields`, or a function that builds them; pass a function when building them is expensive, and it runs only if that level is enabled.
 
 A call below the configured level returns without allocating. Implementations must keep disabled calls cheap.
 
 ## `JsonLogger`
 
-The default. Each entry is one JSON line on standard error at `info` and above.
+The default. Each entry is one JSON line on standard error at `info` and above. The constructor takes `JsonLoggerOptions`:
 
 ```ts
 new JsonLogger({

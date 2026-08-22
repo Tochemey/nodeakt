@@ -22,6 +22,8 @@ await system.spawn("cache", new Cache(), {
 
 `DefaultPassivationTimeout` is `120_000` (two minutes). It is a suggested idle window, not applied unless you construct a `TimeBasedStrategy` with it.
 
+`PassivationStrategy` is the union of these three classes. It is not an open interface: the runtime only schedules the strategies above.
+
 ## Idle
 
 The scheduler passivates a time-based actor only when it is idle: no message is being processed, the mailbox is empty, the stash is empty, and no [request](reentrancy.md) is in flight. A stashed message counts as pending work because stopping would drop it.

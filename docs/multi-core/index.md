@@ -4,7 +4,7 @@ A live `Actor` instance can only run on the isolate that constructed it. `Props`
 
 There is no worker, pool, or isolate type in the public API. The spawn call is the same on one core and on many.
 
-Examples: [`examples/props`](../../examples/props/main.ts) (`parallelism: 1`, local), [`examples/multicore`](../../examples/multicore/main.ts) (one CPU-bound actor per core).
+Examples: [`examples/props`](https://github.com/Tochemey/nodeakt/blob/main/examples/props/main.ts) (`parallelism: 1`, local), [`examples/multicore`](https://github.com/Tochemey/nodeakt/blob/main/examples/multicore/main.ts) (one CPU-bound actor per core).
 
 ## Place an actor
 
@@ -91,24 +91,23 @@ Throws `TypeError` when the id is empty or already bound to a different class. R
 
 ## What a remote handle does
 
-`system.spawn` and `system.actorOf` return a `PID` either way. `tell`, `ask`, `request`, `watch`, and `unWatch` use the same methods.
+`system.spawn` and `system.actorOf` return a `PID` either way. `tell`, `ask`, `request`, `watch`, and `unWatch` use the same methods. The differences below are part of the contract.
 
-Differences that are part of the contract:
-
-| Operation | Remote handle |
-| --- | --- |
-| `tell` | Returns `null` when the **transport** accepted the envelope, not when the far mailbox did. A full or missing mailbox becomes a [dead letter](../actor-system/events.md) on the receiving isolate. Encode/clone failures return their error. |
-| `ask` / `request` | The reply crosses back. Timeouts still expire in one to two periods. |
-| `isRunning()` | Always `false`. Liveness across isolates is not synchronously knowable. `watch` for `Terminated`. |
-| `shutdown()` | Rejects with `TypeError` (`an actor owned by another isolate cannot be stopped through its handle`). Send a message the actor handles by shutting down, or send `PoisonPill`. |
-| `actor()` | A stub, not the live instance. |
-| `spawnChild` | Throws `ErrDead` (`isRunning()` is false). Spawn children from **inside** the placed actor with `ctx.spawn`; they stay on that isolate. |
+- **`tell`** returns `null` when the **transport** accepted the envelope, not when the far mailbox did. A full or missing mailbox becomes a [dead letter](../actor-system/events.md) on the receiving isolate. Encode and clone failures return their error.
+- **`ask` / `request`**: the reply crosses back. Timeouts still expire in one to two periods.
+- **`isRunning()`** is always `false`. Liveness across isolates is not synchronously knowable. `watch` for `Terminated` instead.
+- **`shutdown()`** rejects with `TypeError` (`an actor owned by another isolate cannot be stopped through its handle`). Send a message the actor handles by shutting down, or send `PoisonPill`.
+- **`actor()`** returns a stub, not the live instance.
+- **`spawnChild`** throws `ErrDead` (`isRunning()` is false). Spawn children from **inside** the placed actor with `ctx.spawn`; they stay on that isolate.
 
 Top-level names remain unique across isolates once the pool is active. `actorOf` finds a placed actor by name.
 
 ## Payloads
 
-Cross-isolate messages are structured-cloned, except that `ArrayBuffer`s reachable from the payload are **transferred**. Transfer detaches the sender's buffer: do not send a buffer the sender still needs. Posting the same buffer twice fails as a clone error.
+Cross-isolate messages are structured-cloned, except that `ArrayBuffer`s reachable from the payload are **transferred**.
+
+> [!WARNING]
+> Transfer detaches the sender's buffer: do not send a buffer the sender still needs. Posting the same buffer twice fails as a clone error.
 
 `Props` constructor arguments are checked with `structuredClone` at spawn. A non-cloneable argument throws `TypeError`.
 
