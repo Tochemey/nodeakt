@@ -23,8 +23,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { BoundedMailbox } from "../src/actor/bounded.mailbox";
-import { ErrMailboxFull } from "../src/errors/errors";
+import { BoundedMailbox } from "../src/bounded.mailbox";
+import { ErrMailboxFull } from "../src/errors";
 import { ctx, describeFifo, describeMailboxContract, drain } from "./mailbox.contract";
 
 describe("BoundedMailbox", () => {

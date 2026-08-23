@@ -23,15 +23,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorRef, type IsolateRoute } from "../src/actor/actor.ref";
-import { ActorSystem } from "../src/actor/actor.system";
-import { Deadletter, PostStart } from "../src/actor/messages";
-import type { PID } from "../src/actor/pid";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import { completedRequest } from "../src/actor/reentrancy";
-import { ErrDead, ErrRequestTimeout } from "../src/errors/errors";
-import { discardLogger } from "../src/logger/discard.logger";
+import type { Actor } from "../src/actor";
+import { ActorRef, type IsolateRoute } from "../src/actor.ref";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
+import { ErrDead, ErrRequestTimeout } from "../src/errors";
+import { Deadletter, PostStart } from "../src/messages";
+import type { PID } from "../src/pid";
+import type { ReceiveContext } from "../src/receive.context";
+import { completedRequest } from "../src/reentrancy";
 
 /** Records every message and answers asks with an echo. */
 class Recorder implements Actor {

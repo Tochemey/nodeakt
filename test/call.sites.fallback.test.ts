@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { type CallSiteScript, captureCallSites } from "../src/runtime/call.sites";
+import { type CallSiteScript, captureCallSites } from "../src/call.sites";
 
 // The runtimes this fallback exists for lack util.getCallSites while
 // still speaking the V8 stack-trace API; removing the function from the

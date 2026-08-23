@@ -32,14 +32,14 @@
  */
 
 import { type MessagePort, parentPort, workerData } from "node:worker_threads";
-import { ActorSystem } from "../../src/actor/actor.system";
-import { parsePath } from "../../src/actor/path";
-import type { ReceiveContext } from "../../src/actor/receive.context";
-import { ErrDead } from "../../src/errors/errors";
-import { discardLogger } from "../../src/logger/discard.logger";
-import { MessageRegistry } from "../../src/runtime/message.registry";
-import type { WorkerBootData } from "../../src/runtime/protocol";
-import { applySetup, WorkerRuntime } from "../../src/runtime/worker.runtime";
+import { ActorSystem } from "../../src/actor.system";
+import { discardLogger } from "../../src/discard.logger";
+import { ErrDead } from "../../src/errors";
+import { MessageRegistry } from "../../src/message.registry";
+import { parsePath } from "../../src/path";
+import type { WorkerBootData } from "../../src/protocol";
+import type { ReceiveContext } from "../../src/receive.context";
+import { applySetup, WorkerRuntime } from "../../src/worker.runtime";
 
 const boot = workerData as WorkerBootData;
 

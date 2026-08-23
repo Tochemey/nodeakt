@@ -23,7 +23,7 @@
  */
 
 import { describe } from "vitest";
-import { UnboundedMailbox } from "../src/actor/unbounded.mailbox";
+import { UnboundedMailbox } from "../src/unbounded.mailbox";
 import { describeFifo, describeMailboxContract } from "./mailbox.contract";
 
 describe("UnboundedMailbox", () => {

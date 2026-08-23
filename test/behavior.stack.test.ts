@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { type Behavior, BehaviorStack } from "../src/actor/behavior.stack";
+import { type Behavior, BehaviorStack } from "../src/behavior.stack";
 
 const behavior = (name: string): Behavior => {
   const fn: Behavior = () => {};

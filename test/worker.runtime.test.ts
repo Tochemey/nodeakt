@@ -24,22 +24,22 @@
 
 import { MessageChannel, type MessagePort } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { eventsTopic } from "../src/actor/deadletter";
-import { parsePath } from "../src/actor/path";
-import type { PID } from "../src/actor/pid";
-import { Props } from "../src/actor/props";
-import { ErrActorAlreadyExists, ErrDead } from "../src/errors/errors";
-import type { EventStream } from "../src/eventstream/eventstream";
-import { discardLogger } from "../src/logger/discard.logger";
-import type { Logger } from "../src/logger/logger";
-import { decodeError, encodeError } from "../src/runtime/codec";
-import { Mesh } from "../src/runtime/mesh";
-import { MessageRegistry } from "../src/runtime/message.registry";
-import type { ControlMessage, WorkerMessage } from "../src/runtime/protocol";
-import { registerActor } from "../src/runtime/registration";
-import { applySetup, spawnRecipe, WorkerRuntime } from "../src/runtime/worker.runtime";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { decodeError, encodeError } from "../src/codec";
+import { eventsTopic } from "../src/deadletter";
+import { discardLogger } from "../src/discard.logger";
+import { ErrActorAlreadyExists, ErrDead } from "../src/errors";
+import type { EventStream } from "../src/eventstream";
+import type { Logger } from "../src/logger";
+import { Mesh } from "../src/mesh";
+import { MessageRegistry } from "../src/message.registry";
+import { parsePath } from "../src/path";
+import type { PID } from "../src/pid";
+import { Props } from "../src/props";
+import type { ControlMessage, WorkerMessage } from "../src/protocol";
+import { registerActor } from "../src/registration";
+import { applySetup, spawnRecipe, WorkerRuntime } from "../src/worker.runtime";
 
 const aliasedModule = new URL("./fixtures/aliased.actor.mjs", import.meta.url).href;
 const echoModule = new URL("./fixtures/echo.actor.mjs", import.meta.url).href;

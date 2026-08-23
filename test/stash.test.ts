@@ -23,9 +23,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createReceiveContext, type ReceiveContext } from "../src/actor/receive.context";
-import { Stash } from "../src/actor/stash";
-import { ErrMailboxDisposed } from "../src/errors/errors";
+import { ErrMailboxDisposed } from "../src/errors";
+import { createReceiveContext, type ReceiveContext } from "../src/receive.context";
+import { Stash } from "../src/stash";
 
 function ctx(message: unknown): ReceiveContext {
   return createReceiveContext(message);

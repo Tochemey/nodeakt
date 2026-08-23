@@ -19,11 +19,15 @@ if (err === ErrDead || err === ErrMailboxFull) {
 | --- | --- |
 | `ErrActorAlreadyExists` | [`system.spawn`](actor-system/index.md) with a top-level name that is still held, including by a suspended or currently stopping actor. |
 | `ErrActorSystemNotStarted` | `spawn`, `noSender`, `subscribe`, `unsubscribe`, or any [scheduling call](actor/scheduling.md) on a [system](actor-system/index.md) that is not running. |
-| `ErrDead` | The actor is not running: [`tell` / `ask`](actor/messaging.md) to a stopped target, registering a [schedule](actor/scheduling.md) whose target has stopped, or `spawnChild`, `ctx.child`, `ctx.stop`, `restart` through a stopped actor. |
+| `ErrDead` | The actor is not running: [`tell` / `ask`](actor/messaging.md) to a stopped target, registering a [schedule](actor/scheduling.md) whose target has stopped, or `spawnChild`, `ctx.child`, `ctx.stop`, `restart` through a stopped actor. Also the dead-letter reason for a send through a [router](actor/routers.md) with no live routee. |
+| `ErrFanOutAsk` | An `ask` or `request` through a fan-out [router](actor/routers.md); a broadcast has no single answer. |
 | `ErrInvalidActorName` | An [actor name](actor-system/index.md) is empty, longer than 255 characters, or syntactically invalid. |
 | `ErrInvalidActorSystemName` | A [system name](actor-system/index.md) violates the system-name syntax (stricter than actor names). |
 | `ErrInvalidInterval` | [`schedule` / `scheduleOnce`](actor/scheduling.md) with a delay or interval that is not a positive number. |
+| `ErrInvalidPoolSize` | [`spawnRouter`](actor/routers.md) with a pool size that is not a positive integer, or an `AdjustRouterPoolSize` whose size is not a non-negative integer. |
 | `ErrInvalidReentrancyMode` | An unknown [reentrancy](actor/reentrancy.md) mode at spawn or on request options. |
+| `ErrInvalidRouteeDirective` | [`spawnRouter`](actor/routers.md) with an unknown routee directive. |
+| `ErrInvalidRoutingStrategy` | [`spawnRouter`](actor/routers.md) with an unknown routing strategy. |
 | `ErrInvalidTimeout` | [`ask`](actor/messaging.md) with a timeout that is not positive. |
 | `ErrMailboxDisposed` | Enqueue on a [mailbox](actor/mailboxes.md) after the actor stopped, or [`ctx.stash`](actor/behaviors.md) while the actor is stopping. |
 | `ErrMailboxFull` | A bounded [mailbox](actor/mailboxes.md) is at capacity. |
@@ -34,6 +38,7 @@ if (err === ErrDead || err === ErrMailboxFull) {
 | `ErrRequestCanceled` | A [request](actor/reentrancy.md) completed by `cancel()`. |
 | `ErrRequestTimeout` | An [`ask`](actor/messaging.md) or [`request`](actor/reentrancy.md) unanswered within one to two timeout periods. |
 | `ErrReservedName` | A name starting with the reserved prefix `NodeAkt`. |
+| `ErrRoutingKeyRequired` | [`spawnRouter`](actor/routers.md) with the consistent-hash strategy and no routing key extractor. |
 | `ErrScheduleAlreadyExists` | [Registering a schedule](actor/scheduling.md) under a reference that is already held. |
 | `ErrScheduleNotFound` | [`cancelSchedule`, `pauseSchedule`, or `resumeSchedule`](actor/scheduling.md) with a reference no schedule holds. |
 | `ErrStashBufferEmpty` | [`ctx.unstash`](actor/behaviors.md) with nothing stashed. |

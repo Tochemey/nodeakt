@@ -23,13 +23,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { Terminated } from "../src/actor/messages";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import { createReceiveContext, type ReceiveContext } from "../src/actor/receive.context";
-import { ErrDead } from "../src/errors/errors";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { ErrDead } from "../src/errors";
+import { Terminated } from "../src/messages";
+import { newPath } from "../src/path";
+import { PID } from "../src/pid";
+import { createReceiveContext, type ReceiveContext } from "../src/receive.context";
 
 const system = new ActorSystem("sys");
 

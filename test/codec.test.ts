@@ -23,9 +23,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ErrDead, ErrRequestTimeout, TypeNotRegisteredError } from "../src/errors/errors";
-import { Codec, decodeError, encodeError } from "../src/runtime/codec";
-import { type MessageClass, MessageRegistry } from "../src/runtime/message.registry";
+import { Codec, decodeError, encodeError } from "../src/codec";
+import { ErrDead, ErrRequestTimeout, TypeNotRegisteredError } from "../src/errors";
+import { type MessageClass, MessageRegistry } from "../src/message.registry";
 
 class Ping {
   constructor(readonly value: number) {}

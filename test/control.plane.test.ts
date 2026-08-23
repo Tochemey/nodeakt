@@ -23,8 +23,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ErrActorAlreadyExists } from "../src/errors/errors";
-import { ControlPlane, mainWorkerId } from "../src/runtime/control.plane";
+import { ControlPlane, mainWorkerId } from "../src/control.plane";
+import { ErrActorAlreadyExists } from "../src/errors";
 
 describe("ControlPlane", () => {
   it("round-robins placement over the pool and wraps", () => {

@@ -23,21 +23,21 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { BoundedMailbox } from "../src/actor/bounded.mailbox";
-import { Deadletter, PoisonPill, PostStart, Terminated } from "../src/actor/messages";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import { createReceiveContext, type ReceiveContext } from "../src/actor/receive.context";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { BoundedMailbox } from "../src/bounded.mailbox";
+import { discardLogger } from "../src/discard.logger";
 import {
   ErrActorSystemNotStarted,
   ErrDead,
   ErrMailboxFull,
   ErrStashBufferEmpty,
   ErrUnhandled,
-} from "../src/errors/errors";
-import { discardLogger } from "../src/logger/discard.logger";
+} from "../src/errors";
+import { Deadletter, PoisonPill, PostStart, Terminated } from "../src/messages";
+import { newPath } from "../src/path";
+import { PID } from "../src/pid";
+import { createReceiveContext, type ReceiveContext } from "../src/receive.context";
 
 class Sink implements Actor {
   preStart(): void {}

@@ -23,14 +23,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { PostStart } from "../src/actor/messages";
-import { LongLivedStrategy, TimeBasedStrategy } from "../src/actor/passivation";
-import type { PID } from "../src/actor/pid";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import { noSenderName, rootGuardianName, userGuardianName } from "../src/actor/reserved";
-import { StopDirective, Supervisor } from "../src/actor/supervisor";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
 import {
   ErrActorAlreadyExists,
   ErrActorSystemNotStarted,
@@ -38,7 +32,13 @@ import {
   ErrInvalidActorSystemName,
   ErrNameRequired,
   ErrReservedName,
-} from "../src/errors/errors";
+} from "../src/errors";
+import { PostStart } from "../src/messages";
+import { LongLivedStrategy, TimeBasedStrategy } from "../src/passivation";
+import type { PID } from "../src/pid";
+import type { ReceiveContext } from "../src/receive.context";
+import { noSenderName, rootGuardianName, userGuardianName } from "../src/reserved";
+import { StopDirective, Supervisor } from "../src/supervisor";
 
 class Collector implements Actor {
   readonly received: unknown[] = [];

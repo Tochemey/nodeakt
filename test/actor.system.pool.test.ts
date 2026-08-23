@@ -25,16 +25,16 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { PostStart, Terminated } from "../src/actor/messages";
-import type { PID } from "../src/actor/pid";
-import { Props } from "../src/actor/props";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import { ErrActorAlreadyExists } from "../src/errors/errors";
-import { discardLogger } from "../src/logger/discard.logger";
-import { registerActor } from "../src/runtime/registration";
-import { setWorkerEntry } from "../src/runtime/worker.entry.locator";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
+import { ErrActorAlreadyExists } from "../src/errors";
+import { PostStart, Terminated } from "../src/messages";
+import type { PID } from "../src/pid";
+import { Props } from "../src/props";
+import type { ReceiveContext } from "../src/receive.context";
+import { registerActor } from "../src/registration";
+import { setWorkerEntry } from "../src/worker.entry.locator";
 
 const outDir = resolve("node_modules/.cache/nodeakt-system-pool-test");
 const entry = resolve(outDir, "worker.entry.mjs");
@@ -125,7 +125,7 @@ beforeAll(async () => {
   mkdirSync(outDir, { recursive: true });
   const { build } = await import("tsdown");
   await build({
-    entry: { "worker.entry": "src/runtime/worker.entry.ts" },
+    entry: { "worker.entry": "src/worker.entry.ts" },
     outDir,
     format: "esm",
     dts: false,
@@ -297,7 +297,7 @@ describe("ActorSystem multi-core", () => {
     const system = new ActorSystem("options", { logger: discardLogger, parallelism: 1 });
     await system.start();
 
-    const { BoundedMailbox } = await import("../src/actor/bounded.mailbox");
+    const { BoundedMailbox } = await import("../src/bounded.mailbox");
     await expect(
       system.spawn("boxed", Props.create(Registered, "x"), {
         mailbox: new BoundedMailbox(10),

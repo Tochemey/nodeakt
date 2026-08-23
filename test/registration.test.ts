@@ -24,14 +24,14 @@
 
 import { MessageChannel } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { PostStart } from "../src/actor/messages";
-import { type ActorClass, Props } from "../src/actor/props";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import { ActorNotRegisteredError } from "../src/errors/errors";
-import { discardLogger } from "../src/logger/discard.logger";
-import { PortTransport } from "../src/runtime/port.transport";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
+import { ActorNotRegisteredError } from "../src/errors";
+import { PostStart } from "../src/messages";
+import { PortTransport } from "../src/port.transport";
+import { type ActorClass, Props } from "../src/props";
+import type { ReceiveContext } from "../src/receive.context";
 import {
   callerScript,
   defaultMessageRegistry,
@@ -39,7 +39,7 @@ import {
   registerActor,
   registerMessage,
   scriptUrlOf,
-} from "../src/runtime/registration";
+} from "../src/registration";
 
 describe("registerActor", () => {
   it("infers the registering module from the call site", () => {

@@ -25,7 +25,7 @@
 /** Declarations for the registered.actor fixture, so TypeScript tests
  * can build Props from the very class the worker will import. */
 
-import type { ReceiveContext } from "../../src/actor/receive.context";
+import type { ReceiveContext } from "../../src/receive.context";
 
 export declare class Registered {
   constructor(prefix: string);

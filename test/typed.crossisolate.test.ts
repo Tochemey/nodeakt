@@ -27,12 +27,12 @@ import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { Props } from "../src/actor/props";
-import { discardLogger } from "../src/logger/discard.logger";
-import { registerActor, registerMessage } from "../src/runtime/registration";
-import { setWorkerEntry } from "../src/runtime/worker.entry.locator";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
+import { Props } from "../src/props";
+import { registerActor, registerMessage } from "../src/registration";
+import { setWorkerEntry } from "../src/worker.entry.locator";
 
 // Stand-ins registered on the main isolate under the same names the built
 // fixture uses, so type ids ("Ping", "Pong") line up across the boundary.
@@ -67,7 +67,7 @@ beforeAll(async () => {
   // module-scope registerMessage in the fixture must reach.
   await build({
     entry: {
-      "worker.entry": "src/runtime/worker.entry.ts",
+      "worker.entry": "src/worker.entry.ts",
       "typed.actor": "test/fixtures/typed.actor.ts",
     },
     outDir,

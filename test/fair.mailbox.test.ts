@@ -23,12 +23,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import type { ActorSystem } from "../src/actor/actor.system";
-import { UnboundedFairMailbox } from "../src/actor/fair.mailbox";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import { createReceiveContext, type ReceiveContext } from "../src/actor/receive.context";
+import type { Actor } from "../src/actor";
+import type { ActorSystem } from "../src/actor.system";
+import { UnboundedFairMailbox } from "../src/fair.mailbox";
+import { newPath } from "../src/path";
+import { PID } from "../src/pid";
+import { createReceiveContext, type ReceiveContext } from "../src/receive.context";
 import { ctx, describeMailboxContract, drain } from "./mailbox.contract";
 
 const fairKey = (msg: ReceiveContext): string => (msg.message as { sender: string }).sender;

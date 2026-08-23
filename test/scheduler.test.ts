@@ -23,23 +23,23 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import type { IsolateRoute } from "../src/actor/actor.ref";
-import { ActorSystem } from "../src/actor/actor.system";
-import { Deadletter, PostStart } from "../src/actor/messages";
-import { newPath, newPathAt } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import { completedRequest } from "../src/actor/reentrancy";
-import { Scheduler } from "../src/actor/scheduler";
+import type { Actor } from "../src/actor";
+import type { IsolateRoute } from "../src/actor.ref";
+import { ActorSystem } from "../src/actor.system";
 import {
   ErrActorSystemNotStarted,
   ErrDead,
   ErrInvalidInterval,
   ErrScheduleAlreadyExists,
   ErrScheduleNotFound,
-} from "../src/errors/errors";
-import { routedPid } from "../src/runtime/routed.pid";
+} from "../src/errors";
+import { Deadletter, PostStart } from "../src/messages";
+import { newPath, newPathAt } from "../src/path";
+import { PID } from "../src/pid";
+import type { ReceiveContext } from "../src/receive.context";
+import { completedRequest } from "../src/reentrancy";
+import { routedPid } from "../src/routed.pid";
+import { Scheduler } from "../src/scheduler";
 
 class Tick {}
 

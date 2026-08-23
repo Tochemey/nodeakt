@@ -23,14 +23,14 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { IsolateRoute } from "../src/actor/actor.ref";
-import { ActorSystem } from "../src/actor/actor.system";
-import { newPathAt } from "../src/actor/path";
-import { completedRequest } from "../src/actor/reentrancy";
-import { ErrDead } from "../src/errors/errors";
-import { discardLogger } from "../src/logger/discard.logger";
-import { routedPid } from "../src/runtime/routed.pid";
-import { moduleExtension, setWorkerEntry, workerEntry } from "../src/runtime/worker.entry.locator";
+import type { IsolateRoute } from "../src/actor.ref";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
+import { ErrDead } from "../src/errors";
+import { newPathAt } from "../src/path";
+import { completedRequest } from "../src/reentrancy";
+import { routedPid } from "../src/routed.pid";
+import { moduleExtension, setWorkerEntry, workerEntry } from "../src/worker.entry.locator";
 
 describe("routedPid", () => {
   const system = new ActorSystem("routed", { logger: discardLogger });

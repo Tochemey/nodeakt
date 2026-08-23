@@ -19,6 +19,10 @@
     // Other Outputs (tsdown emits the JS and .d.ts; tsc only type-checks)
     "noEmit": true,
 
+    // Declarations tagged @internal never reach the published .d.mts:
+    // they are runtime plumbing, not API surface.
+    "stripInternal": true,
+
     // Stricter Typechecking Options
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,

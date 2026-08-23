@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { EventStream } from "../src/eventstream/eventstream";
+import { EventStream } from "../src/eventstream";
 
 describe("EventStream", () => {
   it("delivers published events to the topic's subscribers", () => {

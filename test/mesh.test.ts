@@ -24,17 +24,17 @@
 
 import { MessageChannel } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { Deadletter, PostStart } from "../src/actor/messages";
-import { parsePath } from "../src/actor/path";
-import type { PID } from "../src/actor/pid";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import { ErrDead, ErrRequestTimeout } from "../src/errors/errors";
-import { discardLogger } from "../src/logger/discard.logger";
-import { ControlPlane } from "../src/runtime/control.plane";
-import { Mesh } from "../src/runtime/mesh";
-import { MessageRegistry } from "../src/runtime/message.registry";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { ControlPlane } from "../src/control.plane";
+import { discardLogger } from "../src/discard.logger";
+import { ErrDead, ErrRequestTimeout } from "../src/errors";
+import { Mesh } from "../src/mesh";
+import { MessageRegistry } from "../src/message.registry";
+import { Deadletter, PostStart } from "../src/messages";
+import { parsePath } from "../src/path";
+import type { PID } from "../src/pid";
+import type { ReceiveContext } from "../src/receive.context";
 
 class Ping {
   constructor(readonly value: number) {}

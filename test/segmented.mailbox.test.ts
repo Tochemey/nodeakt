@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { UnboundedSegmentedMailbox } from "../src/actor/segmented.mailbox";
+import { UnboundedSegmentedMailbox } from "../src/segmented.mailbox";
 import { ctx, describeFifo, describeMailboxContract, drain } from "./mailbox.contract";
 
 describe("UnboundedSegmentedMailbox", () => {

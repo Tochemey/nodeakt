@@ -23,16 +23,16 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { Deadletter, PostStart } from "../src/actor/messages";
-import type { PID } from "../src/actor/pid";
-import type { PipeTask } from "../src/actor/pipe";
-import type { PipeOptions } from "../src/actor/pipe.options";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import { ErrDead, ErrPipeTimeout, ErrUndefinedTask } from "../src/errors/errors";
-import { discardLogger } from "../src/logger/discard.logger";
-import type { Logger } from "../src/logger/logger";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
+import { ErrDead, ErrPipeTimeout, ErrUndefinedTask } from "../src/errors";
+import type { Logger } from "../src/logger";
+import { Deadletter, PostStart } from "../src/messages";
+import type { PID } from "../src/pid";
+import type { PipeTask } from "../src/pipe";
+import type { PipeOptions } from "../src/pipe.options";
+import type { ReceiveContext } from "../src/receive.context";
 
 class Load {
   constructor(readonly id: number) {}

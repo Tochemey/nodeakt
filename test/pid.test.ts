@@ -23,15 +23,10 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { BoundedMailbox } from "../src/actor/bounded.mailbox";
-import type { Context } from "../src/actor/context";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import { createReceiveContext, type ReceiveContext } from "../src/actor/receive.context";
-import type { SpawnOptions } from "../src/actor/spawn.options";
-import { ResumeDirective, Supervisor } from "../src/actor/supervisor";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { BoundedMailbox } from "../src/bounded.mailbox";
+import type { Context } from "../src/context";
 import {
   ActorInitializationError,
   ActorNotFoundError,
@@ -39,7 +34,12 @@ import {
   ErrMailboxFull,
   ErrStashBufferEmpty,
   ErrUndefinedActor,
-} from "../src/errors/errors";
+} from "../src/errors";
+import { newPath } from "../src/path";
+import { PID } from "../src/pid";
+import { createReceiveContext, type ReceiveContext } from "../src/receive.context";
+import type { SpawnOptions } from "../src/spawn.options";
+import { ResumeDirective, Supervisor } from "../src/supervisor";
 
 // A real but never started system: standalone PIDs receive no PostStart
 // announcement because the NoSender actor does not exist.

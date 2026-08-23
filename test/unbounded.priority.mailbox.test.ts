@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { UnboundedPriorityMailbox } from "../src/actor/priority.mailbox";
+import { UnboundedPriorityMailbox } from "../src/priority.mailbox";
 import { byUrgency, ctx, describeMailboxContract, drain } from "./mailbox.contract";
 
 describe("UnboundedPriorityMailbox", () => {
