@@ -24,7 +24,7 @@
 
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem } from "../src/actor.system";
 import { discardLogger } from "../src/discard.logger";
@@ -146,6 +146,12 @@ afterAll(() => {
   setWorkerEntry(null);
 });
 
+// Capacity is detected from the environment at system start; every
+// stubbed override must die with its test.
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("ActorSystem multi-core", () => {
   it("boots the pool on the first Props spawn and serves the full PID contract", async () => {
     const system = new ActorSystem("auto", { logger: discardLogger });
@@ -179,8 +185,9 @@ describe("ActorSystem multi-core", () => {
     await system.stop();
   }, 60_000);
 
-  it("keeps everything local at parallelism 1, with no workers at all", async () => {
-    const system = new ActorSystem("solo", { logger: discardLogger, parallelism: 1 });
+  it("keeps everything local at capacity 1, with no workers at all", async () => {
+    vi.stubEnv("NODEAKT_PARALLELISM", "1");
+    const system = new ActorSystem("solo", { logger: discardLogger });
     await system.start();
 
     const pid = await system.spawn("only", Props.create(Registered, "solo"));
@@ -191,6 +198,34 @@ describe("ActorSystem multi-core", () => {
 
     // The single name authority still holds locally.
     await expect(system.spawn("only", new Probe())).rejects.toBe(ErrActorAlreadyExists);
+
+    await system.stop();
+  }, 60_000);
+
+  it("clamps a capacity override below 1 up to 1", async () => {
+    vi.stubEnv("NODEAKT_PARALLELISM", "0");
+    const system = new ActorSystem("floored", { logger: discardLogger });
+    await system.start();
+
+    const pid = await system.spawn("grounded", Props.create(Registered, "g"));
+
+    expect(pid.isRunning()).toBe(true);
+    await expect(system.noSender().ask(pid, "hi", 10_000)).resolves.toBe("g:hi");
+
+    await system.stop();
+  }, 60_000);
+
+  it("ignores a capacity override that is not an integer", async () => {
+    vi.stubEnv("NODEAKT_PARALLELISM", "not-a-number");
+    const system = new ActorSystem("garbled", { logger: discardLogger });
+    await system.start();
+
+    // Detection fell back to the machine: the pool booted and the
+    // placement landed off the main isolate.
+    const pid = await system.spawn("afloat", Props.create(Registered, "a"));
+
+    expect(pid.isRunning()).toBe(false);
+    await expect(system.noSender().ask(pid, "hi", 10_000)).resolves.toBe("a:hi");
 
     await system.stop();
   }, 60_000);
@@ -294,7 +329,8 @@ describe("ActorSystem multi-core", () => {
   }, 60_000);
 
   it("refuses spawn options that cannot cross an isolate, allows reentrancy", async () => {
-    const system = new ActorSystem("options", { logger: discardLogger, parallelism: 1 });
+    vi.stubEnv("NODEAKT_PARALLELISM", "1");
+    const system = new ActorSystem("options", { logger: discardLogger });
     await system.start();
 
     const { BoundedMailbox } = await import("../src/bounded.mailbox");
@@ -327,7 +363,8 @@ describe("ActorSystem multi-core", () => {
   }, 60_000);
 
   it("seeds pre-existing top-level names into the authority when the pool boots", async () => {
-    const system = new ActorSystem("seeded", { logger: discardLogger, parallelism: 1 });
+    vi.stubEnv("NODEAKT_PARALLELISM", "1");
+    const system = new ActorSystem("seeded", { logger: discardLogger });
     await system.start();
     const early = await system.spawn("early", new Probe());
 
@@ -353,7 +390,8 @@ describe("ActorSystem multi-core", () => {
   });
 
   it("frees an instance-claimed name when its preStart fails", async () => {
-    const system = new ActorSystem("failing", { logger: discardLogger, parallelism: 1 });
+    vi.stubEnv("NODEAKT_PARALLELISM", "1");
+    const system = new ActorSystem("failing", { logger: discardLogger });
     await system.start();
 
     // Boot the placement so instance spawns claim names.

@@ -192,7 +192,14 @@ export async function runScenario(scenario: Scenario): Promise<ScenarioReport> {
       gcDurations.push(entry.duration);
     }
   });
-  observer.observe({ entryTypes: ["gc"] });
+  let observing = false;
+  try {
+    observer.observe({ entryTypes: ["gc"] });
+    observing = true;
+  } catch {
+    // A runtime without a gc performance timeline still gets timings;
+    // the gc column just reads zero there.
+  }
 
   const samples = new Array<number>(SAMPLE_OPS);
 
@@ -204,7 +211,9 @@ export async function runScenario(scenario: Scenario): Promise<ScenarioReport> {
 
   // GC observations are delivered asynchronously; let them land.
   await new Promise((resolve) => setImmediate(resolve));
-  observer.disconnect();
+  if (observing) {
+    observer.disconnect();
+  }
 
   samples.sort((a, b) => a - b);
   const meanMs = samples.reduce((sum, ms) => sum + ms, 0) / samples.length;

@@ -184,6 +184,12 @@ jobs:
             test/smoke/run.sh deno run -A
           fi
 
+      # The transport smoke runs straight from source: the wire layer is
+      # internal and not part of the published package yet. Node covers
+      # it through the full test suite in the test job.
+      - name: Run transport smoke test
+        run: test/smoke/net.sh ${{ matrix.runtime }}
+
   nightly:
     name: nightly release
     # Every green push to main ships a prerelease to npm under the

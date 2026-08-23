@@ -40,43 +40,63 @@ export const mainWorkerId = 0;
  *
  * Worker ids: {@link mainWorkerId} (zero) is the main isolate, pool
  * workers carry the positive ids handed to the constructor. Placement
- * round-robins over the live pool and falls back to the main isolate
- * once every pool worker is gone, so a system whose pool died keeps
- * accepting spawns the way a poolless system does.
+ * picks the least-occupied live pool worker and falls back to the main
+ * isolate once every pool worker is gone, so a system whose pool died
+ * keeps accepting spawns the way a poolless system does.
  *
  * Eviction is the name-registry half of worker-exit handling: it
- * frees the dead worker's names and removes it from rotation. The
+ * frees the dead worker's names and removes it from placement. The
  * per-peer half, settling pending asks and requests, is
  * `Mesh.disconnect` on every surviving isolate.
  *
  * @internal
  */
 export class ControlPlane {
-  /** Live pool worker ids, in rotation order. */
+  /** Live pool worker ids, in placement order. */
   private _pool: number[];
 
   /** Top-level actor name to owning worker id. */
   private readonly _names = new Map<string, number>();
 
-  private _next = 0;
+  /** Registered top-level names per worker id: the occupancy placement
+   * ranks by. */
+  private readonly _loads = new Map<number, number>();
 
   constructor(poolIds: readonly number[]) {
     this._pool = [...poolIds];
+    for (const id of this._pool) {
+      this._loads.set(id, 0);
+    }
   }
 
   /**
-   * Chooses the worker for the next placed actor: round-robin over the
-   * live pool, or {@link mainWorkerId} when no pool worker is left.
+   * Chooses the worker for the next placed actor: the least-occupied
+   * live pool worker, ties broken in pool order, or {@link mainWorkerId}
+   * when no pool worker is left. Occupancy is the number of registered
+   * top-level names, so placement follows actors as they come and go: a
+   * worker whose actors stopped, or one that replaced a dead sibling,
+   * fills up again first instead of staying underused.
    */
   place(): number {
-    const pool = this._pool;
+    const pool: number[] = this._pool;
     if (pool.length === 0) {
       return mainWorkerId;
     }
 
-    const id = pool[this._next % pool.length] as number;
-    this._next = (this._next + 1) % pool.length;
-    return id;
+    // Every pool id is seeded with a load at construction and evicted
+    // together with it, so the lookups below always hit.
+    let chosen: number = pool[0] as number;
+    let lowest: number = this._loads.get(chosen) as number;
+    for (let i = 1; i < pool.length; i++) {
+      const id: number = pool[i] as number;
+      const load: number = this._loads.get(id) as number;
+      if (load < lowest) {
+        chosen = id;
+        lowest = load;
+      }
+    }
+
+    return chosen;
   }
 
   /**
@@ -92,6 +112,7 @@ export class ControlPlane {
     }
 
     this._names.set(name, workerId);
+    this._loads.set(workerId, (this._loads.get(workerId) ?? 0) + 1);
     return null;
   }
 
@@ -103,16 +124,24 @@ export class ControlPlane {
   /** Frees a top-level name, making it spawnable again; unknown names
    * are a no-op. */
   free(name: string): void {
+    const owner: number | undefined = this._names.get(name);
+    if (owner === undefined) {
+      return;
+    }
+
     this._names.delete(name);
+    // A registered owner's load counts its names, so it is always at
+    // least one here and the decrement can never underflow.
+    this._loads.set(owner, (this._loads.get(owner) as number) - 1);
   }
 
-  /** Returns the live pool worker ids, in rotation order. */
+  /** Returns the live pool worker ids, in placement order. */
   workers(): number[] {
     return [...this._pool];
   }
 
   /**
-   * Evicts a dead worker: removes it from the placement rotation and
+   * Evicts a dead worker: removes it from placement and
    * frees every top-level name it owned.
    *
    * @returns The freed names, so the caller can act on what was lost;
@@ -120,6 +149,7 @@ export class ControlPlane {
    */
   evict(workerId: number): string[] {
     this._pool = this._pool.filter((id) => id !== workerId);
+    this._loads.delete(workerId);
 
     const freed: string[] = [];
     for (const [name, owner] of this._names) {

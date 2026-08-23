@@ -27,10 +27,38 @@ import { ControlPlane, mainWorkerId } from "../src/control.plane";
 import { ErrActorAlreadyExists } from "../src/errors";
 
 describe("ControlPlane", () => {
-  it("round-robins placement over the pool and wraps", () => {
+  it("fills the pool in order while occupancy is level", () => {
     const plane = new ControlPlane([1, 2, 3]);
 
-    expect([plane.place(), plane.place(), plane.place(), plane.place()]).toEqual([1, 2, 3, 1]);
+    const landed: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const workerId: number = plane.place();
+      landed.push(workerId);
+      plane.register(`actor-${i}`, workerId);
+    }
+
+    expect(landed).toEqual([1, 2, 3, 1]);
+  });
+
+  it("places on the least-occupied worker", () => {
+    const plane = new ControlPlane([1, 2, 3]);
+    plane.register("a", 1);
+    plane.register("b", 1);
+    plane.register("c", 2);
+    plane.register("d", 3);
+
+    expect(plane.place()).toBe(2);
+  });
+
+  it("refills a drained worker first", () => {
+    const plane = new ControlPlane([1, 2, 3]);
+    plane.register("a", 1);
+    plane.register("b", 2);
+    plane.register("c", 3);
+
+    plane.free("b");
+
+    expect(plane.place()).toBe(2);
   });
 
   it("falls back to the main isolate when the pool is empty", () => {
@@ -39,10 +67,10 @@ describe("ControlPlane", () => {
     expect(plane.place()).toBe(mainWorkerId);
   });
 
-  it("keeps a valid rotation after the pool shrinks", () => {
+  it("keeps placing on the survivors after the pool shrinks", () => {
     const plane = new ControlPlane([1, 2]);
+    plane.register("a", 1);
 
-    expect(plane.place()).toBe(1);
     plane.evict(2);
 
     expect(plane.place()).toBe(1);

@@ -29,13 +29,14 @@ new ActorSystem(name, options?)
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `logger` | `defaultLogger` | Structured logger the runtime reports through. See [Logging](logging.md). |
-| `parallelism` | the machine's `os.availableParallelism()` | Cap on isolates used for [placed actors](../multi-core/index.md). At `1`, workers never boot and every actor runs on this isolate. |
 
 The system's node address is currently `127.0.0.1:0`. Paths look like `nodeakt://orders@127.0.0.1:0/greeter`. Remoting is not implemented. The host and port are in the address so it can stay stable when remoting lands.
 
 ## Start and stop
 
 `start()` creates the guardian hierarchy and begins accepting spawns. Starting a running system is a no-op.
+
+`start()` also detects the machine's parallelism (`os.availableParallelism()`) and provisions the system to use every core for [placed actors](../multi-core/index.md). There is no option for it: the `NODEAKT_PARALLELISM` environment variable is the one operational override, for machines the detection misreads (container CPU quotas, shared hosts) or for forcing a local run with `1`. See [Multi-core](../multi-core/index.md#nodeakt_parallelism).
 
 If a guardian fails to initialize, `start` throws `ActorInitializationError` and the system did not start.
 

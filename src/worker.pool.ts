@@ -22,7 +22,6 @@
  * SOFTWARE.
  */
 
-import { availableParallelism } from "node:os";
 import { MessageChannel, type MessagePort, type ResourceLimits, Worker } from "node:worker_threads";
 import { ActorRef } from "./actor.ref";
 import type { ActorSystem } from "./actor.system";
@@ -41,11 +40,11 @@ import { applySetup, spawnRecipe } from "./worker.runtime";
  * @internal
  */
 export interface WorkerPoolOptions {
-  /** Number of worker isolates. Defaults to the machine's available
-   * parallelism, one isolate per core, so the pool scales with the
-   * hardware it lands on; zero means every placement lands on the
-   * main isolate. */
-  readonly size?: number;
+  /** Number of worker isolates; zero means every placement lands on
+   * the main isolate. The system's placement is the one topology
+   * authority: it sizes the pool to the system's capacity minus the
+   * main isolate, so the isolates together match the machine. */
+  readonly size: number;
 
   /** The worker entry script: the built JavaScript module that boots
    * the facade system and its runtime. */
@@ -111,11 +110,11 @@ function settledWithin(exited: Promise<unknown>, ms: number): Promise<boolean> {
  * as worker id zero), places recipes through the {@link ControlPlane},
  * and handles worker death.
  *
- * Placement: {@link place} chooses the owning worker round-robin,
- * claims the top-level name, and spawns the recipe there; on the main
- * isolate (an empty or dead pool) the recipe spawns locally through
- * the same resolution, so behavior does not depend on where a recipe
- * lands. The returned {@link ActorRef} carries path and incarnation,
+ * Placement: {@link place} asks the control plane for the owning
+ * worker (the least-occupied isolate), claims the top-level name, and
+ * spawns the recipe there; on the main isolate (an empty or dead pool)
+ * the recipe spawns locally through the same resolution, so behavior
+ * does not depend on where a recipe lands. The returned {@link ActorRef} carries path and incarnation,
  * with the owning worker's mesh route when the actor lives on another
  * isolate. A placed actor's stop, however it comes about, frees its
  * top-level name again.
@@ -126,7 +125,7 @@ function settledWithin(exited: Promise<unknown>, ms: number): Promise<boolean> {
  * worker included.
  *
  * Worker death runs the full cleanup sequence: the control plane
- * frees the dead worker's names and drops it from rotation, the main
+ * frees the dead worker's names and drops it from placement, the main
  * mesh disconnects it (settling pending asks and requests with
  * {@link ErrDead} immediately), spawn commands awaiting it reject, and
  * every surviving worker is told to disconnect it too.
@@ -164,8 +163,7 @@ export class WorkerPool {
     this._registry = registry;
     this._codec = new Codec(registry);
     this._mesh = new Mesh(system, registry, mainWorkerId);
-    const size = options.size ?? availableParallelism();
-    this._plane = new ControlPlane(Array.from({ length: size }, (_, i) => i + 1));
+    this._plane = new ControlPlane(Array.from({ length: options.size }, (_, i) => i + 1));
   }
 
   /** Returns the main isolate's mesh. */

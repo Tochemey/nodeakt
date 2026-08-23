@@ -22,6 +22,7 @@
  * SOFTWARE.
  */
 
+import { availableParallelism } from "node:os";
 import type { Actor } from "./actor";
 import { ActorRef } from "./actor.ref";
 import type { ActorSystemOptions } from "./actor.system.options";
@@ -66,11 +67,37 @@ import type { ScheduleOptions } from "./schedule.options";
 import { Scheduler } from "./scheduler";
 import type { SpawnOptions } from "./spawn.options";
 import { SystemGuardian } from "./system.guardian";
+import { systemPlacement } from "./system.placement";
 import { UserGuardian } from "./user.guardian";
 
 /** The node endpoint of a single-node actor system. */
 const HOST = "127.0.0.1";
 const PORT = 0;
+
+/** The environment variable overriding the detected capacity: an
+ * operational escape hatch for machines whose usable CPU count the
+ * runtime misreads (container quotas, shared hosts). At `1` the system
+ * never boots workers; the variable is never part of the API. */
+const capacityVariable = "NODEAKT_PARALLELISM";
+
+/** Detects the system's capacity: how many isolates it may run, the
+ * machine's `os.availableParallelism()` unless the environment
+ * overrides it, clamped to `[1, machine]`. An override that is not an
+ * integer is ignored. */
+function detectCapacity(): number {
+  const machine: number = availableParallelism();
+  const raw: string | undefined = process.env[capacityVariable];
+  if (raw === undefined || raw === "") {
+    return machine;
+  }
+
+  const override: number = Number(raw);
+  if (!Number.isInteger(override)) {
+    return machine;
+  }
+
+  return Math.max(1, Math.min(override, machine));
+}
 
 /** How long a dead-letter count query waits, in milliseconds; the
  * dead-letter actor answers from memory, so this never fires in
@@ -122,7 +149,8 @@ export class ActorSystem {
    * down on stop; facades never own theirs. */
   private _ownsPlacement = false;
 
-  private readonly _parallelism: number | undefined;
+  /** How many isolates the system may run, detected at start. */
+  private _capacity: number = 1;
 
   /**
    * Creates an actor system with the given name.
@@ -148,7 +176,6 @@ export class ActorSystem {
     this._name = name;
     this._address = { system: name, host: HOST, port: PORT };
     this._logger = options?.logger ?? defaultLogger;
-    this._parallelism = options?.parallelism;
     this._events = new EventStream((err) => {
       this._logger.error("event subscriber failed", { error: err });
     });
@@ -366,6 +393,11 @@ export class ActorSystem {
     if (this._started) {
       return;
     }
+
+    // Capacity is a boot fact: detected once here, consulted by the
+    // placement when the first Props spawn boots the pool, so the
+    // system provisions for every core the machine gives it.
+    this._capacity = detectCapacity();
 
     // Runtime actors rely on the long-lived default strategy and never
     // passivate. The tree records that the system and user guardians are
@@ -790,9 +822,8 @@ export class ActorSystem {
   }
 
   /**
-   * Boots the pool seam on first use: dynamically imported so the
-   * runtime's pool machinery never loads, let alone boots, in a
-   * program that spawns only instances.
+   * Boots the pool seam on first use, so a program that spawns only
+   * instances never pays for workers.
    */
   private ensurePlacement(): Promise<Placement> {
     if (this._placement !== null) {
@@ -809,9 +840,8 @@ export class ActorSystem {
   }
 
   private async bootPlacement(): Promise<Placement> {
-    const { systemPlacement } = await import("./system.placement");
     const placement = await systemPlacement(this, {
-      parallelism: this._parallelism,
+      capacity: this._capacity,
       quiet: this._logger === discardLogger,
     });
     this._placement = placement;
