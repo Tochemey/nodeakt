@@ -23,11 +23,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import type { ActorSystem } from "../src/actor/actor.system";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import { PidTree } from "../src/actor/pid.tree";
+import type { Actor } from "../src/actor";
+import type { ActorSystem } from "../src/actor.system";
+import { newPath } from "../src/path";
+import { PID } from "../src/pid";
+import { PidTree } from "../src/pid.tree";
 
 const system = {} as ActorSystem;
 

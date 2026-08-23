@@ -23,22 +23,22 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import type { ActorSystem } from "../src/actor/actor.system";
-import { PanicSignal, PostStart, Terminated } from "../src/actor/messages";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import { createReceiveContext } from "../src/actor/receive.context";
+import type { Actor } from "../src/actor";
+import type { ActorSystem } from "../src/actor.system";
+import { PanicSignal, PostStart, Terminated } from "../src/messages";
+import { newPath } from "../src/path";
+import { PID } from "../src/pid";
+import { createReceiveContext } from "../src/receive.context";
 import {
   isSystemName,
   reservedNamesPrefix,
   rootGuardianName,
   systemGuardianName,
   userGuardianName,
-} from "../src/actor/reserved";
-import { RootGuardian } from "../src/actor/root.guardian";
-import { SystemGuardian } from "../src/actor/system.guardian";
-import { UserGuardian } from "../src/actor/user.guardian";
+} from "../src/reserved";
+import { RootGuardian } from "../src/root.guardian";
+import { SystemGuardian } from "../src/system.guardian";
+import { UserGuardian } from "../src/user.guardian";
 
 const noop: Actor = {
   preStart(): void {},

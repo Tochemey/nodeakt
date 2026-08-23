@@ -24,14 +24,11 @@
 
 import { MessageChannel } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { BoundedMailbox } from "../src/actor/bounded.mailbox";
-import { Deadletter, PostStart, Terminated } from "../src/actor/messages";
-import { parsePath } from "../src/actor/path";
-import type { PID } from "../src/actor/pid";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import type { RequestOptions } from "../src/actor/reentrancy";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { BoundedMailbox } from "../src/bounded.mailbox";
+import { discardLogger } from "../src/discard.logger";
+import type { Envelope } from "../src/envelope";
 import {
   ErrDead,
   ErrInvalidTimeout,
@@ -41,11 +38,14 @@ import {
   ErrRequestCanceled,
   ErrRequestTimeout,
   TypeNotRegisteredError,
-} from "../src/errors/errors";
-import { discardLogger } from "../src/logger/discard.logger";
-import type { Envelope } from "../src/runtime/envelope";
-import { MessageRegistry } from "../src/runtime/message.registry";
-import { PortTransport } from "../src/runtime/port.transport";
+} from "../src/errors";
+import { MessageRegistry } from "../src/message.registry";
+import { Deadletter, PostStart, Terminated } from "../src/messages";
+import { parsePath } from "../src/path";
+import type { PID } from "../src/pid";
+import { PortTransport } from "../src/port.transport";
+import type { ReceiveContext } from "../src/receive.context";
+import type { RequestOptions } from "../src/reentrancy";
 
 class Ping {
   constructor(readonly value: number) {}

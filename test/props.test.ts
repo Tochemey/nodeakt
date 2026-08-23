@@ -23,8 +23,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { Props } from "../src/actor/props";
+import type { Actor } from "../src/actor";
+import { Props } from "../src/props";
 
 class Quiet implements Actor {
   preStart(): void {}

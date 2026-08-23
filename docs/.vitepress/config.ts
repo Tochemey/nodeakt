@@ -66,6 +66,7 @@ export default defineConfig({
           { text: "Hierarchy and stop", link: "/actor/hierarchy" },
           { text: "Death watch", link: "/actor/death-watch" },
           { text: "Supervision", link: "/actor/supervision" },
+          { text: "Routers", link: "/actor/routers" },
           { text: "Mailboxes", link: "/actor/mailboxes" },
           { text: "Passivation", link: "/actor/passivation" },
           { text: "Reentrancy", link: "/actor/reentrancy" },

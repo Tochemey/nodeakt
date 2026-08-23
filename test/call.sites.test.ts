@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { type CallSiteScript, captureCallSites, v8CallSites } from "../src/runtime/call.sites";
+import { type CallSiteScript, captureCallSites, v8CallSites } from "../src/call.sites";
 
 describe("captureCallSites", () => {
   it("answers frame 0 as the caller's script", () => {

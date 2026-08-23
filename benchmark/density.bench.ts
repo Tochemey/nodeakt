@@ -23,8 +23,8 @@
  */
 
 import { afterAll, describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
 import { printBlock, printMachine } from "./harness";
 
 /**

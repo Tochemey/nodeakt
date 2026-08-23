@@ -23,10 +23,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ActorSystem } from "../src/actor/actor.system";
-import { discardLogger } from "../src/logger/discard.logger";
-import { defaultLogger, JsonLogger } from "../src/logger/json.logger";
-import type { Fields, Level } from "../src/logger/logger";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
+import { defaultLogger, JsonLogger } from "../src/json.logger";
+import type { Fields, Level } from "../src/logger";
 
 /** A sink that captures each written line for assertions. */
 class CaptureStream {

@@ -31,7 +31,7 @@ import {
   ResumeDirective,
   StopDirective,
   Supervisor,
-} from "../src/actor/supervisor";
+} from "../src/supervisor";
 
 describe("Supervisor", () => {
   it("defaults to one-for-one with a stop-anything rule", () => {

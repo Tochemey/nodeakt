@@ -23,12 +23,12 @@
  */
 
 import { afterAll, describe, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { BoundedMailbox } from "../src/actor/bounded.mailbox";
-import { UnboundedFairMailbox } from "../src/actor/fair.mailbox";
-import type { PID } from "../src/actor/pid";
-import { UnboundedSegmentedMailbox } from "../src/actor/segmented.mailbox";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { BoundedMailbox } from "../src/bounded.mailbox";
+import { UnboundedFairMailbox } from "../src/fair.mailbox";
+import type { PID } from "../src/pid";
+import { UnboundedSegmentedMailbox } from "../src/segmented.mailbox";
 import { printReport, runScenario, type Scenario, type ScenarioReport } from "./harness";
 
 /**

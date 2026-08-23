@@ -22,17 +22,54 @@
  * SOFTWARE.
  */
 
-export type { Actor } from "./actor/actor";
-export { ActorSystem } from "./actor/actor.system";
-export type { ActorSystemOptions } from "./actor/actor.system.options";
-export type { Behavior } from "./actor/behavior.stack";
-export { BoundedMailbox } from "./actor/bounded.mailbox";
-export { Context } from "./actor/context";
+export type { Actor } from "./actor";
+export { ActorSystem } from "./actor.system";
+export type { ActorSystemOptions } from "./actor.system.options";
+export type { Behavior } from "./behavior.stack";
+export { BoundedMailbox } from "./bounded.mailbox";
+export { Context } from "./context";
+export { discardLogger } from "./discard.logger";
+export {
+  ActorInitializationError,
+  ActorNotFoundError,
+  ActorNotRegisteredError,
+  ErrActorAlreadyExists,
+  ErrActorSystemNotStarted,
+  ErrDead,
+  ErrFanOutAsk,
+  ErrInvalidActorName,
+  ErrInvalidActorSystemName,
+  ErrInvalidInterval,
+  ErrInvalidPoolSize,
+  ErrInvalidReentrancyMode,
+  ErrInvalidRouteeDirective,
+  ErrInvalidRoutingStrategy,
+  ErrInvalidTimeout,
+  ErrMailboxDisposed,
+  ErrMailboxFull,
+  ErrNameRequired,
+  ErrPipeTimeout,
+  ErrReentrancyDisabled,
+  ErrReentrancyInFlightLimit,
+  ErrRequestCanceled,
+  ErrRequestTimeout,
+  ErrReservedName,
+  ErrRoutingKeyRequired,
+  ErrScheduleAlreadyExists,
+  ErrScheduleNotFound,
+  ErrStashBufferEmpty,
+  ErrUndefinedActor,
+  ErrUndefinedTask,
+  ErrUnhandled,
+} from "./errors";
+export { EventStream, type StreamSubscriber } from "./eventstream";
 export {
   type SenderKeyFunc,
   UnboundedFairMailbox,
-} from "./actor/fair.mailbox";
-export type { Mailbox } from "./actor/mailbox";
+} from "./fair.mailbox";
+export { defaultLogger, JsonLogger, type JsonLoggerOptions } from "./json.logger";
+export type { EntryLevel, Fields, LazyFields, Level, Logger } from "./logger";
+export type { Mailbox } from "./mailbox";
 export {
   ActorChildCreated,
   ActorPassivated,
@@ -46,36 +83,48 @@ export {
   PoisonPill,
   PostStart,
   Terminated,
-} from "./actor/messages";
+} from "./messages";
 export {
   DefaultPassivationTimeout,
   LongLivedStrategy,
   MessagesCountBasedStrategy,
   type PassivationStrategy,
   TimeBasedStrategy,
-} from "./actor/passivation";
-export type { Path } from "./actor/path";
-export { PID } from "./actor/pid";
-export type { PipeTask } from "./actor/pipe";
-export type { PipeOptions } from "./actor/pipe.options";
+} from "./passivation";
+export type { Path } from "./path";
+export { PID } from "./pid";
+export type { PipeTask } from "./pipe";
+export type { PipeOptions } from "./pipe.options";
 export {
   BoundedPriorityMailbox,
   BoundedStablePriorityMailbox,
   type PriorityFunc,
   UnboundedPriorityMailbox,
   UnboundedStablePriorityMailbox,
-} from "./actor/priority.mailbox";
-export { Props } from "./actor/props";
-export { ReceiveContext } from "./actor/receive.context";
+} from "./priority.mailbox";
+export { Props } from "./props";
+export { ReceiveContext } from "./receive.context";
 export type {
   Reentrancy,
   ReentrancyMode,
   RequestCall,
   RequestOptions,
-} from "./actor/reentrancy";
-export type { ScheduleOptions } from "./actor/schedule.options";
-export { UnboundedSegmentedMailbox } from "./actor/segmented.mailbox";
-export type { SpawnOptions } from "./actor/spawn.options";
+} from "./reentrancy";
+export { registerActor, registerMessage } from "./registration";
+export { AdjustRouterPoolSize, GetRoutees, Routees } from "./router.messages";
+export {
+  ConsistentHashRouting,
+  FanOutRouting,
+  RandomRouting,
+  RoundRobinRouting,
+  type RouteeDirective,
+  type RouterOptions,
+  type RoutingKeyFunc,
+  type RoutingStrategy,
+} from "./router.options";
+export type { ScheduleOptions } from "./schedule.options";
+export { UnboundedSegmentedMailbox } from "./segmented.mailbox";
+export type { SpawnOptions } from "./spawn.options";
 export {
   type Directive,
   type ErrorClass,
@@ -88,38 +137,5 @@ export {
   type Strategy,
   Supervisor,
   type SupervisorOptions,
-} from "./actor/supervisor";
-export { UnboundedMailbox } from "./actor/unbounded.mailbox";
-export {
-  ActorInitializationError,
-  ActorNotFoundError,
-  ActorNotRegisteredError,
-  ErrActorAlreadyExists,
-  ErrActorSystemNotStarted,
-  ErrDead,
-  ErrInvalidActorName,
-  ErrInvalidActorSystemName,
-  ErrInvalidInterval,
-  ErrInvalidReentrancyMode,
-  ErrInvalidTimeout,
-  ErrMailboxDisposed,
-  ErrMailboxFull,
-  ErrNameRequired,
-  ErrPipeTimeout,
-  ErrReentrancyDisabled,
-  ErrReentrancyInFlightLimit,
-  ErrRequestCanceled,
-  ErrRequestTimeout,
-  ErrReservedName,
-  ErrScheduleAlreadyExists,
-  ErrScheduleNotFound,
-  ErrStashBufferEmpty,
-  ErrUndefinedActor,
-  ErrUndefinedTask,
-  ErrUnhandled,
-} from "./errors/errors";
-export { EventStream, type StreamSubscriber } from "./eventstream/eventstream";
-export { discardLogger } from "./logger/discard.logger";
-export { defaultLogger, JsonLogger, type JsonLoggerOptions } from "./logger/json.logger";
-export type { EntryLevel, Fields, LazyFields, Level, Logger } from "./logger/logger";
-export { registerActor, registerMessage } from "./runtime/registration";
+} from "./supervisor";
+export { UnboundedMailbox } from "./unbounded.mailbox";

@@ -23,8 +23,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
 import {
   ActorChildCreated,
   ActorPassivated,
@@ -33,12 +34,11 @@ import {
   ActorStarted,
   ActorStopped,
   ActorSuspended,
-} from "../src/actor/messages";
-import { MessagesCountBasedStrategy } from "../src/actor/passivation";
-import type { PID } from "../src/actor/pid";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import { RestartDirective, StopDirective, Supervisor } from "../src/actor/supervisor";
-import { discardLogger } from "../src/logger/discard.logger";
+} from "../src/messages";
+import { MessagesCountBasedStrategy } from "../src/passivation";
+import type { PID } from "../src/pid";
+import type { ReceiveContext } from "../src/receive.context";
+import { RestartDirective, StopDirective, Supervisor } from "../src/supervisor";
 
 /** A quiet actor that records nothing and never fails. */
 class Quiet implements Actor {

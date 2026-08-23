@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { addressOf, newPath, parsePath } from "../src/actor/path";
+import { addressOf, newPath, parsePath } from "../src/path";
 
 describe("newPath", () => {
   it("exposes its constituents", () => {

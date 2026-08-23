@@ -25,11 +25,11 @@
 import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ActorRef } from "../src/actor/actor.ref";
-import { ActorSystem } from "../src/actor/actor.system";
-import { discardLogger } from "../src/logger/discard.logger";
-import { MessageRegistry } from "../src/runtime/message.registry";
-import { WorkerPool } from "../src/runtime/worker.pool";
+import type { ActorRef } from "../src/actor.ref";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
+import { MessageRegistry } from "../src/message.registry";
+import { WorkerPool } from "../src/worker.pool";
 import { printBlock, printMachine } from "./harness";
 
 /**
@@ -87,7 +87,7 @@ describe("multi-core", () => {
   beforeAll(async () => {
     const { build } = await import("tsdown");
     await build({
-      entry: { "worker.entry": "src/runtime/worker.entry.ts" },
+      entry: { "worker.entry": "src/worker.entry.ts" },
       outDir,
       format: "esm",
       dts: false,

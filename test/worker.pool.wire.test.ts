@@ -26,17 +26,17 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { threadId } from "node:worker_threads";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ActorSystem } from "../src/actor/actor.system";
-import { Deadletter } from "../src/actor/messages";
-import { addressOf, newPathAt } from "../src/actor/path";
-import { Props } from "../src/actor/props";
-import { ErrActorAlreadyExists } from "../src/errors/errors";
-import { discardLogger } from "../src/logger/discard.logger";
-import type { Logger } from "../src/logger/logger";
-import { MessageRegistry } from "../src/runtime/message.registry";
-import type { ControlMessage, WorkerMessage } from "../src/runtime/protocol";
-import { recipeOf, registerActor } from "../src/runtime/registration";
-import { WorkerPool } from "../src/runtime/worker.pool";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
+import { ErrActorAlreadyExists } from "../src/errors";
+import type { Logger } from "../src/logger";
+import { MessageRegistry } from "../src/message.registry";
+import { Deadletter } from "../src/messages";
+import { addressOf, newPathAt } from "../src/path";
+import { Props } from "../src/props";
+import type { ControlMessage, WorkerMessage } from "../src/protocol";
+import { recipeOf, registerActor } from "../src/registration";
+import { WorkerPool } from "../src/worker.pool";
 import { Registered } from "./fixtures/registered.actor.mjs";
 import { Job, Receipt } from "./fixtures/wire.messages.mjs";
 
@@ -85,7 +85,7 @@ beforeAll(async () => {
   mkdirSync(outDir, { recursive: true });
   const { build } = await import("tsdown");
   await build({
-    entry: { "worker.entry": "src/runtime/worker.entry.ts" },
+    entry: { "worker.entry": "src/worker.entry.ts" },
     outDir,
     format: "esm",
     dts: false,

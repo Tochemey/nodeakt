@@ -27,11 +27,11 @@ import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { threadId } from "node:worker_threads";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ActorSystem } from "../src/actor/actor.system";
-import { ErrActorAlreadyExists, ErrDead } from "../src/errors/errors";
-import { discardLogger } from "../src/logger/discard.logger";
-import { MessageRegistry } from "../src/runtime/message.registry";
-import { WorkerPool } from "../src/runtime/worker.pool";
+import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
+import { ErrActorAlreadyExists, ErrDead } from "../src/errors";
+import { MessageRegistry } from "../src/message.registry";
+import { WorkerPool } from "../src/worker.pool";
 
 const outDir = resolve("node_modules/.cache/nodeakt-worker-test");
 const entry = resolve(outDir, "worker.entry.mjs");
@@ -47,7 +47,7 @@ beforeAll(async () => {
   mkdirSync(outDir, { recursive: true });
   const { build } = await import("tsdown");
   await build({
-    entry: { "worker.entry": "src/runtime/worker.entry.ts" },
+    entry: { "worker.entry": "src/worker.entry.ts" },
     outDir,
     format: "esm",
     dts: false,

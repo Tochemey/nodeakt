@@ -23,20 +23,20 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { PanicSignal } from "../src/actor/messages";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import type { ReceiveContext } from "../src/actor/receive.context";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { ActorNotFoundError, ErrDead } from "../src/errors";
+import { PanicSignal } from "../src/messages";
+import { newPath } from "../src/path";
+import { PID } from "../src/pid";
+import type { ReceiveContext } from "../src/receive.context";
 import {
   EscalateDirective,
   OneForAllStrategy,
   RestartDirective,
   StopDirective,
   Supervisor,
-} from "../src/actor/supervisor";
-import { ActorNotFoundError, ErrDead } from "../src/errors/errors";
+} from "../src/supervisor";
 
 // A real but never started system: standalone PIDs receive no PostStart
 // announcement because the NoSender actor does not exist.

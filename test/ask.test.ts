@@ -23,18 +23,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { BoundedMailbox } from "../src/actor/bounded.mailbox";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import { createReceiveContext, type ReceiveContext } from "../src/actor/receive.context";
-import {
-  ErrDead,
-  ErrInvalidTimeout,
-  ErrMailboxFull,
-  ErrRequestTimeout,
-} from "../src/errors/errors";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { BoundedMailbox } from "../src/bounded.mailbox";
+import { ErrDead, ErrInvalidTimeout, ErrMailboxFull, ErrRequestTimeout } from "../src/errors";
+import { newPath } from "../src/path";
+import { PID } from "../src/pid";
+import { createReceiveContext, type ReceiveContext } from "../src/receive.context";
 
 const system = new ActorSystem("sys");
 

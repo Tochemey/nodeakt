@@ -23,19 +23,19 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { ErrDead } from "../src/errors";
 import {
   LongLivedStrategy,
   MessagesCountBasedStrategy,
   type PassivationStrategy,
   TimeBasedStrategy,
-} from "../src/actor/passivation";
-import { PassivationManager } from "../src/actor/passivation.manager";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import { ErrDead } from "../src/errors/errors";
+} from "../src/passivation";
+import { PassivationManager } from "../src/passivation.manager";
+import { newPath } from "../src/path";
+import { PID } from "../src/pid";
+import type { ReceiveContext } from "../src/receive.context";
 
 // A real but never started system: standalone PIDs receive no PostStart
 // announcement because the NoSender actor does not exist.

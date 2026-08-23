@@ -22,10 +22,10 @@
  * SOFTWARE.
  */
 
-import type { Actor } from "../../src/actor/actor";
-import { PostStart } from "../../src/actor/messages";
-import type { ReceiveContext } from "../../src/actor/receive.context";
-import { registerActor, registerMessage } from "../../src/runtime/registration";
+import type { Actor } from "../../src/actor";
+import { PostStart } from "../../src/messages";
+import type { ReceiveContext } from "../../src/receive.context";
+import { registerActor, registerMessage } from "../../src/registration";
 
 /**
  * A registered request message. Its `instanceof` must survive the hop to

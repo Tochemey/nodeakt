@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { MessageRegistry } from "../src/runtime/message.registry";
+import { MessageRegistry } from "../src/message.registry";
 
 class Ping {
   constructor(readonly value: number) {}

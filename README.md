@@ -1,6 +1,6 @@
 <h2 align="center">
   <img src="assets/nodeakt.svg" alt="nodeakt" width="480"/><br/>
-  Actor framework for Node.js, Bun, and Deno
+  Actor framework for Node, Bun, and Deno
 </h2>
 
 <p align="center">
@@ -23,6 +23,7 @@ Requires Node.js 22+, Bun 1.3+, or Deno 2+. ESM only (`import`, not `require`). 
 - **Hierarchy.** Actors spawn children and watch any other actor, receiving a message when the watched one stops. Stopping a parent drains its whole subtree cleanly.
 - **Behaviors and stash.** An actor can swap its message handler at runtime, set aside messages it cannot serve yet, and replay them once it switches back.
 - **Supervision.** When an actor fails, its parent decides: stop it, resume it, restart it, or escalate, for the one child or for all of them, with restart budgets and exponential backoff.
+- **Routers.** Spread work over a pool of identical actors or broadcast to all of them: round robin, random, fan-out, and consistent-hash routing. The router supervises its routees, the pool resizes in place, and replies go straight back to the original sender.
 - **Mailboxes.** Unbounded and bounded FIFO, segmented, fair per-sender, and priority variants, or bring your own implementation.
 - **Passivation.** Actors live as long as you need them: keep them forever, or retire them automatically after an idle timeout or a processed-message count.
 - **Reentrancy.** An actor can keep working through its mailbox while one of its own requests is still in flight, with control over which messages may overtake the pending reply.
@@ -68,7 +69,6 @@ nodeakt runs everything on one machine. Multi-core uses worker threads behind on
 - **Persistence.** Actor state is in-memory only. There is no event sourcing or durable state.
 - **Virtual actors (grains).** Actors are explicitly spawned and addressed. There is no on-demand activation model.
 - **Cron schedules.** `schedule` and `scheduleOnce` cover delayed and repeating sends; cron-expression schedules do not exist yet.
-- **Routers.** No pool or broadcast routers as public API.
 - **Metrics.** Structured logging exists. Metrics and tracing hooks do not.
 
 If one of these matters to you, open an issue describing the use case. It helps order the roadmap.

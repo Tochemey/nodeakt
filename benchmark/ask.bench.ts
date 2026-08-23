@@ -23,9 +23,9 @@
  */
 
 import { afterAll, describe, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import type { ReceiveContext } from "../src/actor/receive.context";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import type { ReceiveContext } from "../src/receive.context";
 import { printReport, runScenario, type Scenario, type ScenarioReport } from "./harness";
 
 /**

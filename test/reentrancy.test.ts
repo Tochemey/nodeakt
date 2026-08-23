@@ -23,14 +23,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Actor } from "../src/actor/actor";
-import { ActorSystem } from "../src/actor/actor.system";
-import { BoundedMailbox } from "../src/actor/bounded.mailbox";
-import { newPath } from "../src/actor/path";
-import { PID } from "../src/actor/pid";
-import type { ReceiveContext } from "../src/actor/receive.context";
-import type { ReentrancyMode, RequestCall, RequestOptions } from "../src/actor/reentrancy";
-import type { SpawnOptions } from "../src/actor/spawn.options";
+import type { Actor } from "../src/actor";
+import { ActorSystem } from "../src/actor.system";
+import { BoundedMailbox } from "../src/bounded.mailbox";
 import {
   ErrDead,
   ErrInvalidReentrancyMode,
@@ -39,7 +34,12 @@ import {
   ErrReentrancyInFlightLimit,
   ErrRequestCanceled,
   ErrRequestTimeout,
-} from "../src/errors/errors";
+} from "../src/errors";
+import { newPath } from "../src/path";
+import { PID } from "../src/pid";
+import type { ReceiveContext } from "../src/receive.context";
+import type { ReentrancyMode, RequestCall, RequestOptions } from "../src/reentrancy";
+import type { SpawnOptions } from "../src/spawn.options";
 
 const system = new ActorSystem("sys");
 
