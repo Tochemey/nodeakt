@@ -35,7 +35,9 @@ Every spawn returns a `Promise<PID>`: it resolves only once `preStart` has finis
 `actor` is either a **live `Actor` instance** or a **`Props`**. The difference is not local versus remote; it is whether the actor is **pinned** to this isolate or free to be **placed**.
 
 - A **live instance** runs on the isolate that constructed it, this one, always.
-- **`Props`** is construction as data, the actor's class and its constructor arguments, so the runtime can build it on whichever isolate it chooses. That may be this one: with `parallelism` at `1` it always is, and even with a worker pool the placement can land here. Only on a machine running the pool might it be another core.
+- **`Props`** is construction as data, the actor's class and its constructor arguments, so the runtime can build it on whichever isolate it chooses. That may be this one: on a one-core machine it always is, and even with a worker pool the placement can land here. Only on a machine running the pool might it be another core.
+
+The rule: spawn `Props` for a CPU-heavy actor that should run on another core; spawn an instance for everything else, and when in doubt spawn an instance. See [Which to use](../multi-core/index.md#which-to-use-instance-or-props).
 
 ```ts
 const pinned = await system.spawn("greeter", new Greeter("fr")); // always this isolate

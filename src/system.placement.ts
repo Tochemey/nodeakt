@@ -22,7 +22,6 @@
  * SOFTWARE.
  */
 
-import { availableParallelism } from "node:os";
 import type { IsolateRoute } from "./actor.ref";
 import type { ActorSystem } from "./actor.system";
 import { mainWorkerId } from "./control.plane";
@@ -35,24 +34,25 @@ import { workerEntry } from "./worker.entry.locator";
 import { WorkerPool } from "./worker.pool";
 
 /**
- * What the system hands over when it boots its placement: the machine
- * override, the recipe fence, and whether worker facades should stay
- * quiet.
+ * What the system hands over when it boots its placement: the capacity
+ * it detected at start, the recipe fence, and whether worker facades
+ * should stay quiet.
  *
  * @internal
  */
 export interface SystemPlacementOptions {
-  readonly parallelism?: number | undefined;
+  readonly capacity: number;
   readonly quiet: boolean;
 }
 
 /**
- * Boots the main isolate's placement: the worker pool sized to the
- * machine (or to the `parallelism` override, and empty at 1 so a
- * one-core machine never pays for workers), wrapped in the seam the
- * `ActorSystem` consults. Loaded dynamically by the system's first
- * `Props` spawn, so a program that never places an actor never loads
- * the pool machinery at all.
+ * Boots the main isolate's placement: the worker pool sized so the
+ * system's isolates match its capacity, the main isolate plus one
+ * worker per remaining core, and empty at a capacity of 1 so a
+ * one-core machine never pays for workers. The pool is wrapped in the
+ * seam the `ActorSystem` consults, and boots on the system's first
+ * `Props` spawn, so a program that never places an actor never starts
+ * a worker.
  *
  * Top-level actors spawned before the boot join the single name
  * authority here: their names are claimed with the control plane and
@@ -64,15 +64,14 @@ export async function systemPlacement(
   system: ActorSystem,
   options: SystemPlacementOptions,
 ): Promise<Placement> {
-  const machine = availableParallelism();
-  const parallelism = Math.max(1, Math.min(options.parallelism ?? machine, machine));
-  const size = parallelism <= 1 ? 0 : parallelism;
+  const size: number = Math.max(0, options.capacity - 1);
 
   const pool = new WorkerPool(system, defaultMessageRegistry, {
     size,
     entry: workerEntry(),
     quiet: options.quiet,
   });
+
   await pool.start();
 
   for (const pid of system.topLevelActors()) {

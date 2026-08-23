@@ -29,11 +29,4 @@ export interface ActorSystemOptions {
   /** The logger the runtime reports through; one JSON line per entry on
    * standard error at info level by default. */
   logger?: Logger;
-
-  /** How many isolates the system may use for placed actors, capping
-   * what the machine reports (`os.availableParallelism()`); at 1 the
-   * system never boots workers and every actor runs locally. Purely an
-   * operational override; by default the system scales itself to the
-   * machine it lands on. */
-  parallelism?: number;
 }

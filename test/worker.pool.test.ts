@@ -200,14 +200,13 @@ describe("WorkerPool", () => {
   });
 
   describe("scaling", () => {
-    it("defaults the pool size to the machine's available parallelism", async () => {
+    it("runs exactly the requested worker count", async () => {
       const system = new ActorSystem("sys", { logger: discardLogger });
       await system.start();
 
-      const pool = new WorkerPool(system, new MessageRegistry(), { entry });
+      const pool = new WorkerPool(system, new MessageRegistry(), { size: 3, entry });
 
-      const cores = availableParallelism();
-      expect(pool.workers()).toEqual(Array.from({ length: cores }, (_, i) => i + 1));
+      expect(pool.workers()).toEqual([1, 2, 3]);
       await system.stop();
     });
 

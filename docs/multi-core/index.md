@@ -4,7 +4,27 @@ A live `Actor` instance can only run on the isolate that constructed it. `Props`
 
 There is no worker, pool, or isolate type in the public API. The spawn call is the same on one core and on many.
 
-Examples: [`examples/props`](https://github.com/Tochemey/nodeakt/blob/main/examples/props/main.ts) (`parallelism: 1`, local), [`examples/multicore`](https://github.com/Tochemey/nodeakt/blob/main/examples/multicore/main.ts) (one CPU-bound actor per core).
+Examples: [`examples/props`](https://github.com/Tochemey/nodeakt/blob/main/examples/props/main.ts) (`NODEAKT_PARALLELISM=1`, local), [`examples/multicore`](https://github.com/Tochemey/nodeakt/blob/main/examples/multicore/main.ts) (one CPU-bound actor per core).
+
+## Which to use: instance or `Props`
+
+One question decides it: **does the actor do CPU-heavy work?**
+
+- **Yes: spawn `Props`.** Work heavy enough to block the event loop (parsing, hashing, compression, number crunching) belongs on another core, and only a `Props` spawn can run there.
+- **No: spawn an instance.** Coordination, IO, live resources (sockets, streams, timers), a custom `mailbox`, `supervisor`, or `passivationStrategy`, or constructor arguments that cannot be structured-cloned: each of these pins the actor to this isolate, so construct it yourself with `new`.
+
+When in doubt, spawn an instance. An instance is never wrong, only local; `Props` buys parallelism and pays for it with the restrictions below.
+
+|                                                  | `spawn(name, new Greeter())` | `spawn(name, Props.create(Greeter, "fr"))`                                  |
+|--------------------------------------------------|------------------------------|-----------------------------------------------------------------------------|
+| Where it runs                                    | Always this isolate          | A worker the runtime chooses (this isolate when only one core is available) |
+| Registration                                     | Not required                 | `registerActor` in the class's module, or `ActorNotRegisteredError`         |
+| Constructor args                                 | Any                          | Must be structured-cloneable                                                |
+| `mailbox` / `supervisor` / `passivationStrategy` | Allowed                      | Refused (`TypeError`). Those are live objects.                              |
+| `reentrancy`                                     | Allowed                      | Allowed                                                                     |
+| Children (`ctx.spawn`)                           | Same isolate as the parent   | Same isolate as the parent (children are instance spawns)                   |
+
+Placed actors use the defaults: unbounded FIFO mailbox, stop-on-any-failure supervisor, long-lived (no passivation).
 
 ## Place an actor
 
@@ -20,36 +40,32 @@ export class Greeter implements Actor {
   receive(ctx: ReceiveContext): void { /* ... */ }
   postStop(): void {}
 }
+
 registerActor(Greeter);
 
 // main.ts
-const system = new ActorSystem("app"); // uses os.availableParallelism()
+const system = new ActorSystem("app"); // sizes itself to the machine at start
 await system.start();
 const greeter = await system.spawn("greeter", Props.create(Greeter, "fr"));
 ```
 
 `Props.create` is typed by the class constructor: omitting, adding, or mistyping an argument is a compile error.
 
-The first `Props` spawn boots the worker pool. A program that only ever spawns instances never loads that machinery.
+There is nothing to configure. `system.start()` detects the machine (`os.availableParallelism()`) and provisions one isolate per core: this (main) isolate plus one worker per remaining core, so the isolates together match the hardware. Each new top-level `Props` actor lands on the least-occupied worker, so load stays spread as actors come and go. On a one-core machine every actor runs on this isolate; the spawn call is unchanged.
 
-`parallelism` on the actor system caps the pool at `os.availableParallelism()`. At `1`, the pool size is zero: every actor runs on this isolate, and the spawn call is unchanged.
+### `NODEAKT_PARALLELISM`
 
-```ts
-new ActorSystem("app", { parallelism: 1 });
+The detected machine is the right answer for a normal deployment, which is why there is no parallelism option in the API. The `NODEAKT_PARALLELISM` environment variable exists for the cases where the detection is wrong or deliberately unwanted:
+
+- **Container quotas the runtime cannot see.** Detection respects CPU affinity and, on current runtimes, cgroup v2 quotas, but not every runtime and cgroup combination. A pod limited to 2 CPUs on a 32-core node may detect 32; set `NODEAKT_PARALLELISM=2` to match the quota.
+- **Shared hosts.** When other processes on the machine need cores of their own, cap the system below the machine.
+- **Forcing a local run.** At `1` workers never boot and every actor runs on this isolate: useful in tests, in constrained CI, and when stepping through a problem single-threaded.
+
+```sh
+NODEAKT_PARALLELISM=1 node main.js
 ```
 
-## Instance spawn vs Props spawn
-
-| | `spawn(name, new Greeter())` | `spawn(name, Props.create(Greeter, "fr"))` |
-| --- | --- | --- |
-| Where it runs | Always this isolate | A worker the runtime chooses (or this isolate when `parallelism` is 1) |
-| Registration | Not required | `registerActor` in the class's module, or `ActorNotRegisteredError` |
-| Constructor args | Any | Must be structured-cloneable |
-| `mailbox` / `supervisor` / `passivationStrategy` | Allowed | Refused (`TypeError`). Those are live objects. |
-| `reentrancy` | Allowed | Allowed |
-| Children (`ctx.spawn`) | Same isolate as the parent | Same isolate as the parent (children are instance spawns) |
-
-Placed actors use the defaults: unbounded FIFO mailbox, stop-on-any-failure supervisor, long-lived (no passivation). Use those defaults for CPU-bound work, or keep the actor local if it needs a custom mailbox or supervisor.
+The value is read once at `system.start()` and clamped between 1 and the machine's core count; a value that is not an integer is ignored. It is an operational override, not configuration: set it in the environment of a deployment, not in code.
 
 ## `registerActor`
 
@@ -80,6 +96,7 @@ Call `registerMessage` at module scope in the file that defines the class:
 export class CountPrimes {
   constructor(readonly upTo: number) {}
 }
+
 registerMessage(CountPrimes);
 ```
 

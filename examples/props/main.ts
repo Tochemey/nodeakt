@@ -27,8 +27,8 @@
  *
  * `Props.create(Greeter, "fr")` captures the class and its arguments so
  * the runtime can build the actor wherever it places it. A live instance
- * (`new Greeter("en")`) always stays on this core. `parallelism: 1` keeps
- * this run local; the spawn call is the same as in `multicore`.
+ * (`new Greeter("en")`) always stays on this core. `NODEAKT_PARALLELISM=1`
+ * keeps this run local; the spawn call is the same as in `multicore`.
  *
  * Run: make props
  */
@@ -36,7 +36,12 @@
 import { ActorSystem, Props } from "../../src/index";
 import { Greeter } from "./greeter.actor";
 
-const system = new ActorSystem("props", { parallelism: 1 });
+// The system sizes itself to the machine at start; the environment
+// variable is the one operational override, and 1 keeps every actor on
+// this isolate.
+process.env.NODEAKT_PARALLELISM = "1";
+
+const system = new ActorSystem("props");
 await system.start();
 
 // Props form: the runtime builds the Greeter from the class + arguments.

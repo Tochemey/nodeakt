@@ -123,7 +123,7 @@ Hola, Alan!
 Hello, Grace!
 ```
 
-This run forces `parallelism: 1` so placement stays local. The spawn call is the same as in `multicore`.
+This run forces `NODEAKT_PARALLELISM=1` so placement stays local. The spawn call is the same as in `multicore`.
 
 ## Every core, invisibly: `multicore`
 

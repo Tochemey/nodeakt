@@ -99,12 +99,13 @@ describe("multi-core", () => {
     printMachine();
     system = new ActorSystem("bench", { logger: discardLogger });
     await system.start();
-    pool = new WorkerPool(system, new MessageRegistry(), { entry, quiet: true });
+    pool = new WorkerPool(system, new MessageRegistry(), { size: cores, entry, quiet: true });
     await pool.start();
     expect(pool.workers().length).toBe(cores);
 
-    // Placement is round-robin, so placing one of each kind per core
-    // pins one burner, one echo, and one flooder on every isolate.
+    // Placement fills workers of level occupancy in pool order, so
+    // placing one of each kind per core pins one burner, one echo, and
+    // one flooder on every isolate.
     for (let i = 0; i < cores; i++) {
       burners.push(await pool.place(`burner-${i}`, { module: burnerModule, actor: "Burner" }));
     }
