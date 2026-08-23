@@ -46,8 +46,8 @@ import {
   MIN_MAX_FRAME_SIZE,
   ordinaryLane,
   ProtocolError,
-} from "../../src/_net/frame";
-import { ByteWriter } from "../../src/_net/values";
+} from "../../src/net/frame";
+import { ByteWriter } from "../../src/net/values";
 
 const NO_LIMIT: number = 0xffffffff;
 

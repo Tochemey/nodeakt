@@ -28,14 +28,14 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * The transport boundary, enforced: `src/_net/` modules import only
+ * The transport boundary, enforced: `src/net/` modules import only
  * platform modules and each other, and the only module outside the
  * folder allowed to import from it is the `remoting.ts` seam. A
  * violation here is a circular-dependency risk by definition.
  */
 
 const srcDir: string = fileURLToPath(new URL("../../src", import.meta.url));
-const netDir: string = join(srcDir, "_net");
+const netDir: string = join(srcDir, "net");
 
 /** Collects every static import specifier in a source file. */
 function importsOf(filePath: string): string[] {
@@ -55,8 +55,8 @@ function sourceFiles(directory: string): string[] {
     .map((name: string): string => join(directory, name));
 }
 
-describe("the _net boundary", () => {
-  it("keeps _net modules free of runtime imports", () => {
+describe("the net boundary", () => {
+  it("keeps net modules free of runtime imports", () => {
     for (const filePath of sourceFiles(netDir)) {
       for (const specifier of importsOf(filePath)) {
         const allowed: boolean = specifier.startsWith("node:") || /^\.\/[^.]/.test(specifier);
@@ -65,14 +65,14 @@ describe("the _net boundary", () => {
     }
   });
 
-  it("lets only the remoting seam import from _net", () => {
+  it("lets only the remoting seam import from net", () => {
     for (const filePath of sourceFiles(srcDir)) {
       if (filePath.endsWith("/remoting.ts")) {
         continue;
       }
 
       for (const specifier of importsOf(filePath)) {
-        expect(specifier.includes("_net"), `${filePath} imports "${specifier}"`).toBe(false);
+        expect(/(^|\/)net\//.test(specifier), `${filePath} imports "${specifier}"`).toBe(false);
       }
     }
   });

@@ -34,18 +34,18 @@ import {
   KIND_WATCH,
   type RefInterner,
   SERIALIZER_BINARY,
-} from "../../src/_net/envelope";
+} from "../../src/net/envelope";
 import {
   FRAME_DATA,
   FRAME_HEADER_SIZE,
   FRAME_HELLO_ACK,
   LANE_CONTROL,
   LANE_LARGE,
-} from "../../src/_net/frame";
-import { ErrDialBackoff, ErrPeerClosed, Peer, type PeerOptions } from "../../src/_net/peer";
-import type { NetServer } from "../../src/_net/server";
-import { negotiateHello, Session } from "../../src/_net/session";
-import { ByteReader, ByteWriter, decodeValue, encodeValue } from "../../src/_net/values";
+} from "../../src/net/frame";
+import { ErrDialBackoff, ErrPeerClosed, Peer, type PeerOptions } from "../../src/net/peer";
+import type { NetServer } from "../../src/net/server";
+import { negotiateHello, Session } from "../../src/net/session";
+import { ByteReader, ByteWriter, decodeValue, encodeValue } from "../../src/net/values";
 import {
   cleanupNet,
   EMPTY,

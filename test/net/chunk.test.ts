@@ -34,8 +34,8 @@ import {
   REASSEMBLY_VIOLATION,
   type ReassemblyOutcome,
   splitLogicalFrame,
-} from "../../src/_net/chunk";
-import type { OutboundFrame } from "../../src/_net/conn";
+} from "../../src/net/chunk";
+import type { OutboundFrame } from "../../src/net/conn";
 import {
   type DataEnvelope,
   decodeHello,
@@ -43,7 +43,7 @@ import {
   KIND_TELL,
   type ReplyEnvelope,
   SERIALIZER_BINARY,
-} from "../../src/_net/envelope";
+} from "../../src/net/envelope";
 import {
   FLAG_EXPECTS_REPLY,
   FLAG_FIRST_CHUNK,
@@ -54,15 +54,15 @@ import {
   FRAME_HELLO_ACK,
   type FrameHeader,
   LANE_CONTROL,
-} from "../../src/_net/frame";
-import type { NetServer } from "../../src/_net/server";
+} from "../../src/net/frame";
+import type { NetServer } from "../../src/net/server";
 import {
   ErrMessageTooLarge,
   negotiateHello,
   Session,
   type SessionHandlers,
-} from "../../src/_net/session";
-import { ByteReader, ByteWriter, decodeValue, encodeValue } from "../../src/_net/values";
+} from "../../src/net/session";
+import { ByteReader, ByteWriter, decodeValue, encodeValue } from "../../src/net/values";
 import {
   cleanupNet,
   dialSession,

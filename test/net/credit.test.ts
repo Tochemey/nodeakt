@@ -24,8 +24,8 @@
 
 import type { Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { OutboundFrame } from "../../src/_net/conn";
-import { CreditWindow } from "../../src/_net/credit";
+import type { OutboundFrame } from "../../src/net/conn";
+import { CreditWindow } from "../../src/net/credit";
 import {
   type DataEnvelope,
   decodeHello,
@@ -35,7 +35,7 @@ import {
   KIND_TELL,
   type RefInterner,
   SERIALIZER_BINARY,
-} from "../../src/_net/envelope";
+} from "../../src/net/envelope";
 import {
   FRAME_CREDIT,
   FRAME_DATA,
@@ -46,10 +46,10 @@ import {
   FRAME_PONG,
   type FrameHeader,
   LANE_CONTROL,
-} from "../../src/_net/frame";
-import type { NetServer } from "../../src/_net/server";
-import { ErrBackpressure, negotiateHello, type Session } from "../../src/_net/session";
-import { ByteReader, ByteWriter } from "../../src/_net/values";
+} from "../../src/net/frame";
+import type { NetServer } from "../../src/net/server";
+import { ErrBackpressure, negotiateHello, type Session } from "../../src/net/session";
+import { ByteReader, ByteWriter } from "../../src/net/values";
 import {
   cleanupNet,
   dialScripted,

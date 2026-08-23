@@ -29,7 +29,7 @@ import {
   decodeHello,
   ERROR_UNAVAILABLE,
   type Hello,
-} from "../../src/_net/envelope";
+} from "../../src/net/envelope";
 import {
   FRAME_ERROR,
   FRAME_HELLO,
@@ -39,8 +39,8 @@ import {
   LANE_CONTROL,
   MIN_MAX_FRAME_SIZE,
   ordinaryLane,
-} from "../../src/_net/frame";
-import type { NetServer } from "../../src/_net/server";
+} from "../../src/net/frame";
+import type { NetServer } from "../../src/net/server";
 import {
   ErrHandshakeTimeout,
   ErrIdleReclaim,
@@ -48,8 +48,8 @@ import {
   negotiateHello,
   PeerError,
   Session,
-} from "../../src/_net/session";
-import { ByteReader, ByteWriter } from "../../src/_net/values";
+} from "../../src/net/session";
+import { ByteReader, ByteWriter } from "../../src/net/values";
 import {
   cleanupNet,
   dialSession,

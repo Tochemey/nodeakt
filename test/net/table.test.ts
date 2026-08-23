@@ -31,7 +31,7 @@ import {
   KIND_TELL,
   type ReplyEnvelope,
   SERIALIZER_BINARY,
-} from "../../src/_net/envelope";
+} from "../../src/net/envelope";
 import {
   FRAME_DATA,
   FRAME_REPLY,
@@ -39,9 +39,9 @@ import {
   type FrameHeader,
   LANE_CONTROL,
   ProtocolError,
-} from "../../src/_net/frame";
-import type { NetServer } from "../../src/_net/server";
-import type { Session } from "../../src/_net/session";
+} from "../../src/net/frame";
+import type { NetServer } from "../../src/net/server";
+import type { Session } from "../../src/net/session";
 import {
   decodeTableBody,
   encodeTableBody,
@@ -51,8 +51,8 @@ import {
   TABLE_PATH,
   TABLE_TYPE,
   type TableAnnouncement,
-} from "../../src/_net/table";
-import { ByteReader, ByteWriter } from "../../src/_net/values";
+} from "../../src/net/table";
+import { ByteReader, ByteWriter } from "../../src/net/values";
 import {
   cleanupNet,
   dialScripted,

@@ -24,8 +24,8 @@
 
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { afterAll, describe, it } from "vitest";
-import { FramedConn } from "../src/_net/conn";
-import { FRAME_DATA, LANE_CONTROL } from "../src/_net/frame";
+import { FramedConn } from "../src/net/conn";
+import { FRAME_DATA, LANE_CONTROL } from "../src/net/frame";
 import { printReport, runScenario, type Scenario, type ScenarioReport } from "./harness";
 
 /**

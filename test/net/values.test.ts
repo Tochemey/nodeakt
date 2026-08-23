@@ -30,7 +30,7 @@ import {
   decodeValue,
   encodeValue,
   ValueDecodeError,
-} from "../../src/_net/values";
+} from "../../src/net/values";
 
 function encodeToBytes(value: unknown): Uint8Array {
   const writer: ByteWriter = new ByteWriter();

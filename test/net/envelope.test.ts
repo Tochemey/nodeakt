@@ -23,6 +23,9 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { decodeError, encodeError } from "../../src/codec";
+import type { Envelope, WireError } from "../../src/envelope";
+import { ErrDead } from "../../src/errors";
 import {
   type DataEnvelope,
   decodeDataEnvelope,
@@ -43,7 +46,7 @@ import {
   type ReplyEnvelope,
   SERIALIZER_BINARY,
   SERIALIZER_CUSTOM,
-} from "../../src/_net/envelope";
+} from "../../src/net/envelope";
 import {
   decodeFrameHeader,
   encodeFrameHeader,
@@ -52,17 +55,14 @@ import {
   type FrameHeader,
   LANE_CONTROL,
   ProtocolError,
-} from "../../src/_net/frame";
+} from "../../src/net/frame";
 import {
   ByteReader,
   ByteWriter,
   decodeValue,
   encodeValue,
   ValueDecodeError,
-} from "../../src/_net/values";
-import { decodeError, encodeError } from "../../src/codec";
-import type { Envelope, WireError } from "../../src/envelope";
-import { ErrDead } from "../../src/errors";
+} from "../../src/net/values";
 
 const EMPTY: Uint8Array = new Uint8Array(0);
 

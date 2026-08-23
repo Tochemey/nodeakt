@@ -23,7 +23,7 @@
  */
 
 import { describe, it } from "vitest";
-import { ByteReader, ByteWriter, decodeValue, encodeValue } from "../src/_net/values";
+import { ByteReader, ByteWriter, decodeValue, encodeValue } from "../src/net/values";
 import {
   printBlock,
   printReport,

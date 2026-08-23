@@ -24,25 +24,25 @@
 
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { expect, vi } from "vitest";
-import { FramedConn, type OutboundFrame } from "../../src/_net/conn";
-import { decodeHello, encodeHello, type Hello } from "../../src/_net/envelope";
+import { FramedConn, type OutboundFrame } from "../../src/net/conn";
+import { decodeHello, encodeHello, type Hello } from "../../src/net/envelope";
 import {
   FRAME_ERROR,
   FRAME_HELLO_ACK,
   type FrameHeader,
   LANE_CONTROL,
   ProtocolError,
-} from "../../src/_net/frame";
-import type { Peer } from "../../src/_net/peer";
-import { NetServer, type NetServerHandlers, type NetServerOptions } from "../../src/_net/server";
+} from "../../src/net/frame";
+import type { Peer } from "../../src/net/peer";
+import { NetServer, type NetServerHandlers, type NetServerOptions } from "../../src/net/server";
 import {
   negotiateHello,
   Session,
   type SessionHandlers,
   type SessionOptions,
-} from "../../src/_net/session";
-import type { TimerHandle, Timers } from "../../src/_net/timers";
-import { ByteReader, ByteWriter } from "../../src/_net/values";
+} from "../../src/net/session";
+import type { TimerHandle, Timers } from "../../src/net/timers";
+import { ByteReader, ByteWriter } from "../../src/net/values";
 
 /**
  * Shared transport-test scaffolding: the HELLO fixture, resource

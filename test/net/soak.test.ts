@@ -31,17 +31,17 @@ import {
   KIND_TELL,
   type ReplyEnvelope,
   SERIALIZER_BINARY,
-} from "../../src/_net/envelope";
+} from "../../src/net/envelope";
 import {
   encodeFrameHeader,
   FRAME_ERROR,
   FRAME_HELLO,
   FRAME_HELLO_ACK,
   LANE_CONTROL,
-} from "../../src/_net/frame";
-import type { NetServer } from "../../src/_net/server";
-import type { Session, SessionOptions } from "../../src/_net/session";
-import { ByteWriter } from "../../src/_net/values";
+} from "../../src/net/frame";
+import type { NetServer } from "../../src/net/server";
+import type { Session, SessionOptions } from "../../src/net/session";
+import { ByteWriter } from "../../src/net/values";
 import {
   cleanupNet,
   dialSession,

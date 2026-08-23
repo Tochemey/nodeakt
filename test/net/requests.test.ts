@@ -23,6 +23,9 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { decodeError, encodeError } from "../../src/codec";
+import type { WireError } from "../../src/envelope";
+import { ErrDead } from "../../src/errors";
 import {
   type DataEnvelope,
   ERROR_APPLICATION,
@@ -33,14 +36,11 @@ import {
   KIND_WATCH,
   type ReplyEnvelope,
   SERIALIZER_BINARY,
-} from "../../src/_net/envelope";
-import { FLAG_EXPECTS_REPLY, FRAME_DATA } from "../../src/_net/frame";
-import { NetServer } from "../../src/_net/server";
-import { ErrAskTimeout, ErrBackpressure, PeerError, type Session } from "../../src/_net/session";
-import { ByteReader, ByteWriter, decodeValue, encodeValue } from "../../src/_net/values";
-import { decodeError, encodeError } from "../../src/codec";
-import type { WireError } from "../../src/envelope";
-import { ErrDead } from "../../src/errors";
+} from "../../src/net/envelope";
+import { FLAG_EXPECTS_REPLY, FRAME_DATA } from "../../src/net/frame";
+import { NetServer } from "../../src/net/server";
+import { ErrAskTimeout, ErrBackpressure, PeerError, type Session } from "../../src/net/session";
+import { ByteReader, ByteWriter, decodeValue, encodeValue } from "../../src/net/values";
 import { cleanupNet, dialSession, EMPTY, hello, trackServer } from "./helpers";
 
 afterEach(cleanupNet);

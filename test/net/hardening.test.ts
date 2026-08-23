@@ -32,14 +32,14 @@ import {
   REASSEMBLY_VIOLATION,
   type ReassemblyOutcome,
   splitLogicalFrame,
-} from "../../src/_net/chunk";
+} from "../../src/net/chunk";
 import {
   ErrConnClosed,
   ErrWriteTimeout,
   FramedConn,
   type FramedConnHandlers,
   type OutboundFrame,
-} from "../../src/_net/conn";
+} from "../../src/net/conn";
 import {
   type DataEnvelope,
   decodeHello,
@@ -51,7 +51,7 @@ import {
   KIND_TELL,
   type ReplyEnvelope,
   SERIALIZER_BINARY,
-} from "../../src/_net/envelope";
+} from "../../src/net/envelope";
 import {
   encodeFrameHeader,
   FLAG_FIRST_CHUNK,
@@ -69,23 +69,18 @@ import {
   MAX_U32,
   ProtocolError,
   validateFrameHeader,
-} from "../../src/_net/frame";
-import { Peer } from "../../src/_net/peer";
-import type { NetServer } from "../../src/_net/server";
-import {
-  ErrIdleReclaim,
-  ErrMessageTooLarge,
-  negotiateHello,
-  Session,
-} from "../../src/_net/session";
-import { defaultTimers, type TimerHandle } from "../../src/_net/timers";
+} from "../../src/net/frame";
+import { Peer } from "../../src/net/peer";
+import type { NetServer } from "../../src/net/server";
+import { ErrIdleReclaim, ErrMessageTooLarge, negotiateHello, Session } from "../../src/net/session";
+import { defaultTimers, type TimerHandle } from "../../src/net/timers";
 import {
   ByteReader,
   ByteWriter,
   decodeValue,
   encodeValue,
   ValueDecodeError,
-} from "../../src/_net/values";
+} from "../../src/net/values";
 import {
   cleanupNet,
   dialScripted,

@@ -23,10 +23,10 @@
  */
 
 import { afterAll, describe, it } from "vitest";
-import { type DataEnvelope, type Hello, KIND_TELL, SERIALIZER_BINARY } from "../src/_net/envelope";
-import { LANE_CONTROL } from "../src/_net/frame";
-import { Peer } from "../src/_net/peer";
-import { NetServer } from "../src/_net/server";
+import { type DataEnvelope, type Hello, KIND_TELL, SERIALIZER_BINARY } from "../src/net/envelope";
+import { LANE_CONTROL } from "../src/net/frame";
+import { Peer } from "../src/net/peer";
+import { NetServer } from "../src/net/server";
 import { printReport, runScenario, type Scenario, type ScenarioReport } from "./harness";
 
 /**

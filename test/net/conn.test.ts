@@ -30,7 +30,7 @@ import {
   FramedConn,
   type FramedConnOptions,
   type OutboundFrame,
-} from "../../src/_net/conn";
+} from "../../src/net/conn";
 import {
   encodeFrameHeader,
   FLAG_EXPECTS_REPLY,
@@ -39,8 +39,8 @@ import {
   type FrameHeader,
   LANE_CONTROL,
   ProtocolError,
-} from "../../src/_net/frame";
-import { ByteWriter } from "../../src/_net/values";
+} from "../../src/net/frame";
+import { ByteWriter } from "../../src/net/values";
 import { cleanupNet, sleep, socketPair } from "./helpers";
 
 afterEach(cleanupNet);

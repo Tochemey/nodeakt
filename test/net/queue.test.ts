@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { HeadQueue } from "../../src/_net/queue";
+import { HeadQueue } from "../../src/net/queue";
 
 describe("head queue", () => {
   it("keeps FIFO order through peek, shift, and pop", () => {
