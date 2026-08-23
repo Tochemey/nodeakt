@@ -515,6 +515,44 @@ describe("conn hardening", () => {
     conn.destroy();
   });
 
+  it("resumes flushing on drain after the socket reports backpressure", async () => {
+    // A socket that refuses the first write (returns false, the kernel
+    // buffer is full) and accepts the rest; the connection must park
+    // until the drain event and then flush what was left queued.
+    class ChokedSocket extends EventEmitter {
+      readonly written: Uint8Array[] = [];
+
+      write(bytes: Uint8Array, callback?: (error?: Error | null) => void): boolean {
+        this.written.push(Uint8Array.from(bytes));
+        callback?.();
+        return this.written.length > 1;
+      }
+
+      destroy(): void {
+        this.emit("close");
+      }
+
+      end(): void {}
+    }
+
+    const socket: ChokedSocket = new ChokedSocket();
+    const { handlers } = collectHandlers();
+    const conn: FramedConn = new FramedConn(socket as unknown as Socket, handlers, {
+      batchFrames: 1,
+    });
+
+    conn.send({ type: FRAME_PING, flags: 0, lane: LANE_CONTROL, correlation: 1, body: null });
+    conn.send({ type: FRAME_PING, flags: 0, lane: LANE_CONTROL, correlation: 2, body: null });
+    await Promise.resolve();
+    // The first write reported backpressure; the second frame waits.
+    expect(socket.written.length).toBe(1);
+
+    socket.emit("drain");
+    await Promise.resolve();
+    expect(socket.written.length).toBe(2);
+    conn.destroy();
+  });
+
   it("confirms a large frame on its own write", async () => {
     const fake: FakeSocket = new FakeSocket();
     const { handlers, confirmed } = collectHandlers();
