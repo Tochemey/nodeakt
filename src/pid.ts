@@ -33,7 +33,6 @@ import {
   ErrDead,
   ErrInvalidActorName,
   ErrInvalidReentrancyMode,
-  ErrInvalidTimeout,
   ErrReentrancyDisabled,
   ErrReentrancyInFlightLimit,
   ErrRequestTimeout,
@@ -699,15 +698,15 @@ export class PID {
    *
    * @param to - The PID of the receiving actor.
    * @param message - The message to deliver.
-   * @param timeout - How long to wait, in milliseconds. Must be
-   * positive. The wait is a lower bound with coarse expiry: an
+   * @param timeout - How long to wait, in milliseconds. A non-positive
+   * or omitted value falls back to the system's `askTimeout`, so an ask
+   * is never unbounded. The wait is a lower bound with coarse expiry: an
    * unanswered ask is rejected between one and two timeout periods, so
    * sending never has to read the clock.
    *
    * @returns A promise of the value passed to
    * {@link ReceiveContext.response}. It rejects with the {@link ErrDead}
-   * sentinel when the target is not running, the {@link ErrInvalidTimeout}
-   * sentinel when `timeout` is not a positive duration, the
+   * sentinel when the target is not running, the
    * {@link ErrRequestTimeout} sentinel when no reply arrives in time, and
    * the mailbox rejection error when delivery fails.
    */
@@ -722,11 +721,8 @@ export class PID {
       return Promise.reject(ErrDead);
     }
 
-    if (timeout <= 0) {
-      return Promise.reject(ErrInvalidTimeout);
-    }
-
-    const { ctx, reply } = createAskContext(message, to, this, timeout);
+    const deadline: number = timeout > 0 ? timeout : this._actorSystem.askTimeout();
+    const { ctx, reply } = createAskContext(message, to, this, deadline);
 
     // The running check above already vetted the target, so the context
     // goes straight into the mailbox instead of through doReceive.
@@ -745,9 +741,11 @@ export class PID {
    * Delivers a message to this actor and routes the response into
    * callbacks instead of a promise: `resolve` receives the value passed
    * to `ReceiveContext.response`, `reject` the failure, or the coarse
-   * expiry when `timeout` is positive. Runtime plumbing for the
-   * receiving side of a transport, where the response must travel back
-   * as an envelope rather than settle a local promise.
+   * expiry. A non-positive `timeout` (a peer that stamped none) falls
+   * back to the system's `askTimeout`, so the receiving context is
+   * always bounded. Runtime plumbing for the receiving side of a
+   * transport, where the response must travel back as an envelope
+   * rather than settle a local promise.
    *
    * @returns `null` when the message entered the mailbox, the
    * {@link ErrDead} sentinel when this actor is not running, or the
@@ -768,7 +766,8 @@ export class PID {
       return ErrDead;
     }
 
-    const ctx = createRequestContext(message, this, sender, timeout, resolve, reject);
+    const deadline: number = timeout > 0 ? timeout : this._actorSystem.askTimeout();
+    const ctx = createRequestContext(message, this, sender, deadline, resolve, reject);
     const err = this._mailbox.enqueue(ctx);
     if (err !== null) {
       cancelAsk(ctx);
@@ -830,11 +829,13 @@ export class PID {
     // decided at the source, so a cancel can never touch a context the
     // target's loop has already recycled.
     const handle = opened;
+    const rawTimeout = options?.timeout ?? 0;
+    const deadline = rawTimeout > 0 ? rawTimeout : this._actorSystem.askTimeout();
     const ctx = createRequestContext(
       message,
       to,
       this,
-      options?.timeout ?? 0,
+      deadline,
       (reply) => {
         handle.detachDelivery();
         this.deliverRequestReply(handle, reply, null);
@@ -1319,25 +1320,28 @@ export class PID {
    * the receiving-side half of a cross-isolate watch, where the
    * watcher is a routed handle and the registration must land in this
    * local actor's tree. Watching a non-running actor is a no-op,
-   * mirroring {@link watch}.
+   * mirroring {@link watch}. Reports whether the registration is new,
+   * so callers that account per registration can stay exact.
    *
    * @internal
    */
-  addWatcher(watcher: PID): void {
+  addWatcher(watcher: PID): boolean {
     if (!this.isRunning()) {
-      return;
+      return false;
     }
 
-    this.tree().addWatcher(this, watcher);
+    return this.tree().addWatcher(this, watcher);
   }
 
-  /** Cancels an {@link addWatcher} registration; unknown watchers and
-   * stopped actors are a no-op.
+  /** Cancels an {@link addWatcher} registration, reporting whether one
+   * was actually removed; unknown watchers and stopped actors are a
+   * no-op reporting false, so callers that account per registration can
+   * stay exact.
    *
    * @internal
    */
-  removeWatcher(watcher: PID): void {
-    this._tree?.removeWatcher(this, watcher);
+  removeWatcher(watcher: PID): boolean {
+    return this._tree?.removeWatcher(this, watcher) ?? false;
   }
 
   /**

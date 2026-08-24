@@ -22,6 +22,7 @@
  * SOFTWARE.
  */
 
+import { readFileSync } from "node:fs";
 import { afterAll, describe, it } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem } from "../src/actor.system";
@@ -29,6 +30,7 @@ import { discardLogger } from "../src/discard.logger";
 import type { PID } from "../src/pid";
 import type { ReceiveContext } from "../src/receive.context";
 import { registerMessage } from "../src/registration";
+import type { TlsOptions } from "../src/remote.options";
 import { printReport, runScenario, type Scenario, type ScenarioReport } from "./harness";
 
 /**
@@ -37,8 +39,17 @@ import { printReport, runScenario, type Scenario, type ScenarioReport } from "./
  * (registry check, value encode, peer lanes, inbound resolve, decode,
  * prototype restore, mailbox delivery). The net benches next door
  * measure the transport alone; the delta between them and these
- * numbers is what the seam layer itself costs per message.
+ * numbers is what the seam layer itself costs per message. The same
+ * scenarios run again over TLS, so the carrier's cost sits next to the
+ * plaintext numbers it is paid on top of.
  */
+
+/** The committed self-signed fixtures the TLS tests run on. */
+function fixtureTls(): TlsOptions {
+  const pem = (name: string): string =>
+    readFileSync(new URL(`../test/net/tls/${name}`, import.meta.url), "utf8");
+  return { cert: pem("node.pem"), key: pem("node.key"), ca: pem("ca.pem") };
+}
 
 /** Messages per benchmark operation. */
 const TELL_BATCH: number = 10_000;
@@ -96,63 +107,93 @@ const sender: ActorSystem = new ActorSystem("bench-remote-a", {
   logger: discardLogger,
   remote: { host: "127.0.0.1", port: 0 },
 });
+const tlsReceiver: ActorSystem = new ActorSystem("bench-tls-b", {
+  logger: discardLogger,
+  remote: { host: "127.0.0.1", port: 0, tls: fixtureTls() },
+});
+const tlsSender: ActorSystem = new ActorSystem("bench-tls-a", {
+  logger: discardLogger,
+  remote: { host: "127.0.0.1", port: 0, tls: fixtureTls() },
+});
 await receiver.start();
 await sender.start();
+await tlsReceiver.start();
+await tlsSender.start();
 await receiver.spawn("sink", new Sink());
+await tlsReceiver.spawn("sink", new Sink());
 const sink: PID = (await sender.remoteLookup("127.0.0.1", receiver.port(), "sink")) as PID;
+const tlsSink: PID = (await tlsSender.remoteLookup("127.0.0.1", tlsReceiver.port(), "sink")) as PID;
 const outside: PID = sender.noSender();
+const tlsOutside: PID = tlsSender.noSender();
 
 afterAll(async () => {
   await sender.stop();
   await receiver.stop();
+  await tlsSender.stop();
+  await tlsReceiver.stop();
 });
 
-const tellScenario: Scenario = {
-  name: "remote tell",
-  batch: TELL_BATCH,
-  op: async (): Promise<void> => {
-    remaining = TELL_BATCH;
-    const done: Promise<void> = new Promise<void>((resolve: () => void): void => {
-      resolveDone = resolve;
-    });
+function tellScenario(name: string, from: PID, to: PID): Scenario {
+  return {
+    name,
+    batch: TELL_BATCH,
+    op: async (): Promise<void> => {
+      remaining = TELL_BATCH;
+      const done: Promise<void> = new Promise<void>((resolve: () => void): void => {
+        resolveDone = resolve;
+      });
 
-    for (let i: number = 0; i < TELL_BATCH; i++) {
-      outside.tell(sink, new Ping(i));
-    }
+      for (let i: number = 0; i < TELL_BATCH; i++) {
+        from.tell(to, new Ping(i));
+      }
 
-    await done;
-  },
-};
+      await done;
+    },
+  };
+}
 
-const sequentialAskScenario: Scenario = {
-  name: "remote ask (sequential)",
-  batch: SEQUENTIAL_ASKS,
-  op: async (): Promise<void> => {
-    for (let i: number = 0; i < SEQUENTIAL_ASKS; i++) {
-      await outside.ask(sink, new Query(i), 10_000);
-    }
-  },
-};
+function sequentialAskScenario(name: string, from: PID, to: PID): Scenario {
+  return {
+    name,
+    batch: SEQUENTIAL_ASKS,
+    op: async (): Promise<void> => {
+      for (let i: number = 0; i < SEQUENTIAL_ASKS; i++) {
+        await from.ask(to, new Query(i), 10_000);
+      }
+    },
+  };
+}
 
-const pipelinedAskScenario: Scenario = {
-  name: "remote ask (pipelined)",
-  batch: PIPELINED_ASKS,
-  op: async (): Promise<void> => {
-    const inFlight: Promise<unknown>[] = new Array(PIPELINED_ASKS);
-    for (let i: number = 0; i < PIPELINED_ASKS; i++) {
-      inFlight[i] = outside.ask(sink, new Query(i), 10_000);
-    }
+function pipelinedAskScenario(name: string, from: PID, to: PID): Scenario {
+  return {
+    name,
+    batch: PIPELINED_ASKS,
+    op: async (): Promise<void> => {
+      const inFlight: Promise<unknown>[] = new Array(PIPELINED_ASKS);
+      for (let i: number = 0; i < PIPELINED_ASKS; i++) {
+        inFlight[i] = from.ask(to, new Query(i), 10_000);
+      }
 
-    await Promise.all(inFlight);
-  },
-};
+      await Promise.all(inFlight);
+    },
+  };
+}
 
 describe("remoting", () => {
   it("measures the remote send path over loopback", { timeout: 300_000 }, async () => {
     const reports: ScenarioReport[] = [];
-    reports.push(await runScenario(tellScenario));
-    reports.push(await runScenario(sequentialAskScenario));
-    reports.push(await runScenario(pipelinedAskScenario));
+    reports.push(await runScenario(tellScenario("remote tell", outside, sink)));
+    reports.push(
+      await runScenario(sequentialAskScenario("remote ask (sequential)", outside, sink)),
+    );
+    reports.push(await runScenario(pipelinedAskScenario("remote ask (pipelined)", outside, sink)));
+    reports.push(await runScenario(tellScenario("remote tell (tls)", tlsOutside, tlsSink)));
+    reports.push(
+      await runScenario(sequentialAskScenario("remote ask (sequential, tls)", tlsOutside, tlsSink)),
+    );
+    reports.push(
+      await runScenario(pipelinedAskScenario("remote ask (pipelined, tls)", tlsOutside, tlsSink)),
+    );
     printReport(reports, "remoting  ·  loopback node to node");
   });
 });

@@ -212,11 +212,11 @@ export class ReceiveContext {
 
   /**
    * Sends a message to `to` and waits for {@link response}. The call
-   * parks until the reply arrives or `timeout` milliseconds elapse.
+   * parks until the reply arrives or `timeout` milliseconds elapse; a
+   * non-positive or omitted `timeout` falls back to the system's
+   * `askTimeout`, so the call is never unbounded.
    *
    * @throws The {@link ErrDead} sentinel when the target is not running.
-   * @throws The {@link ErrInvalidTimeout} sentinel when `timeout` is not
-   * a positive duration.
    * @throws The {@link ErrRequestTimeout} sentinel when no reply arrives
    * in time.
    * @throws The mailbox rejection error when delivery fails.
@@ -741,7 +741,9 @@ export function createAskContext(
 /**
  * Constructs a receive context whose {@link ReceiveContext.response}
  * routes into the given callbacks, registering it with the timeout
- * generations when `timeout` is positive. Runtime plumbing shared by ask
+ * generations. Callers pass a positive `timeout` by contract, defaulted
+ * to the system's `askTimeout` upstream when the caller named none, so
+ * every reply-bearing context is bounded. Runtime plumbing shared by ask
  * and in-actor requests.
  *
  * @internal
@@ -761,10 +763,7 @@ export function createRequestContext(
     ctx.rearm(message, self, sender, resolve, reject);
   }
 
-  if (timeout > 0) {
-    enlist(ctx, timeout);
-  }
-
+  enlist(ctx, timeout);
   return ctx;
 }
 

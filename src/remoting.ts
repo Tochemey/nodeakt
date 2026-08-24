@@ -22,16 +22,11 @@
  * SOFTWARE.
  */
 
+import { readFile } from "node:fs/promises";
 import type { IsolateRoute } from "./actor.ref";
 import type { ActorSystem } from "./actor.system";
 import { Codec } from "./codec";
-import {
-  ActorNotFoundError,
-  ActorNotRegisteredError,
-  ErrDead,
-  ErrInvalidTimeout,
-  ErrRequestTimeout,
-} from "./errors";
+import { ActorNotFoundError, ActorNotRegisteredError, ErrDead, ErrRequestTimeout } from "./errors";
 import { Terminated } from "./messages";
 import {
   type DataEnvelope,
@@ -50,6 +45,7 @@ import { LANE_CONTROL } from "./net/frame";
 import { Peer } from "./net/peer";
 import { NetServer } from "./net/server";
 import { ErrAskTimeout, PeerError, REVISION_CURRENT, type Session } from "./net/session";
+import type { TlsConfig } from "./net/tls";
 import { ByteReader, ByteWriter, decodeValue, encodeValue } from "./net/values";
 import { type Path, parsePath } from "./path";
 import type { PID } from "./pid";
@@ -63,7 +59,7 @@ import {
   type RequestOptions,
 } from "./reentrancy";
 import { defaultActorRegistry, defaultMessageRegistry, placedRecipe } from "./registration";
-import type { RemoteOptions } from "./remote.options";
+import type { RemoteOptions, TlsOptions } from "./remote.options";
 import {
   decodeFailure,
   decodePayload,
@@ -89,12 +85,14 @@ import type { SpawnOptions } from "./spawn.options";
  * paths a local message uses. The bridge between runtime messages and
  * wire payloads lives in `remoting.codec.ts`.
  *
- * The trust model is a private, trusted network: traffic is plaintext
- * TCP, and an envelope's sender path is self-declared, so a hostile
- * peer can grow the sender cache and steer reply dials with forged
- * paths. Authentication, transport security, and bounding those
- * resources against hostile input belong to the hardening slice;
- * nothing here should face an untrusted network before it lands.
+ * The trust model is a private network whose nodes trust each other:
+ * an envelope's sender path is self-declared, so a hostile peer can
+ * steer reply dials with forged paths. The seam's own state is
+ * bounded (the sender cache is a capped LRU and idle peers are
+ * reclaimed), and the `tls` option encrypts the carrier, mutual TLS
+ * included. A verified peer certificate is an identity, not an
+ * authorization: nothing checks what a peer may do, so nothing here
+ * should face an untrusted network.
  *
  * @internal
  */
@@ -146,6 +144,15 @@ const CONTROL_TARGET: string = "";
  * destroy every connection now. */
 const SHUTDOWN_NOW: number = -1;
 
+/** The sender-cache cap: generous, so a conforming topology never
+ * feels it, while a hostile peer forging sender paths meets a bound.
+ * An internal sizing fact, not configuration; exported only so the
+ * bounding tests can push past it.
+ *
+ * @internal
+ */
+export const SENDER_CACHE_SIZE: number = 4096;
+
 /** What a control lookup answers with: where the actor lives and which
  * incarnation holds the name, or null when no running top-level actor
  * does. */
@@ -177,10 +184,24 @@ interface RemoteWatch {
 }
 
 /** One watch a far node registered here over the wire: the local
- * target and the watcher handle registered on it. */
+ * target, the watcher handle registered on it, and the sender-cache
+ * key the watcher was pinned under, so the sweep can release the pin
+ * it acquired. */
 interface InboundWatch {
   readonly target: PID;
   readonly watcher: PID;
+  readonly watcherKey: string;
+}
+
+/** One cached foreign-sender handle. The pin set holds the path of
+ * every local actor the handle is registered on as an inbound watcher:
+ * a pinned entry survives eviction, because evicting it would mint a
+ * different instance for the same sender and break the
+ * unwatch-by-identity the inbound registrations rely on. Pins are
+ * keyed per watched target so no path can release one twice. */
+interface SenderEntry {
+  readonly handle: PID;
+  readonly pins: Set<string>;
 }
 
 /** The peer-map key of one remote node. */
@@ -196,6 +217,39 @@ function watchKey(watcher: string, target: string): string {
 /** The cache key of one foreign sender: its path and incarnation. */
 function senderKey(sender: string, uid: string): string {
   return `${sender}#${uid}`;
+}
+
+/** Resolves one TLS option to the material `node:tls` consumes: PEM
+ * contents pass through, anything else is read as a file path, so
+ * certificates stay the operator's concern in whichever form their
+ * tooling produces. */
+async function resolvePem(field: string, value: string): Promise<string | Buffer> {
+  if (value.includes("-----BEGIN ")) {
+    return value;
+  }
+
+  try {
+    return await readFile(value);
+  } catch (err) {
+    throw new TypeError(
+      `remote tls ${field} is neither PEM contents nor a readable file: ${(err as Error).message}`,
+    );
+  }
+}
+
+/** Resolves the configured TLS block into the transport's carrier
+ * config, reading whichever fields arrived as file paths. */
+async function resolveTls(options: TlsOptions): Promise<TlsConfig> {
+  const resolved: TlsConfig = {
+    cert: await resolvePem("cert", options.cert),
+    key: await resolvePem("key", options.key),
+    requestCert: options.requestCert === true,
+  };
+  if (options.ca === undefined) {
+    return resolved;
+  }
+
+  return { ...resolved, ca: await resolvePem("ca", options.ca) };
 }
 
 /** Builds the HELLO the endpoint advertises to every peer it accepts or
@@ -229,21 +283,30 @@ export class Remoting {
   private readonly _local: Hello;
   private readonly _codec: Codec = new Codec(defaultMessageRegistry);
 
+  /** The resolved carrier security every peer dials with, or undefined
+   * on a plaintext system. */
+  private readonly _tls: TlsConfig | undefined;
+
   /** The retained scratch buffer every outbound payload encodes into. */
   private readonly _writer: ByteWriter = new ByteWriter();
 
-  /** The outbound side, one peer per remote node, dialed lazily.
-   * Peers are never evicted before stop, so a long-lived node holds
-   * one per distinct endpoint it ever contacted; reclaiming dead ones
-   * belongs to the hardening slice. */
+  /** The outbound side, one peer per remote node, dialed lazily and
+   * reclaimed lazily: a peer left with no connection, nothing pending,
+   * and no watch referencing its node is dropped on the sweep a lane
+   * close already runs, and a later send recreates it. */
   private readonly _peers = new Map<string, Peer>();
 
   /** Handles minted for foreign senders, per path and incarnation, so
-   * the same sender always resolves to the same handle instance. The
-   * cache grows with every distinct sender incarnation this node ever
-   * hears from and is released only at stop; bounding it against
-   * hostile or long-horizon input belongs to the hardening slice. */
-  private readonly _senders = new Map<string, PID>();
+   * the same sender always resolves to the same handle instance. A
+   * capped LRU in Map iteration order: a hit reinserts its entry, and
+   * an insert past the cap evicts the least recently heard-from
+   * unpinned entry, so actor churn on peer nodes and forged sender
+   * paths meet a bound instead of growing the cache forever. */
+  private readonly _senders = new Map<string, SenderEntry>();
+
+  /** Whether the all-pinned overflow has been logged; once is enough,
+   * since the condition persists until watches unwind. */
+  private _senderOverflowLogged: boolean = false;
 
   /** Watch registrations that arrived over the wire, per delivering
    * session. The watching node treats that session's loss as the death
@@ -261,39 +324,59 @@ export class Remoting {
    * teardown hooks. */
   private _closed: boolean = false;
 
-  private constructor(system: ActorSystem, server: NetServer, local: Hello) {
+  private constructor(
+    system: ActorSystem,
+    server: NetServer,
+    local: Hello,
+    tls: TlsConfig | undefined,
+  ) {
     this._system = system;
     this._server = server;
     this._local = local;
+    this._tls = tls;
   }
 
   /**
    * Binds the endpoint on the configured host and port and returns the
    * live remoting layer. A bind failure rejects, so a system whose
-   * endpoint cannot open fails to start rather than starting deaf.
+   * endpoint cannot open fails to start rather than starting deaf; so
+   * does TLS material that cannot be resolved, since a node meant to
+   * be encrypted must never come up plaintext.
    */
   static async start(system: ActorSystem, options: RemoteOptions): Promise<Remoting> {
+    const tls: TlsConfig | undefined =
+      options.tls === undefined ? undefined : await resolveTls(options.tls);
     const local: Hello = buildHello(system.name(), options);
     let seam: Remoting | null = null;
     // The casts below never observe the null: a handshake needs socket
     // round trips, which cannot complete before listen resolves and
     // the assignment underneath runs on that very resolution turn.
-    const server: NetServer = await NetServer.listen(
-      { host: options.host, port: options.port, local },
-      {
-        onData: (session: Session, envelope: DataEnvelope, correlation: number): void => {
-          (seam as Remoting).onData(session, envelope, correlation);
-        },
-        onSessionClose: (session: Session): void => {
-          (seam as Remoting).sweepInbound(session);
-        },
+    const bind: { host: string; port: number; local: Hello } = {
+      host: options.host,
+      port: options.port,
+      local,
+    };
+    const server: NetServer = await NetServer.listen(tls === undefined ? bind : { ...bind, tls }, {
+      onData: (session: Session, envelope: DataEnvelope, correlation: number): void => {
+        (seam as Remoting).onData(session, envelope, correlation);
       },
-    );
+      onSessionClose: (session: Session): void => {
+        (seam as Remoting).sweepInbound(session);
+      },
+      // A rejected connection is refused for the right reason (a peer
+      // whose TLS handshake fails never becomes a session), but the
+      // acceptor is the only side that sees why. Logging it turns a
+      // silent refusal into an operator signal, which is exactly what
+      // a mixed plaintext-versus-TLS misconfiguration needs.
+      onError: (error: Error): void => {
+        system.logger().warn("remote endpoint refused a connection", { error });
+      },
+    });
 
     // An ephemeral port resolves to the bound one, so every HELLO this
     // node dials out advertises an endpoint a peer can reach; the
     // server patches its own copy the same way for accepted sessions.
-    seam = new Remoting(system, server, { ...local, port: server.address.port });
+    seam = new Remoting(system, server, { ...local, port: server.address.port }, tls);
     return seam;
   }
 
@@ -301,6 +384,18 @@ export class Remoting {
    * to the port the operating system chose. */
   get port(): number {
     return this._server.address.port;
+  }
+
+  /** The number of cached foreign-sender handles, pinned ones
+   * included; introspection for the bounding tests. */
+  get cachedSenders(): number {
+    return this._senders.size;
+  }
+
+  /** The number of peer entries currently held; introspection for the
+   * reclaim tests. */
+  get peerCount(): number {
+    return this._peers.size;
   }
 
   /**
@@ -482,11 +577,13 @@ export class Remoting {
   }
 
   /**
-   * A control-lane connection died. Watches ride the control lane, and
-   * remote death is indistinguishable from connection loss, so every
-   * watch over that node settles now: each watcher receives one
-   * {@link Terminated} for its target. A stopping system skips the
-   * sweep, since its watchers are shutting down with it.
+   * A lane's connection died. Watches ride the control lane, and
+   * remote death is indistinguishable from connection loss, so a
+   * control-lane loss settles every watch over that node: each watcher
+   * receives one {@link Terminated} for its target. A stopping system
+   * skips the settlement, since its watchers are shutting down with
+   * it. Either way the close is the moment to reclaim the node's peer,
+   * which the settlement may have just unreferenced.
    */
   private onLaneClose(node: string, lane: number): void {
     // Watches a far node registered here rode sessions of its own; any
@@ -499,18 +596,42 @@ export class Remoting {
       }
     }
 
-    if (lane !== LANE_CONTROL || !this._system.isRunning()) {
+    if (lane === LANE_CONTROL && this._system.isRunning()) {
+      for (const [key, entry] of this._watches) {
+        if (entry.node !== node) {
+          continue;
+        }
+
+        this._watches.delete(key);
+        this._system.noSender().tell(entry.watcher, new Terminated(entry.target));
+      }
+    }
+
+    this.reclaimPeer(node);
+  }
+
+  /**
+   * Drops the node's peer entry once it holds nothing: no connection
+   * on any lane, nothing pending on one, and no outbound watch left
+   * referencing the node, so its loss could not even settle anything.
+   * Reclaim keeps a long-lived node from accumulating one peer per
+   * endpoint it ever contacted; a later send just recreates the peer,
+   * so nothing on the wire changes.
+   */
+  private reclaimPeer(node: string): void {
+    const peer: Peer | undefined = this._peers.get(node);
+    if (peer === undefined || !peer.reclaimable) {
       return;
     }
 
-    for (const [key, entry] of this._watches) {
-      if (entry.node !== node) {
-        continue;
+    for (const entry of this._watches.values()) {
+      if (entry.node === node) {
+        return;
       }
-
-      this._watches.delete(key);
-      this._system.noSender().tell(entry.watcher, new Terminated(entry.target));
     }
+
+    this._peers.delete(node);
+    peer.close();
   }
 
   /** Sends one fire-and-forget message over the wire. Returns transport
@@ -521,6 +642,15 @@ export class Remoting {
     if (this._closed) {
       this._system.toDeadletter(sender?.path().toString(), to.toString(), message, ErrDead);
       return ErrDead;
+    }
+
+    // A death notification leaving through a watcher handle is the
+    // seam's only sight of a watched local actor stopping on its own:
+    // the tree already dropped the registration, so the pin it held
+    // releases here. Any other Terminated finds no matching pair and
+    // releases nothing.
+    if (message instanceof Terminated) {
+      this.releaseSender(senderKey(to.toString(), to.uid()), message.actorPath);
     }
 
     let wire: WirePayload;
@@ -538,9 +668,11 @@ export class Remoting {
 
   /** Sends one ask over the wire; the transport owns the pending entry
    * and its timer, so settlement arrives as a promise. The receiving
-   * node sees the remaining budget and re-derives its own deadline.
-   * The timer arms once the lane is acquired, so a first ask on a cold
-   * lane can additionally wait out the dial before its budget starts. */
+   * node sees the remaining budget and re-derives its own deadline. A
+   * non-positive or omitted timeout falls back to the system's
+   * `askTimeout`, so a remote ask is never unbounded. The timer arms
+   * once the lane is acquired, so a first ask on a cold lane can
+   * additionally wait out the dial before its budget starts. */
   private ask(
     host: string,
     port: number,
@@ -553,9 +685,7 @@ export class Remoting {
       return Promise.reject(ErrDead);
     }
 
-    if (timeout <= 0) {
-      return Promise.reject(ErrInvalidTimeout);
-    }
+    const deadline: number = timeout > 0 ? timeout : this._system.askTimeout();
 
     let wire: WirePayload;
     try {
@@ -568,7 +698,7 @@ export class Remoting {
 
     const envelope: DataEnvelope = this.dataEnvelope(KIND_ASK, to, wire, sender);
     return this.peerFor(host, port)
-      .ask(envelope, timeout)
+      .ask(envelope, deadline)
       .then(
         (reply: ReplyEnvelope): unknown => decodePayload(this._codec, reply.typeRef, reply.payload),
         (err: Error): never => {
@@ -581,10 +711,10 @@ export class Remoting {
    * admission runs against the sender's reentrancy configuration and
    * the continuation runs on the sender's own turn. The handle settles
    * exactly once, so a reply racing a cancel is dropped by the
-   * bookkeeping, never delivered twice. A request carrying no timeout,
-   * or one cancelled mid-flight, keeps its pending entry on the
-   * connection until the connection ends: the transport offers no
-   * withdrawal, so the entry is bounded by the connection's life. */
+   * bookkeeping, never delivered twice. Every request carries a
+   * positive timeout by contract, so its transport entry is always
+   * bounded by that deadline; a cancel settles the handle early, and
+   * the entry then clears when the deadline or the reply arrives. */
   private request(
     host: string,
     port: number,
@@ -612,7 +742,8 @@ export class Remoting {
     }
 
     const handle: RequestHandle = opened;
-    const timeout: number = options?.timeout ?? 0;
+    const rawTimeout: number = options?.timeout ?? 0;
+    const timeout: number = rawTimeout > 0 ? rawTimeout : this._system.askTimeout();
     const envelope: DataEnvelope = this.dataEnvelope(KIND_ASK, to, wire, sender);
 
     this.peerFor(host, port)
@@ -752,28 +883,39 @@ export class Remoting {
       return;
     }
 
-    target.addWatcher(watcher);
-    this.trackInbound(session, target, watcher);
+    // Only a registration the tree did not already hold pins: a
+    // redelivered watch frame must not acquire a second pin its single
+    // eventual removal could never release.
+    if (target.addWatcher(watcher)) {
+      this.pinSender(envelope, target.path().toString());
+    }
+
+    this.trackInbound(session, target, watcher, envelope);
   }
 
   /** Records one wire-registered watch under its delivering session. An
    * unwatch does not prune the record: the sweep's removal of an
    * already-removed watcher is a no-op, so the list may hold settled
    * entries rather than pay a scan per unwatch. */
-  private trackInbound(session: Session, target: PID, watcher: PID): void {
+  private trackInbound(session: Session, target: PID, watcher: PID, envelope: DataEnvelope): void {
     let list: InboundWatch[] | undefined = this._inboundWatches.get(session);
     if (list === undefined) {
       list = [];
       this._inboundWatches.set(session, list);
     }
 
-    list.push({ target, watcher });
+    list.push({
+      target,
+      watcher,
+      watcherKey: senderKey(envelope.sender, envelope.senderUid),
+    });
   }
 
   /** Releases every watcher a closed session registered: the watching
    * node treats the same connection loss as the death of everything it
    * watched here, so the registrations are settled the moment the
-   * session is gone. */
+   * session is gone. The removal report gates the pin release, so the
+   * settled entries the list deliberately keeps release nothing. */
   private sweepInbound(session: Session): void {
     const list: InboundWatch[] | undefined = this._inboundWatches.get(session);
     if (list === undefined) {
@@ -781,8 +923,10 @@ export class Remoting {
     }
 
     this._inboundWatches.delete(session);
-    for (const { target, watcher } of list) {
-      target.removeWatcher(watcher);
+    for (const { target, watcher, watcherKey } of list) {
+      if (target.removeWatcher(watcher)) {
+        this.releaseSender(watcherKey, target.path().toString());
+      }
     }
   }
 
@@ -799,7 +943,9 @@ export class Remoting {
       return;
     }
 
-    target.removeWatcher(watcher);
+    if (target.removeWatcher(watcher)) {
+      this.releaseSender(senderKey(envelope.sender, envelope.senderUid), target.path().toString());
+    }
   }
 
   /** Settles one control request against this node. Control envelopes
@@ -1081,11 +1227,19 @@ export class Remoting {
 
     // Cache first: a hit skips the path parse entirely, and a cached
     // handle is foreign by construction, since a sender of this very
-    // node is never cached.
+    // node is never cached. The reinsert keeps the map in
+    // least-recently-heard-from order, which is what eviction walks;
+    // order is meaningless below the cap, so the steady state of a
+    // conforming topology skips the touch and pays nothing for it.
     const key: string = senderKey(envelope.sender, envelope.senderUid);
-    const cached: PID | undefined = this._senders.get(key);
+    const cached: SenderEntry | undefined = this._senders.get(key);
     if (cached !== undefined) {
-      return cached;
+      if (this._senders.size >= SENDER_CACHE_SIZE) {
+        this._senders.delete(key);
+        this._senders.set(key, cached);
+      }
+
+      return cached.handle;
     }
 
     let path: Path;
@@ -1100,8 +1254,63 @@ export class Remoting {
     }
 
     const handle: PID = routedPid(this._system, path, this.routeTo(path.host(), path.port()));
-    this._senders.set(key, handle);
+    this._senders.set(key, { handle, pins: new Set<string>() });
+    this.evictSenders(key);
     return handle;
+  }
+
+  /**
+   * Holds the sender cache to its cap after an insert. The walk is in
+   * least-recently-heard-from order and skips pinned entries and the
+   * entry just inserted: evicting either would hand a later envelope a
+   * different instance for a sender whose identity still matters, the
+   * pinned one for its live watch, the fresh one for whatever the
+   * envelope that minted it starts. A pass that finds nothing evictable
+   * lets the cache exceed the cap, since every extra entry is behind a
+   * live inbound watch, and says so once.
+   */
+  private evictSenders(inserted: string): void {
+    if (this._senders.size <= SENDER_CACHE_SIZE) {
+      return;
+    }
+
+    for (const [key, entry] of this._senders) {
+      if (key === inserted || entry.pins.size > 0) {
+        continue;
+      }
+
+      this._senders.delete(key);
+      if (this._senders.size <= SENDER_CACHE_SIZE) {
+        return;
+      }
+    }
+
+    if (this._senderOverflowLogged) {
+      return;
+    }
+
+    this._senderOverflowLogged = true;
+    this._system.logger().warn("remote sender cache exceeded its cap: every entry is pinned", {
+      cap: SENDER_CACHE_SIZE,
+      size: this._senders.size,
+    });
+  }
+
+  /** Pins the cached entry of the watcher a registered inbound watch
+   * delivered, keyed by the watched target's path. A watcher of this
+   * very node was never cached, so there is nothing to pin. */
+  private pinSender(envelope: DataEnvelope, target: string): void {
+    const entry: SenderEntry | undefined = this._senders.get(
+      senderKey(envelope.sender, envelope.senderUid),
+    );
+    entry?.pins.add(target);
+  }
+
+  /** Releases the pin a watch registration held; exact by construction,
+   * since every caller gates on the removal or delivery that settled
+   * the registration, and the pair key cannot release twice. */
+  private releaseSender(watcherKey: string, target: string): void {
+    this._senders.get(watcherKey)?.pins.delete(target);
   }
 
   /** Reports whether the path addresses an actor of this very node. */
@@ -1137,22 +1346,30 @@ export class Remoting {
   }
 
   /** Returns the peer of the node at `host:port`, creating it on first
-   * use; dialing stays lazy inside the peer itself. */
+   * use; dialing stays lazy inside the peer itself, and every dial
+   * carries the system's carrier security. */
   private peerFor(host: string, port: number): Peer {
     const key: string = nodeKey(host, port);
     let peer: Peer | undefined = this._peers.get(key);
     if (peer === undefined) {
-      peer = new Peer(host, port, this._local, {
-        onData: (session: Session, envelope: DataEnvelope, correlation: number): void => {
-          this.onData(session, envelope, correlation);
+      const tls: TlsConfig | undefined = this._tls;
+      peer = new Peer(
+        host,
+        port,
+        this._local,
+        {
+          onData: (session: Session, envelope: DataEnvelope, correlation: number): void => {
+            this.onData(session, envelope, correlation);
+          },
+          onDeadLetter: (envelope: DataEnvelope, reason: Error): void => {
+            this.deadLetterOut(envelope, reason);
+          },
+          onLaneClose: (lane: number): void => {
+            this.onLaneClose(key, lane);
+          },
         },
-        onDeadLetter: (envelope: DataEnvelope, reason: Error): void => {
-          this.deadLetterOut(envelope, reason);
-        },
-        onLaneClose: (lane: number): void => {
-          this.onLaneClose(key, lane);
-        },
-      });
+        tls === undefined ? {} : { tls },
+      );
       this._peers.set(key, peer);
     }
 

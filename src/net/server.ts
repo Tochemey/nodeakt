@@ -23,9 +23,11 @@
  */
 
 import { type AddressInfo, createServer, type Server, type Socket } from "node:net";
+import { createServer as createTlsServer } from "node:tls";
 import { type DataEnvelope, ERROR_UNAVAILABLE, type Hello } from "./envelope";
 import { Session, type SessionHandlers, type SessionOptions } from "./session";
 import { defaultTimers, type TimerHandle, type Timers } from "./timers";
+import type { TlsConfig } from "./tls";
 
 /**
  * NetServer owns exactly the listener lifecycle: bind, accept, hand
@@ -55,6 +57,13 @@ export interface NetServerOptions {
   readonly local: Hello;
   /** Refuses connections beyond this count; zero means unlimited. */
   readonly maxConnections?: number;
+  /**
+   * Listen over TLS with this material. All or nothing: a TLS
+   * listener accepts only TLS, so a plaintext dialer fails its
+   * carrier handshake before a single frame crosses. Everything above
+   * the socket is byte-identical either way.
+   */
+  readonly tls?: TlsConfig;
   /** Per-session settings; `connIdleMs` defaults to 20 minutes here. */
   readonly session?: SessionOptions;
   readonly timers?: Timers;
@@ -102,7 +111,32 @@ export class NetServer {
     this._local = options.local;
     this._handlers = handlers;
     this._timers = options.timers ?? defaultTimers;
-    this._listener = createServer((socket: Socket): void => this.onConnection(socket));
+    const tls: TlsConfig | undefined = options.tls;
+    if (tls === undefined) {
+      this._listener = createServer((socket: Socket): void => this.onConnection(socket));
+      return;
+    }
+
+    // The TLS listener accepts a connection only once its carrier
+    // handshake settled, so everything downstream of accept is
+    // byte-identical to plaintext. A client whose carrier handshake
+    // fails (a plaintext dialer, a refused client certificate) never
+    // reaches accept; the failure is reported, not thrown, because a
+    // misconfigured client must not take the listener down.
+    const listener: Server = createTlsServer(
+      {
+        cert: tls.cert,
+        key: tls.key,
+        ca: tls.ca,
+        requestCert: tls.requestCert === true,
+        rejectUnauthorized: true,
+      },
+      (socket: Socket): void => this.onConnection(socket),
+    );
+    listener.on("tlsClientError", (error: Error): void => {
+      this._handlers.onError?.(error);
+    });
+    this._listener = listener;
   }
 
   /** Binds and starts accepting; resolves once listening. */

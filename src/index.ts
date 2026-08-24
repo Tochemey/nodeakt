@@ -112,7 +112,7 @@ export type {
   RequestOptions,
 } from "./reentrancy";
 export { registerActor, registerMessage } from "./registration";
-export type { RemoteOptions } from "./remote.options";
+export type { RemoteOptions, TlsOptions } from "./remote.options";
 export { AdjustRouterPoolSize, GetRoutees, Routees } from "./router.messages";
 export {
   ConsistentHashRouting,

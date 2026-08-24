@@ -67,12 +67,11 @@ The first `response` wins; later calls are ignored. `response` is a no-op when t
 > [!WARNING]
 > Do not ask an actor that is processing this call. It cannot reply until the current message finishes. Asking `self` from `receive` never completes. For call cycles, use [`request`](reentrancy.md).
 
-`timeout` is a positive duration in milliseconds. The wait is a lower bound with coarse expiry: an unanswered ask is rejected between one and two timeout periods, so the send path never reads the clock.
+`timeout` is a duration in milliseconds. A non-positive or omitted value falls back to the system's [`askTimeout`](../actor-system/index.md), so an ask is never unbounded. The wait is a lower bound with coarse expiry: an unanswered ask is rejected between one and two timeout periods, so the send path never reads the clock.
 
 | Failure             | When                                     |
 |---------------------|------------------------------------------|
 | `ErrDead`           | Target not running.                      |
-| `ErrInvalidTimeout` | `timeout` is not positive.               |
 | `ErrRequestTimeout` | No reply in time.                        |
 | mailbox error       | Delivery rejected (`ErrMailboxFull`, …). |
 

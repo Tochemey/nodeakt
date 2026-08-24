@@ -27,7 +27,7 @@ import type { IsolateRoute } from "./actor.ref";
 import type { ActorSystem } from "./actor.system";
 import { Codec, decodeError, encodeError } from "./codec";
 import type { Envelope, WireMessage } from "./envelope";
-import { ErrDead, ErrInvalidTimeout } from "./errors";
+import { ErrDead } from "./errors";
 import type { MessageRegistry } from "./message.registry";
 import { Terminated } from "./messages";
 import { type Path, parsePath } from "./path";
@@ -129,8 +129,10 @@ function transferablesOf(wire: WireMessage | null): ArrayBuffer[] | undefined {
  *   the same coarse timeout on its own pending context.
  * - An undeliverable envelope becomes a dead letter on the receiving
  *   system, carried by the {@link ErrDead} sentinel.
- * - A request canceled or never answered under no timeout keeps its
- *   correlation entry until a reply arrives or the transport closes.
+ * - Every ask and request carries a timeout, defaulted to the system's
+ *   `askTimeout` when the caller omits one, so a correlation entry is
+ *   always bounded by that deadline; a cancel settles the handle early
+ *   and the entry clears when the deadline or the reply arrives.
  *
  * Delivery is FIFO per port pair, so per-sender-per-target ordering
  * holds across the boundary exactly as it holds locally.
@@ -262,21 +264,19 @@ export class PortTransport {
   /**
    * Sends a message to the actor addressed by the path and waits for
    * its response, with the contract of `PID.ask`: the promise settles
-   * with the value passed to `ReceiveContext.response`, rejects with
-   * {@link ErrInvalidTimeout} for a non-positive timeout,
-   * {@link ErrRequestTimeout} on coarse expiry, {@link ErrDead} when
-   * the path does not resolve to a running actor of its incarnation or
-   * the transport is closed, and the delivery error otherwise.
+   * with the value passed to `ReceiveContext.response`, falls back to
+   * the system's `askTimeout` for a non-positive timeout so the ask is
+   * never unbounded, rejects with {@link ErrRequestTimeout} on coarse
+   * expiry, {@link ErrDead} when the path does not resolve to a running
+   * actor of its incarnation or the transport is closed, and the
+   * delivery error otherwise.
    */
   ask(to: Path, message: unknown, timeout: number, sender?: PID): Promise<unknown> {
     if (this.refused()) {
       return Promise.reject(ErrDead);
     }
 
-    if (timeout <= 0) {
-      return Promise.reject(ErrInvalidTimeout);
-    }
-
+    const deadline = timeout > 0 ? timeout : this._system.askTimeout();
     const from = sender ?? this._system.noSender();
 
     let wire: WireMessage;
@@ -309,7 +309,7 @@ export class PortTransport {
       reject(reason);
     };
 
-    const ctx = createRequestContext(message, from, from, timeout, done, failed);
+    const ctx = createRequestContext(message, from, from, deadline, done, failed);
     this._pending.set(cid, {
       ctx,
       fail: (error) => {
@@ -327,7 +327,7 @@ export class PortTransport {
       senderUid: sender?.path().uid() ?? "",
       senderWorkerId: this._selfId,
       cid,
-      timeout,
+      timeout: deadline,
       message: wire,
       error: null,
     });
@@ -369,7 +369,8 @@ export class PortTransport {
 
     const handle = opened;
     const cid = this._nextCid++;
-    const timeout = options?.timeout ?? 0;
+    const rawTimeout = options?.timeout ?? 0;
+    const timeout = rawTimeout > 0 ? rawTimeout : this._system.askTimeout();
 
     const delivered = (reply: unknown): void => {
       this._pending.delete(cid);

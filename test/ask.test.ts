@@ -26,7 +26,7 @@ import { describe, expect, it } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem } from "../src/actor.system";
 import { BoundedMailbox } from "../src/bounded.mailbox";
-import { ErrDead, ErrInvalidTimeout, ErrMailboxFull, ErrRequestTimeout } from "../src/errors";
+import { ErrDead, ErrMailboxFull, ErrRequestTimeout } from "../src/errors";
 import { newPath } from "../src/path";
 import { PID } from "../src/pid";
 import { createReceiveContext, type ReceiveContext } from "../src/receive.context";
@@ -100,12 +100,35 @@ describe("PID ask", () => {
     await expect(external.ask(pid, "ping", 1000)).rejects.toBe(ErrDead);
   });
 
-  it("rejects a non-positive timeout", async () => {
+  it("falls back to the system askTimeout for a non-positive timeout", async () => {
     const pid = makePid(new Echo(), "timeout-check");
     await pid.start();
 
-    await expect(external.ask(pid, "ping", 0)).rejects.toBe(ErrInvalidTimeout);
-    await expect(external.ask(pid, "ping", -1)).rejects.toBe(ErrInvalidTimeout);
+    // A non-positive timeout is no longer rejected; it falls back to
+    // the system's askTimeout, so a responsive target still answers.
+    await expect(external.ask(pid, "ping", 0)).resolves.toBe("ping");
+    await expect(external.ask(pid, "ping", -1)).resolves.toBe("ping");
+  });
+
+  it("bounds a non-positive timeout by the configured askTimeout", async () => {
+    class Silent implements Actor {
+      preStart(): void {}
+      receive(): void {}
+      postStop(): void {}
+    }
+
+    // A small askTimeout proves the fallback is a real bound: an ask
+    // with no timeout of its own still expires, never waits unbounded.
+    const bounded = new ActorSystem("bounded", { askTimeout: 20 });
+    const caller = new PID(
+      { preStart(): void {}, receive(): void {}, postStop(): void {} },
+      newPath("caller", "bounded", "127.0.0.1", 0),
+      bounded,
+    );
+    const silent = new PID(new Silent(), newPath("silent", "bounded", "127.0.0.1", 0), bounded);
+    await silent.start();
+
+    await expect(caller.ask(silent, "ping", 0)).rejects.toBe(ErrRequestTimeout);
   });
 
   it("times out when the target never replies", async () => {

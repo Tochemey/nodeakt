@@ -19,31 +19,57 @@ hero:
       text: GitHub
       link: https://github.com/Tochemey/nodeakt
 
-features:
-  - title: One message at a time
-    details: An actor owns private state and a mailbox. The runtime delivers one message at a time, so that state needs no lock.
-    link: /actor/
-  - title: Typed messages
-    details: Messages are classes narrowed with instanceof. tell is fire-and-forget; ask waits for a reply.
-    link: /actor/messaging
-  - title: Supervision
-    details: Stop, resume, restart, or escalate on failure. One-for-one or one-for-all, restart budgets, exponential backoff.
-    link: /actor/supervision
-  - title: Behaviors and stash
-    details: become and becomeStacked swap the handler at runtime; the stash replays deferred messages after a switch.
-    link: /actor/behaviors
-  - title: Mailboxes
-    details: Unbounded and bounded FIFO, segmented, fair per-sender, and priority. Or implement your own.
-    link: /actor/mailboxes
-  - title: Pipe, request, schedule
-    details: pipeTo turns a promise's result into a message, reentrant requests keep the mailbox moving while a reply is in flight, and schedules deliver on a delay or an interval.
-    link: /actor/pipeto
-  - title: Multi-core
-    details: Spawn with Props and the runtime places actors across every core. Same PID API locally and across isolates.
-    link: /multi-core/
-  - title: Remoting
-    details: Look up, spawn, watch, and message actors on another machine over TCP. The same PID API across nodes, tell to death watch, failures included.
-    link: /remoting/
-  - title: Zero dependencies
-    details: The runtime, the multi-core layer, and the wire protocol are built on the standard library alone. npm install brings exactly one package.
+runtime:
+  kicker: Runtime
+  title: Actors, on one machine.
+  details: An actor owns private state and a mailbox. The runtime delivers one message at a time, so that state needs no lock.
+  items:
+    - title: One message at a time
+      icon: actor
+      details: An actor owns private state and a mailbox. The runtime delivers one message at a time, so that state needs no lock.
+      link: /actor/
+    - title: Typed messages
+      icon: typed
+      details: Messages are classes narrowed with instanceof. tell is fire-and-forget; ask waits for a reply.
+      link: /actor/messaging
+    - title: Supervision
+      icon: supervision
+      details: Stop, resume, restart, or escalate on failure. One-for-one or one-for-all, restart budgets, exponential backoff.
+      link: /actor/supervision
+    - title: Behaviors and stash
+      icon: behaviors
+      details: become and becomeStacked swap the handler at runtime; the stash replays deferred messages after a switch.
+      link: /actor/behaviors
+    - title: Mailboxes
+      icon: mailbox
+      details: Unbounded and bounded FIFO, segmented, fair per-sender, and priority. Or implement your own.
+      link: /actor/mailboxes
+    - title: Pipe, request, schedule
+      icon: pipe
+      wide: true
+      details: pipeTo turns a promise's result into a message, reentrant requests keep the mailbox moving while a reply is in flight, and schedules deliver on a delay or an interval.
+      link: /actor/pipeto
+    - title: Multi-core
+      icon: cores
+      details: Spawn with Props and the runtime places actors across every core. Same PID API locally and across isolates.
+      link: /multi-core/
+
+networking:
+  kicker: Networking
+  details: Look up, spawn, and message actors on another node. TLS encrypts the carrier when you need it; enabling it hinders performance versus plaintext.
+  items:
+    - title: Remoting
+      icon: tcp
+      badge: TCP
+      details: Look up, spawn, watch, and message actors on another node. Tell, ask, request, forward, pipeTo, and death watch all cross the wire, failures included.
+      link: /remoting/
+    - title: TLS
+      icon: tls
+      badge: TLS
+      details: Encrypt remoting with a cert, key, and optional CA. Mutual TLS when you ask for it. All or nothing per system; the protocol is unchanged over the encrypted carrier.
+      link: /remoting/tls
+
+deps:
+  title: Zero dependencies
+  details: The whole library is built on the standard library alone. npm install brings exactly one package.
 ---

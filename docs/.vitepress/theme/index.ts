@@ -1,6 +1,9 @@
+/// <reference path="../env.d.ts" />
 import type { Theme } from "vitepress";
 import DefaultTheme from "vitepress/theme";
 import { MermaidRenderer } from "vitepress-mermaid-renderer";
+import "./custom.css";
+import Layout from "./Layout.vue";
 
 // Render ```mermaid fenced blocks client-side. The renderer imports mermaid
 // at runtime and self-injects its styles, so no build-time plugin or CSS
@@ -8,6 +11,7 @@ import { MermaidRenderer } from "vitepress-mermaid-renderer";
 // SSR build, where there is no DOM to observe.
 export default {
   extends: DefaultTheme,
+  Layout,
   enhanceApp() {
     if (typeof window !== "undefined") {
       MermaidRenderer.getInstance();

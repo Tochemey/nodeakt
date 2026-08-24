@@ -78,7 +78,10 @@ export default defineConfig({
       },
       {
         text: "Remoting",
-        items: [{ text: "Overview", link: "/remoting/" }],
+        items: [
+          { text: "Overview", link: "/remoting/" },
+          { text: "TLS", link: "/remoting/tls" },
+        ],
       },
       {
         text: "Appendix",

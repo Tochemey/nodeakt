@@ -34,4 +34,13 @@ export interface ActorSystemOptions {
   /** Enables remoting on the system. Absent by default, in which case
    * the system is single-node and the transport never loads. */
   remote?: RemoteOptions;
+
+  /**
+   * The default deadline, in milliseconds, applied to an `ask` or
+   * `request` whose own timeout is omitted or non-positive, so no
+   * reply-bearing call ever waits without a bound. A positive integer;
+   * 5000 when omitted. A call that passes its own positive timeout
+   * keeps it; this is only the fallback.
+   */
+  askTimeout?: number;
 }

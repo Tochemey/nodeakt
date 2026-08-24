@@ -23,6 +23,7 @@
  */
 
 import { connect, type Socket } from "node:net";
+import { connect as connectTls } from "node:tls";
 import { DEFAULT_CHUNK_SIZE } from "./chunk";
 import { ErrConnClosed } from "./conn";
 import {
@@ -36,6 +37,7 @@ import { LANE_CONTROL, LANE_LARGE, MAX_ORDINARY_LANES, ordinaryLane } from "./fr
 import { HeadQueue } from "./queue";
 import { Session, type SessionOptions } from "./session";
 import { defaultTimers, type Timers } from "./timers";
+import type { TlsConfig } from "./tls";
 
 /**
  * Peer owns the outbound side for one remote system: the lane set,
@@ -91,6 +93,14 @@ export interface PeerOptions {
   readonly backoffCapMs?: number;
   /** Payload bytes at which a message rides the large lane. */
   readonly largeThreshold?: number;
+  /**
+   * Dial over TLS with this material: the peer's certificate chain is
+   * verified against `ca` (the runtime's trust store when absent) with
+   * the dialed host as the expected identity, and `cert` and `key`
+   * answer a listener that demands a client certificate. Everything
+   * above the socket is byte-identical to plaintext.
+   */
+  readonly tls?: TlsConfig;
   readonly timers?: Timers;
   /** Per-session settings for every lane this peer dials. */
   readonly session?: SessionOptions;
@@ -169,6 +179,7 @@ export class Peer {
   private readonly _backoffInitialMs: number;
   private readonly _backoffCapMs: number;
   private readonly _largeThreshold: number;
+  private readonly _tls: TlsConfig | undefined;
 
   private readonly _control: LaneState;
   private readonly _large: LaneState;
@@ -201,6 +212,7 @@ export class Peer {
     this._backoffCapMs = options.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
     this._largeThreshold =
       options.largeThreshold ?? options.session?.chunkSize ?? DEFAULT_CHUNK_SIZE;
+    this._tls = options.tls;
 
     this._control = laneState(LANE_CONTROL);
     this._large = laneState(LANE_LARGE);
@@ -214,6 +226,31 @@ export class Peer {
 
   get closed(): boolean {
     return this._closed;
+  }
+
+  /**
+   * Whether dropping this peer would lose nothing: no lane holds a
+   * live or dialing session, an armed reconnect backoff, or a tell
+   * parked for redelivery. The owner consults this to reclaim peers
+   * whose connections have all closed; a reclaimed peer is recreated
+   * whole by the next use, so reclaim is bookkeeping, not behavior.
+   */
+  get reclaimable(): boolean {
+    if (this._closed) {
+      return false;
+    }
+
+    for (const lane of this._lanes) {
+      if (lane.session !== null || lane.dialing !== null || lane.backoffMs > 0) {
+        return false;
+      }
+
+      if (lane.redeliver.length > 0) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   /**
@@ -326,9 +363,27 @@ export class Peer {
     return dialing;
   }
 
+  /** Opens the carrier socket: plaintext, or TLS when configured. A
+   * TLS dial buffers the handshake frames until its carrier handshake
+   * settles, so nothing above the socket changes; a carrier refusal (a
+   * plaintext listener, an untrusted certificate) surfaces as the dial
+   * failure it is. */
+  private connectSocket(): Socket {
+    const tls: TlsConfig | undefined = this._tls;
+    if (tls === undefined) {
+      return connect(this._port, this._host);
+    }
+
+    return connectTls(this._port, this._host, {
+      ca: tls.ca,
+      cert: tls.cert,
+      key: tls.key,
+    });
+  }
+
   private async dial(lane: LaneState, generation: number): Promise<Session> {
     try {
-      const socket: Socket = connect(this._port, this._host);
+      const socket: Socket = this.connectSocket();
       const session: Session = await Session.dial(
         socket,
         { ...this._local, lane: lane.byte },

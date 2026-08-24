@@ -64,9 +64,9 @@ nodeakt is pre-1.0. The API is settling and minor versions may still move it.
 
 ## Not there yet
 
-Remoting connects nodes point to point over plaintext TCP on trusted networks. The larger distribution features on top of it do not exist yet:
+Remoting connects nodes point to point over TCP, plaintext or TLS, on trusted networks. The larger distribution features on top of it do not exist yet:
 
-- **Clustering.** No discovery, no membership, no cluster sharding; nodes are addressed explicitly by host and port. Also not yet: TLS and authentication on the remoting transport, and remote reach into worker-placed actors.
+- **Clustering.** No discovery, no membership, no cluster sharding; nodes are addressed explicitly by host and port. Also not yet: authentication on the remoting transport, and remote reach into worker-placed actors.
 - **Persistence.** Actor state is in-memory only. There is no event sourcing or durable state.
 - **Virtual actors (grains).** Actors are explicitly spawned and addressed. There is no on-demand activation model.
 - **Cron schedules.** `schedule` and `scheduleOnce` cover delayed and repeating sends; cron-expression schedules do not exist yet.

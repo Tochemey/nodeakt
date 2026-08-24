@@ -428,6 +428,31 @@ describe("peer redelivery", () => {
       expect(letter.seq).toBeGreaterThanOrEqual(confirmed);
     }
   });
+
+  it("stays unreclaimable while tells wait for redelivery", async () => {
+    const credits: number = tellWireCost() * 11 + 10;
+    let stall: RawPeer | null = null;
+    const port: number = await startRawListener((socket: Socket): void => {
+      stall = stall ?? stallScript(socket, credits);
+    });
+
+    const peer: Peer = makePeer(port);
+    for (let seq = 0; seq < 20; seq++) {
+      peer.tell(seqEnvelope(seq));
+      await sleep(1);
+    }
+
+    const raw: RawPeer = stall as unknown as RawPeer;
+    await stableCount(
+      (): number => raw.frames.filter((frame): boolean => frame.header.type === FRAME_DATA).length,
+    );
+
+    // The session dies with unconfirmed tells: those park for the next
+    // session, and a peer holding them must not be reclaimed.
+    raw.conn.destroy(new Error("killed"));
+    await sleep(50);
+    expect(peer.reclaimable).toBe(false);
+  });
 });
 
 describe("peer teardown", () => {
@@ -478,6 +503,46 @@ describe("peer teardown", () => {
     expect(deadLetters).toEqual([ErrPeerClosed]);
     await expect(peer.ask(askEnvelope(), 1000)).rejects.toBe(ErrPeerClosed);
     expect(server.acceptedConnections).toBe(0);
+  });
+
+  it("reports reclaimable exactly while dropping it would lose nothing", async () => {
+    const counts: Map<number, number> = new Map();
+    const server: NetServer = await startEchoServer(0, counts);
+    const peer: Peer = makePeer(server.address.port);
+
+    // A fresh peer holds nothing; a dial in flight, then the live
+    // session it opens, both pin it.
+    expect(peer.reclaimable).toBe(true);
+    const pending: Promise<unknown> = peer.ask(askEnvelope(), 2000);
+    expect(peer.reclaimable).toBe(false);
+    await pending;
+    expect(peer.reclaimable).toBe(false);
+
+    // Every connection closed with nothing pending: reclaimable again,
+    // and closing is terminal, so a closed peer never is.
+    await server.shutdown(-1);
+    await vi.waitFor((): void => {
+      expect(peer.reclaimable).toBe(true);
+    });
+    peer.close();
+    expect(peer.reclaimable).toBe(false);
+  });
+
+  it("stays unreclaimable while a reconnect backoff is armed", async () => {
+    const deadLetters: Error[] = [];
+    // Nothing listens on the dialed port, so the dial fails fast and
+    // arms the lane's backoff window.
+    const peer: Peer = makePeer(1, {
+      onDeadLetter: (_envelope: DataEnvelope, reason: Error): void => {
+        deadLetters.push(reason);
+      },
+    });
+
+    peer.tell(seqEnvelope(0));
+    await vi.waitFor((): void => {
+      expect(deadLetters.length).toBe(1);
+    });
+    expect(peer.reclaimable).toBe(false);
   });
 });
 

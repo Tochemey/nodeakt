@@ -31,7 +31,6 @@ import { discardLogger } from "../src/discard.logger";
 import type { Envelope } from "../src/envelope";
 import {
   ErrDead,
-  ErrInvalidTimeout,
   ErrMailboxFull,
   ErrReentrancyDisabled,
   ErrReentrancyInFlightLimit,
@@ -313,10 +312,12 @@ describe("PortTransport", () => {
       await expect(near.ask(target.path(), "hi", 1000)).resolves.toBe("echo:hi");
     });
 
-    it("rejects a non-positive timeout", async () => {
+    it("falls back to the system askTimeout for a non-positive timeout", async () => {
       const target = await system.spawn("echo", new Recorder());
 
-      await expect(near.ask(target.path(), "hi", 0)).rejects.toBe(ErrInvalidTimeout);
+      // A non-positive timeout falls back to the system askTimeout
+      // instead of rejecting, so a responsive target still answers.
+      await expect(near.ask(target.path(), "hi", 0)).resolves.toBe("echo:hi");
     });
 
     it("rejects with the ErrDead sentinel for an unresolvable path", async () => {

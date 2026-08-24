@@ -30,7 +30,6 @@ import { discardLogger } from "../../src/discard.logger";
 import {
   ErrActorSystemNotStarted,
   ErrDead,
-  ErrInvalidTimeout,
   ErrMailboxFull,
   ErrReentrancyDisabled,
   ErrRemotingDisabled,
@@ -367,12 +366,15 @@ describe("remote ask", () => {
     });
   });
 
-  it("rejects a non-positive timeout before touching the wire", async () => {
+  it("falls back to the system askTimeout for a non-positive timeout", async () => {
     await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
       await b.spawn("echo", new Echo());
       const pid: PID = (await a.remoteLookup(b.host(), b.port(), "echo")) as PID;
 
-      await expect(a.noSender().ask(pid, new Ask(1), 0)).rejects.toBe(ErrInvalidTimeout);
+      // A non-positive timeout is not rejected; it falls back to the
+      // system askTimeout, so a responsive remote actor still answers.
+      const reply: unknown = await a.noSender().ask(pid, new Ask(1), 0);
+      expect(reply).toBeInstanceOf(Answer);
     });
   });
 

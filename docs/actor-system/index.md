@@ -30,6 +30,7 @@ new ActorSystem(name, options?)
 | --- | --- | --- |
 | `logger` | `defaultLogger` | Structured logger the runtime reports through. See [Logging](logging.md). |
 | `remote` | none | Enables remoting. A `RemoteOptions` with the `host` and `port` the node binds. |
+| `askTimeout` | `5000` | Fallback deadline in milliseconds for an `ask` or `request` whose own timeout is omitted or non-positive, so no reply-bearing call is ever unbounded. A positive integer. |
 
 Without `remote`, the system is single-node: its node address is `127.0.0.1:0`, paths look like `nodeakt://orders@127.0.0.1:0/greeter`, and the network transport never loads. Pass `remote` to bind a listener and advertise a reachable endpoint:
 

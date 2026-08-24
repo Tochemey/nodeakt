@@ -2,12 +2,14 @@
 
 One machine runs one logical actor system. Remoting connects those systems: a node opens a network endpoint, and actors on other machines become ordinary `PID`s. `tell`, `ask`, `request`, `watch`, `forward`, and `pipeTo` keep their call sites and their semantics; the address decides whether a message crosses the wire.
 
-Messages travel over plaintext TCP in a compact binary encoding, on long-lived connections the runtime dials lazily and reuses.
+Messages travel over TCP in a compact binary encoding, on long-lived connections the runtime dials lazily and reuses; [TLS](tls.md) encrypts them.
 
 Example: [`examples/remoting`](https://github.com/Tochemey/nodeakt/blob/main/examples/remoting/README.md), a checkout node and a payments node under Docker Compose, with a failover drill.
 
 > [!WARNING]
-> The trust model is a **private, trusted network**. Traffic is plaintext and unauthenticated, and a sender's identity is self-declared. Do not expose a remoting port to an untrusted network; TLS is planned as a server configuration.
+> The trust model is a **private network whose nodes trust each other**. Without the `tls` option traffic is plaintext; with it, connections are encrypted and peers verified, but a sender's identity inside an envelope is still self-declared and nothing authorizes what a peer may do. Do not expose a remoting port to an untrusted network.
+
+Encrypt connections with [TLS](tls.md). Enabling it hinders performance compared with plaintext: encryption is paid on every byte and a certificate handshake on every new connection.
 
 ## Enable it
 
@@ -117,5 +119,5 @@ The failure taxonomy is uniform with the local one: synchronous refusals return,
 ## Limits
 
 - Inbound remote messages reach actors on the receiving node's **main isolate**. Combining remoting with worker placement on the same node works for outbound traffic, but a worker-placed actor is not yet reachable from other nodes, and cannot be remotely respawned or stopped.
-- Plaintext, unauthenticated TCP: trusted networks only, as above.
+- No authorization: [TLS](tls.md) encrypts and verifies certificates, but nothing checks what a verified peer may do, and a sender's identity inside an envelope is self-declared. Trusted networks only, as above.
 - Clustering (discovery, membership, sharding) does not exist yet; remoting is point to point, addressed by `host:port`.

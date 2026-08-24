@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!coverage", "!node_modules", "!dist"]
+    "includes": ["**", "!coverage", "!node_modules", "!dist", "!**/*.vue"]
   },
   "formatter": {
     "enabled": true,

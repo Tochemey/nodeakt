@@ -171,6 +171,29 @@ describe("PID message handling", () => {
     await expect.poll(() => self).toBe(pid);
   });
 
+  it("bounds a receiver-side ask with no stamped timeout by the system askTimeout", async () => {
+    class Responder implements Actor {
+      preStart(): void {}
+
+      receive(ctx: ReceiveContext): void {
+        ctx.response(ctx.message);
+      }
+
+      postStop(): void {}
+    }
+
+    const pid = makePid(new Responder(), "responder");
+    await pid.start();
+
+    // A non-positive timeout on the receiving side (a peer that stamped
+    // none) falls back to the system askTimeout, so the context is still
+    // bounded and the actor's response settles the call.
+    const value = await new Promise<unknown>((resolve, reject) => {
+      expect(pid.deliverAsk("ping", external, 0, resolve, reject)).toBeNull();
+    });
+    expect(value).toBe("ping");
+  });
+
   it("processes one message at a time with async behaviors", async () => {
     class AsyncActor implements Actor {
       concurrent = 0;

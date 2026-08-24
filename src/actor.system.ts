@@ -79,6 +79,11 @@ import { UserGuardian } from "./user.guardian";
 const HOST: string = "127.0.0.1";
 const PORT: number = 0;
 
+/** The fallback ask/request deadline when a system configures none: a
+ * generous default so a caller that omits its own timeout still never
+ * waits unbounded. */
+const DEFAULT_ASK_TIMEOUT_MS: number = 5_000;
+
 /** The environment variable overriding the detected capacity: an
  * operational escape hatch for machines whose usable CPU count the
  * runtime misreads (container quotas, shared hosts). At `1` the system
@@ -136,6 +141,10 @@ export class ActorSystem {
   private readonly _logger: Logger;
   private readonly _events: EventStream;
 
+  /** The fallback deadline for an ask or request whose own timeout is
+   * omitted or non-positive; always a positive duration. */
+  private readonly _askTimeout: number;
+
   private _rootGuardian: PID | null = null;
   private _systemGuardian: PID | null = null;
   private _userGuardian: PID | null = null;
@@ -187,8 +196,14 @@ export class ActorSystem {
       throw ErrInvalidActorSystemName;
     }
 
+    const askTimeout: number = options?.askTimeout ?? DEFAULT_ASK_TIMEOUT_MS;
+    if (!Number.isInteger(askTimeout) || askTimeout <= 0) {
+      throw new RangeError(`askTimeout must be a positive integer, got ${askTimeout}`);
+    }
+
     this._name = name;
     this._remoteOptions = options?.remote;
+    this._askTimeout = askTimeout;
     this._address = {
       system: name,
       host: this._remoteOptions?.host ?? HOST,
@@ -208,6 +223,16 @@ export class ActorSystem {
   /** Returns the logger the runtime reports through. */
   logger(): Logger {
     return this._logger;
+  }
+
+  /** The fallback deadline, in milliseconds, an `ask` or `request`
+   * without its own positive timeout is bounded by. Always positive, so
+   * no reply-bearing call ever waits unbounded.
+   *
+   * @internal
+   */
+  askTimeout(): number {
+    return this._askTimeout;
   }
 
   /**

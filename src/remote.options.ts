@@ -37,4 +37,46 @@ export interface RemoteOptions {
   /** The port the node binds. `0` lets the operating system choose a
    * free port, readable afterwards through `ActorSystem.port`. */
   port: number;
+
+  /** Encrypts every connection with TLS. All or nothing per system: a
+   * TLS node accepts and dials only TLS, so a mixed pair fails its
+   * connection handshake; run every node of a cluster with the same
+   * mode. Omitted, traffic is plaintext TCP for private, trusted
+   * networks only. */
+  tls?: TlsOptions;
+}
+
+/**
+ * TLS material for a remoting endpoint. One block serves both roles
+ * because every node listens and dials: the listener presents `cert`
+ * and `key`, and the dialer verifies peers against `ca` and presents
+ * the same certificate back when they demand one.
+ *
+ * Certificates are the operator's concern by design: provide PEM
+ * contents or the path of a PEM file, and rotate by restarting the
+ * system; nothing here generates or renews anything. The dialer
+ * verifies the peer's identity against the host it dialed, so every
+ * node's certificate must carry the `host` it advertises in its
+ * subject alternative names (a `DNS:` entry for a hostname, an `IP:`
+ * entry for an address), or the dial fails identity verification.
+ */
+export interface TlsOptions {
+  /** The node's certificate (or chain): PEM contents, or the path of a
+   * PEM file. Its subject alternative names must include the `host`
+   * this node advertises, or peers dialing that host reject it. */
+  cert: string;
+
+  /** The certificate's private key: PEM contents, or a path. */
+  key: string;
+
+  /** The certificate authority peers are verified against: PEM
+   * contents, or a path. Without it the runtime's default trust store
+   * verifies, which refuses the self-signed material private clusters
+   * typically run on. */
+  ca?: string;
+
+  /** Demands and verifies a client certificate on every accepted
+   * connection: mutual TLS. Peers must present certificates the
+   * verifying side trusts. */
+  requestCert?: boolean;
 }
