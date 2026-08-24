@@ -70,8 +70,9 @@ export interface Reentrancy {
 /** Per-request configuration for `ReceiveContext.request`. */
 export interface RequestOptions {
   /**
-   * How long to wait for the reply, in milliseconds; no timeout when
-   * omitted or non-positive. Like ask, the wait is a lower bound with
+   * How long to wait for the reply, in milliseconds. Omitted or
+   * non-positive, it falls back to the system's `askTimeout`, so a
+   * request is never unbounded. Like ask, the wait is a lower bound with
    * coarse expiry: an unanswered request completes with
    * `ErrRequestTimeout` between one and two timeout periods.
    */

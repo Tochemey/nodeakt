@@ -119,6 +119,8 @@ Throws `TypeError` when the id is empty or already bound to a different class. R
 
 Top-level names remain unique across isolates once the pool is active. `actorOf` finds a placed actor by name.
 
+The same handle contract carries over to actors on other machines, with the network's own edges; see [Remoting](../remoting/index.md#what-a-remote-pid-does).
+
 ## Payloads
 
 Cross-isolate messages are structured-cloned, except that `ArrayBuffer`s reachable from the payload are **transferred**.

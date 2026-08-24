@@ -49,6 +49,10 @@ You do not need to `unWatch` after receiving `Terminated`. When the watched acto
 
 Death watch uses the same API across isolates. A watcher on one isolate receives `Terminated` when its target on another isolate stops, and it still fires when the far isolate itself dies, so a watch is the reliable way to learn that a remote actor is gone. A handle for an actor owned by another isolate always reports `isRunning()` as `false`, because liveness across isolates is not synchronously knowable; watch it rather than polling that handle. See [Multi-core](../multi-core/index.md).
 
+## Across nodes
+
+The same API also reaches across machines once [remoting](../remoting/index.md) is enabled: watch the PID a remote lookup or spawn returns, and `Terminated` arrives when the actor stops. Node death and connection loss are indistinguishable by design, so losing the connection to a node reports every actor watched over it as terminated; watching a remote actor that is already gone answers with an immediate `Terminated`.
+
 ## When to use
 
 - **Dependencies**: watch a peer or child your work depends on; recreate or fail over when it stops.

@@ -1,0 +1,337 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 GoAkt Team
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+import { afterEach, describe, expect, it } from "vitest";
+import type { Actor } from "../../src/actor";
+import type { ActorSystem } from "../../src/actor.system";
+import {
+  type DataEnvelope,
+  KIND_ASK,
+  KIND_TELL,
+  KIND_UNWATCH,
+  KIND_WATCH,
+  type ReplyEnvelope,
+  SERIALIZER_BINARY,
+} from "../../src/net/envelope";
+import type { Session } from "../../src/net/session";
+import { ByteReader, ByteWriter, decodeValue, encodeValue } from "../../src/net/values";
+import type { PID } from "../../src/pid";
+import type { ReceiveContext } from "../../src/receive.context";
+import { registerMessage } from "../../src/registration";
+import { type Remoting, SENDER_CACHE_SIZE } from "../../src/remoting";
+import { cleanupNet, dialSession, hello } from "../net/helpers";
+import { remoteSystem, sleep, until } from "./helpers";
+
+/**
+ * The seam-level malformed-inbound soak. The transport's own soak
+ * throws raw garbage bytes at the framing layer; this one speaks the
+ * protocol correctly and turns hostile above it: well-formed envelopes
+ * with forged senders, garbage targets, unregistered and control type
+ * refs, undecodable payloads, fabricated death notifications, and
+ * watches from unreachable nodes. The property under test is survival,
+ * not any particular refusal: no crash, no hang, and the node still
+ * serves clean traffic afterwards, on the hostile session and on a
+ * fresh one. The generator is seeded, so every run replays the same
+ * envelopes.
+ */
+
+class Ask {
+  constructor(readonly n: number) {}
+}
+
+class Answer {
+  constructor(readonly n: number) {}
+}
+
+registerMessage(Ask);
+registerMessage(Answer);
+
+/** Answers asks; every other business message is just absorbed. */
+class Echo implements Actor {
+  preStart(): void {}
+
+  receive(ctx: ReceiveContext): void {
+    if (ctx.message instanceof Ask) {
+      ctx.response(new Answer(ctx.message.n + 1));
+    }
+  }
+
+  postStop(): void {}
+}
+
+/** Deterministic xorshift32; the soak must replay identically. */
+function rng(seed: number): () => number {
+  let state: number = seed >>> 0;
+  return (): number => {
+    state ^= (state << 13) >>> 0;
+    state ^= state >>> 17;
+    state ^= (state << 5) >>> 0;
+    state >>>= 0;
+    return state;
+  };
+}
+
+function payloadOf(value: unknown): Uint8Array {
+  const writer: ByteWriter = new ByteWriter();
+  encodeValue(writer, value);
+  return Uint8Array.from(writer.bytes());
+}
+
+/** The accepted sessions the seam holds for the forged senders' node. */
+function acceptedOf(seam: Remoting): Set<Session> {
+  return (
+    (seam as unknown as { _inboundSessions: Map<string, Set<Session>> })._inboundSessions.get(
+      FAR_NODE,
+    ) ?? new Set<Session>()
+  );
+}
+
+function randomBytes(next: () => number, length: number): Uint8Array {
+  const bytes: Uint8Array = new Uint8Array(length);
+  for (let i: number = 0; i < length; i++) {
+    bytes[i] = next() & 0xff;
+  }
+
+  return bytes;
+}
+
+function pick<T>(next: () => number, pool: readonly T[]): T {
+  return pool[next() % pool.length] as T;
+}
+
+/** One inbound envelope with every field spelled out and overridable. */
+function envelope(overrides: Partial<DataEnvelope>): DataEnvelope {
+  return {
+    kind: KIND_TELL,
+    to: "",
+    uid: "",
+    sender: "",
+    senderUid: "",
+    timeout: 0,
+    serializerId: SERIALIZER_BINARY,
+    typeRef: "",
+    payload: new Uint8Array(0),
+    ...overrides,
+  };
+}
+
+/** The unreachable node every forged sender advertises: loopback with
+ * a port nothing listens on, so a dial back can only fail fast. */
+const FAR_NODE: string = "127.0.0.1:1";
+
+/** How many hostile envelopes one soak run fires. */
+const ROUNDS: number = 250;
+
+/** The settle budget of every ask in the soak, hostile and clean. */
+const ASK_TIMEOUT_MS: number = 2000;
+
+afterEach(cleanupNet);
+
+describe("remoting malformed-inbound soak", () => {
+  it("survives a seeded barrage of hostile envelopes and keeps serving", async () => {
+    const system: ActorSystem = remoteSystem("soak");
+    await system.start();
+    const checker: ActorSystem = remoteSystem("checker");
+    await checker.start();
+
+    try {
+      const echo: PID = await system.spawn("echo", new Echo());
+      const port: number = system.port();
+
+      // The hostile session advertises the very endpoint the forged
+      // senders name (127.0.0.1:1), so the seam elects it as that node's
+      // carrier: every reply or notification steered at a forged sender
+      // now rides this session back, and the barrage exercises the
+      // reused-carrier path, not just a dial that fails fast.
+      const session: Session = await dialSession(
+        port,
+        hello({ systemName: "farside", host: "127.0.0.1", port: 1 }),
+      );
+      const next: () => number = rng(0xc0ffee);
+
+      // The four wire kinds: a conforming session refuses anything else
+      // on the sending side, and raw unknown-kind frames are the
+      // transport soak's territory.
+      const kinds: readonly number[] = [KIND_TELL, KIND_ASK, KIND_WATCH, KIND_UNWATCH];
+      const targets: readonly string[] = [
+        "",
+        "not-a-path",
+        `nodeakt://soak@127.0.0.1:${port}/nobody`,
+        `nodeakt://other@127.0.0.1:${port}/echo`,
+        echo.path().toString(),
+        "nodeakt://soak@127.0.0.1:0/",
+        "\u0000\u0001garbage",
+      ];
+      const typeRefs: readonly string[] = [
+        "",
+        "NeverRegistered",
+        "nodeakt.remote.lookup",
+        "nodeakt.remote.spawn",
+        "nodeakt.remote.respawn",
+        "nodeakt.remote.stop",
+        "nodeakt.remote.bogus",
+        "Terminated",
+        "Ask",
+      ];
+      // Forged senders: unparseable ones must not be cached, parseable
+      // ones point at a loopback port nothing listens on, so a reply or
+      // notification steered there fails its dial fast instead of
+      // hanging the run. Most rounds forge a fresh incarnation, so the
+      // pool is unbounded by design: the capped sender cache is what
+      // keeps that survivable, and the flood below proves the cap.
+      const senders: readonly string[] = [
+        "",
+        "garbage-sender",
+        "nodeakt://checker@127.0.0.1:1/ghost-c",
+      ];
+      const payloads: readonly (() => Uint8Array)[] = [
+        (): Uint8Array => randomBytes(next, 1 + (next() % 64)),
+        (): Uint8Array => new Uint8Array(0),
+        (): Uint8Array => payloadOf({ name: next() % 2 === 0 ? 42 : { deep: true } }),
+        (): Uint8Array => payloadOf([1, "two", null]),
+        (): Uint8Array => payloadOf({ actorPath: `nodeakt://soak@127.0.0.1:${port}/echo` }),
+        (): Uint8Array => payloadOf({ n: next() % 100 }),
+      ];
+
+      const rejections: Promise<unknown>[] = [];
+      for (let i: number = 0; i < ROUNDS; i++) {
+        const kind: number = pick(next, kinds);
+        // The sending session enforces the frozen layout rule that a
+        // watch carries no message, so hostile watches stay hostile in
+        // their sender and target alone.
+        const bare: boolean = kind === KIND_WATCH || kind === KIND_UNWATCH;
+        const hostile: DataEnvelope = envelope({
+          kind,
+          to: pick(next, targets),
+          uid: next() % 3 === 0 ? String(next() % 100000) : "",
+          sender: next() % 4 === 0 ? pick(next, senders) : `nodeakt://soak@127.0.0.1:1/ghost-${i}`,
+          senderUid: next() % 2 === 0 ? String(next() % 1000) : "",
+          typeRef: bare ? "" : pick(next, typeRefs),
+          payload: bare ? new Uint8Array(0) : pick(next, payloads)(),
+        });
+
+        if (hostile.kind === KIND_ASK) {
+          // Every hostile ask settles one way or the other; a hang here
+          // is exactly the failure the soak exists to catch.
+          rejections.push(session.ask(hostile, ASK_TIMEOUT_MS).catch((err: Error): Error => err));
+          continue;
+        }
+
+        session.tell(hostile);
+      }
+
+      await Promise.allSettled(rejections);
+
+      // The cap meets an unbounded forged-sender pool head on: one
+      // tell per distinct sender, far past the cap, every envelope
+      // clean enough to reach sender resolution.
+      for (let i: number = 0; i < SENDER_CACHE_SIZE + 256; i++) {
+        session.tell(
+          envelope({
+            to: echo.path().toString(),
+            typeRef: "Ask",
+            sender: `nodeakt://soak@127.0.0.1:1/flood-${i}`,
+            payload: payloadOf({ n: i }),
+          }),
+        );
+      }
+
+      // The hostile session itself still serves: a clean control
+      // lookup answers on the same connection the barrage rode.
+      const reply: ReplyEnvelope = await session.ask(
+        envelope({
+          kind: KIND_ASK,
+          typeRef: "nodeakt.remote.lookup",
+          payload: payloadOf({ name: "echo" }),
+        }),
+        ASK_TIMEOUT_MS,
+      );
+      const answer: { path: string } = decodeValue(new ByteReader(reply.payload)) as {
+        path: string;
+      };
+      expect(answer.path).toBe(echo.path().toString());
+
+      // The lookup answered after the flood on the same ordered
+      // connection, so every hostile sender has been through the
+      // cache; the bound held, give or take the entries the barrage's
+      // registered watches pinned.
+      const seam: Remoting = (system as unknown as { _remoting: Remoting })._remoting;
+      expect(seam.cachedSenders).toBeLessThanOrEqual(SENDER_CACHE_SIZE + 64);
+
+      // The hostile session was elected the carrier for the forged
+      // senders' node: an accepted session, never a peer, since nothing
+      // could dial the dead endpoint they all advertise.
+      const carrier: { peer: unknown; session: Session | null } | undefined = (
+        seam as unknown as { _carriers: Map<string, { peer: unknown; session: Session | null }> }
+      )._carriers.get(FAR_NODE);
+      expect(carrier).toBeDefined();
+      expect((carrier as { peer: unknown }).peer).toBeNull();
+      expect((carrier as { session: Session | null }).session).toBe([...acceptedOf(seam)][0]);
+
+      // A real death now travels over that hostile carrier: a forged
+      // watcher on a disposable actor, then its stop, routes a
+      // Terminated onto the session the barrage rode. It must not crash
+      // or hang the node, and the session must still serve after.
+      const victim: PID = await system.spawn("victim", new Echo());
+      session.tell(
+        envelope({
+          kind: KIND_WATCH,
+          to: victim.path().toString(),
+          sender: "nodeakt://farside@127.0.0.1:1/victim-watcher",
+        }),
+      );
+      await sleep(50);
+      await victim.shutdown();
+      await sleep(50);
+
+      const afterDeath: ReplyEnvelope = await session.ask(
+        envelope({
+          kind: KIND_ASK,
+          typeRef: "nodeakt.remote.lookup",
+          payload: payloadOf({ name: "echo" }),
+        }),
+        ASK_TIMEOUT_MS,
+      );
+      expect((decodeValue(new ByteReader(afterDeath.payload)) as { path: string }).path).toBe(
+        echo.path().toString(),
+      );
+
+      // The node still serves the full seam path from a fresh peer:
+      // lookup, a typed ask round trip, prototypes intact.
+      const found: PID = (await checker.remoteLookup("127.0.0.1", port, "echo")) as PID;
+      const echoed: unknown = await checker.noSender().ask(found, new Ask(41), ASK_TIMEOUT_MS);
+      expect(echoed).toBeInstanceOf(Answer);
+      expect((echoed as Answer).n).toBe(42);
+
+      // And the target actor never faulted under the barrage.
+      await until("the echo actor to still run", (): boolean => echo.isRunning());
+    } finally {
+      try {
+        await checker.stop();
+      } finally {
+        await system.stop();
+      }
+    }
+  }, 30_000);
+});

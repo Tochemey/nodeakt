@@ -39,3 +39,4 @@ pnpm example examples/helloworld/main.ts
 | [supervision](supervision/main.ts) | Restart with backoff; let it crash |
 | [props](props/main.ts) | Construction as data with `Props` |
 | [multicore](multicore/main.ts) | One CPU-bound actor per core |
+| [remoting](remoting/README.md) | Checkout and payments on two nodes: remoting over TCP with Docker Compose |

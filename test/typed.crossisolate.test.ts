@@ -30,7 +30,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem } from "../src/actor.system";
 import { discardLogger } from "../src/discard.logger";
+import { PostStart } from "../src/messages";
+import type { PID } from "../src/pid";
 import { Props } from "../src/props";
+import type { ReceiveContext } from "../src/receive.context";
 import { registerActor, registerMessage } from "../src/registration";
 import { setWorkerEntry } from "../src/worker.entry.locator";
 
@@ -44,10 +47,32 @@ class Pong {
   constructor(readonly n: number) {}
 }
 
+class Poke {
+  constructor(readonly n: number) {}
+}
+
 class PingReplier implements Actor {
   preStart(): void {}
 
   receive(): void {}
+
+  postStop(): void {}
+}
+
+/** Records every business message; the worker's answer to a piped
+ * {@link Poke} lands here. */
+class PongRecorder implements Actor {
+  readonly pongs: unknown[] = [];
+
+  preStart(): void {}
+
+  receive(ctx: ReceiveContext): void {
+    if (ctx.message instanceof PostStart) {
+      return;
+    }
+
+    this.pongs.push(ctx.message);
+  }
 
   postStop(): void {}
 }
@@ -81,6 +106,7 @@ beforeAll(async () => {
 
   registerMessage(Ping);
   registerMessage(Pong);
+  registerMessage(Poke);
   registerActor(PingReplier, typedActorUrl);
 }, 120_000);
 
@@ -105,6 +131,42 @@ describe("typed messages across a real isolate", () => {
     const reply = await system.noSender().ask(replier, new Ping(41), 15_000);
     expect(reply).toBeInstanceOf(Pong);
     expect((reply as Pong).n).toBe(42);
+
+    await system.stop();
+  }, 60_000);
+
+  it("delivers a piped result to a worker-placed actor", async () => {
+    if (availableParallelism() < 2) {
+      return;
+    }
+
+    const system: ActorSystem = new ActorSystem("piped", { logger: discardLogger });
+    await system.start();
+
+    const replier: PID = await system.spawn("poke-replier", Props.create(PingReplier));
+    // The routed handle reports no local liveness, exactly the shape the
+    // pipe's gate must not mistake for a dead target.
+    expect(replier.isRunning()).toBe(false);
+
+    const recorder: PongRecorder = new PongRecorder();
+    const piper: PID = await system.spawn("piper", recorder);
+
+    // The piped result crosses to the worker as a plain tell with the
+    // piper recorded as sender; the replier answers that sender, so a
+    // recorded Pong proves the result arrived on the worker.
+    piper.pipeTo(replier, Promise.resolve(new Poke(41)));
+
+    await expect.poll(() => recorder.pongs.length, { timeout: 30_000 }).toBe(1);
+    expect(recorder.pongs[0]).toBeInstanceOf(Pong);
+    expect((recorder.pongs[0] as Pong).n).toBe(42);
+
+    // The by-name pipe resolves at settlement time through actorOf,
+    // whose placement fallback returns the same routed handle; the
+    // route-gated delivery must hold for that path too.
+    piper.pipeToName("poke-replier", Promise.resolve(new Poke(10)));
+
+    await expect.poll(() => recorder.pongs.length, { timeout: 30_000 }).toBe(2);
+    expect((recorder.pongs[1] as Pong).n).toBe(11);
 
     await system.stop();
   }, 60_000);

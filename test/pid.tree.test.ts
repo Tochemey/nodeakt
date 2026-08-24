@@ -117,6 +117,23 @@ describe("PIDTree", () => {
     expect(tree.watchees(watcher)).toEqual([]);
   });
 
+  it("reports watch registration and removal exactly", () => {
+    const tree = new PidTree();
+    const watched = pidAt("watched");
+    const watcher = pidAt("watcher");
+    tree.addNode(null, watched);
+    tree.addNode(null, watcher);
+
+    // Only the first registration is new; a duplicate reports false so
+    // per-registration accounting can never double-count.
+    expect(tree.addWatcher(watched, watcher)).toBe(true);
+    expect(tree.addWatcher(watched, watcher)).toBe(false);
+    expect(tree.watchers(watched)).toEqual([watcher]);
+
+    expect(tree.removeWatcher(watched, watcher)).toBe(true);
+    expect(tree.removeWatcher(watched, watcher)).toBe(false);
+  });
+
   it("keeps remaining watch registrations when one is cancelled", () => {
     const tree = new PidTree();
     const left = pidAt("left");
@@ -209,8 +226,8 @@ describe("PIDTree guards", () => {
     tree.addNode(null, registered);
 
     tree.deleteNode(stranger);
-    tree.addWatcher(stranger, registered);
-    tree.removeWatcher(registered, stranger);
+    expect(tree.addWatcher(stranger, registered)).toBe(false);
+    expect(tree.removeWatcher(registered, stranger)).toBe(false);
 
     expect(tree.parent(stranger)).toBeUndefined();
     expect(tree.child(stranger, "x")).toBeUndefined();

@@ -63,6 +63,15 @@ describe("ActorSystem constructor", () => {
     expect(() => new ActorSystem("no.dots")).toThrow(ErrInvalidActorSystemName);
     expect(new ActorSystem("sys-1_a").name()).toBe("sys-1_a");
   });
+
+  it("validates and defaults the askTimeout", () => {
+    expect(() => new ActorSystem("sys", { askTimeout: 0 })).toThrow(RangeError);
+    expect(() => new ActorSystem("sys", { askTimeout: -1 })).toThrow(RangeError);
+    expect(() => new ActorSystem("sys", { askTimeout: 1.5 })).toThrow(RangeError);
+    expect(new ActorSystem("sys", { askTimeout: 250 }).askTimeout()).toBe(250);
+    // Omitted, it defaults to a positive bound rather than no timeout.
+    expect(new ActorSystem("sys").askTimeout()).toBeGreaterThan(0);
+  });
 });
 
 describe("ActorSystem lifecycle", () => {

@@ -34,6 +34,8 @@ Example: [`examples/pipeto`](https://github.com/Tochemey/nodeakt/blob/main/examp
 | `pid.pipeTo(to, task, opts?)` | `PID` | Pipe on behalf of `pid` from outside `receive`. |
 | `pid.pipeToName(name, task, opts?)` | `PID` | Same, target by name. |
 
+The target may live on another isolate or another node: a routed PID is piped like a local one, the result travels through its route, and an undeliverable result becomes a dead letter on the side that discovered it. See [Multi-core](../multi-core/index.md) and [Remoting](../remoting/index.md).
+
 ## The task
 
 The task is a `PipeTask`: the promise itself, or a thunk returning one. Prefer the thunk when the pipe has a timeout; it receives an `AbortSignal` that fires when the deadline expires, so the task can stop the underlying work. A thunk runs on the piping actor's own turn, so it should return its promise promptly rather than do heavy synchronous work first.

@@ -23,10 +23,24 @@
  */
 
 import type { Logger } from "./logger";
+import type { RemoteOptions } from "./remote.options";
 
 /** Options customizing an actor system. */
 export interface ActorSystemOptions {
   /** The logger the runtime reports through; one JSON line per entry on
    * standard error at info level by default. */
   logger?: Logger;
+
+  /** Enables remoting on the system. Absent by default, in which case
+   * the system is single-node and the transport never loads. */
+  remote?: RemoteOptions;
+
+  /**
+   * The default deadline, in milliseconds, applied to an `ask` or
+   * `request` whose own timeout is omitted or non-positive, so no
+   * reply-bearing call ever waits without a bound. A positive integer;
+   * 5000 when omitted. A call that passes its own positive timeout
+   * keeps it; this is only the fallback.
+   */
+  askTimeout?: number;
 }

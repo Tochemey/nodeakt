@@ -34,7 +34,7 @@ The options argument is a `RequestOptions`: an optional `timeout` and an optiona
 
 ```ts
 const call = ctx.request(peer, new GetQuote(symbol), {
-  timeout: 1_000,          // optional; no timeout if omitted or non-positive
+  timeout: 1_000,          // optional; falls back to the system askTimeout if omitted or non-positive
   mode: "allowAll",        // optional; overrides the actor's mode for this call only
 });
 

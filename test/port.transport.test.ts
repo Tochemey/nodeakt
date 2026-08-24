@@ -31,7 +31,6 @@ import { discardLogger } from "../src/discard.logger";
 import type { Envelope } from "../src/envelope";
 import {
   ErrDead,
-  ErrInvalidTimeout,
   ErrMailboxFull,
   ErrReentrancyDisabled,
   ErrReentrancyInFlightLimit,
@@ -313,10 +312,12 @@ describe("PortTransport", () => {
       await expect(near.ask(target.path(), "hi", 1000)).resolves.toBe("echo:hi");
     });
 
-    it("rejects a non-positive timeout", async () => {
+    it("falls back to the system askTimeout for a non-positive timeout", async () => {
       const target = await system.spawn("echo", new Recorder());
 
-      await expect(near.ask(target.path(), "hi", 0)).rejects.toBe(ErrInvalidTimeout);
+      // A non-positive timeout falls back to the system askTimeout
+      // instead of rejecting, so a responsive target still answers.
+      await expect(near.ask(target.path(), "hi", 0)).resolves.toBe("echo:hi");
     });
 
     it("rejects with the ErrDead sentinel for an unresolvable path", async () => {
@@ -552,7 +553,18 @@ describe("PortTransport", () => {
       await expect.poll(() => requestErrors.length).toBe(1);
       expect(requestErrors[0]).toBe(ErrDead);
 
+      const before: number = letters.length;
       expect(near.tell(target.path(), "later")).toBe(ErrDead);
+
+      // The refusal is not just a return value: the message itself is
+      // recorded as a dead letter, so a fire-and-forget caller (a pipe
+      // delivering a settled result) never loses it silently.
+      await expect.poll(() => letters.length).toBe(before + 1);
+      const refusedLetter: Deadletter = letters[before] as Deadletter;
+      expect(refusedLetter.receiver).toBe(target.path().toString());
+      expect(refusedLetter.message).toBe("later");
+      expect(refusedLetter.reason).toBe(ErrDead.message);
+
       await expect(near.ask(target.path(), "later", 1000)).rejects.toBe(ErrDead);
       let refusal: Error | null = null;
       near.request(target.path(), "later", sender).onReply((_reply, error) => {

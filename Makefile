@@ -6,7 +6,7 @@
 TSX := node_modules/.bin/tsx
 
 .DEFAULT_GOAL := help
-.PHONY: help helloworld behaviors chat supervision reentrancy pipeto scheduling watch stash props multicore bench bench-baseline
+.PHONY: help helloworld behaviors chat supervision reentrancy pipeto scheduling watch stash props multicore remoting bench bench-baseline
 
 help: ## list the available example targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -44,6 +44,9 @@ props: ## construction is data (Props.create)
 
 multicore: ## every core, invisibly (Props actors in parallel)
 	@$(TSX) examples/multicore/main.ts
+
+remoting: ## checkout and payments across two nodes (Docker Compose)
+	@docker compose -f examples/remoting/docker-compose.yml up --build
 
 bench: ## run the full benchmark suite (see benchmark/README.md)
 	@pnpm bench

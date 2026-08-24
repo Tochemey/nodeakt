@@ -400,7 +400,12 @@ export function parsePath(value: string, uid?: string): Path {
 
   const host = hostPort.slice(0, colon);
   const portStr = hostPort.slice(colon + 1);
-  if (portStr.length === 0 || !/^\d+$/.test(portStr)) {
+  // The port must be canonical: no leading zeros, so a parsed path
+  // stringifies back to exactly the input. Round-tripping is a
+  // contract callers rely on to key a path by its string form, and a
+  // leading-zero port ("007") would normalize to a different string
+  // ("7") on the way back out.
+  if (!/^(0|[1-9]\d*)$/.test(portStr)) {
     throw malformed();
   }
 

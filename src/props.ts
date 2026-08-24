@@ -73,6 +73,18 @@ export class Props {
     return new Props(type, args);
   }
 
+  /**
+   * Rebuilds Props from a class and an argument list that already
+   * crossed a boundary: the compile-time argument check happened on the
+   * sending side, so none applies here. Runtime plumbing for remote
+   * construction.
+   *
+   * @internal
+   */
+  static restore(type: ActorClass, args: readonly unknown[]): Props {
+    return new Props(type, args);
+  }
+
   /** Returns the actor class to construct.
    *
    * @internal

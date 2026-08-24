@@ -250,24 +250,31 @@ export class PidTree {
 
   /**
    * Registers `watcher` to be notified when `watched` stops. A no-op when
-   * `watched` is not in the tree.
+   * `watched` is not in the tree. Reports whether the registration is
+   * new: false for a duplicate or an unregistered `watched`, so callers
+   * that account per registration can stay exact.
    */
-  addWatcher(watched: PID, watcher: PID): void {
+  addWatcher(watched: PID, watcher: PID): boolean {
     if (!watched.isInTree()) {
-      return;
+      return false;
     }
 
-    this.addToSet(this.watchersOf, watched, watcher);
+    const added = this.addToSet(this.watchersOf, watched, watcher);
 
     if (watcher.isInTree()) {
       this.addToSet(this.watcheesOf, watcher, watched);
     }
+
+    return added;
   }
 
-  /** Cancels a {@link addWatcher} registration. */
-  removeWatcher(watched: PID, watcher: PID): void {
-    this.dropFromSet(this.watchersOf, watched, watcher);
+  /** Cancels a {@link addWatcher} registration. Reports whether one was
+   * actually removed, so callers that account per registration can stay
+   * exact; an unknown registration is a no-op reporting false. */
+  removeWatcher(watched: PID, watcher: PID): boolean {
+    const removed = this.dropFromSet(this.watchersOf, watched, watcher);
     this.dropFromSet(this.watcheesOf, watcher, watched);
+    return removed;
   }
 
   /** Returns the actors watching the given actor. */
@@ -331,26 +338,35 @@ export class PidTree {
     return set === undefined ? [] : [...set];
   }
 
-  private addToSet(index: Map<PID, Set<PID>>, key: PID, value: PID): void {
+  /** Adds one member, reporting whether it was newly added. */
+  private addToSet(index: Map<PID, Set<PID>>, key: PID, value: PID): boolean {
     let set = index.get(key);
     if (set === undefined) {
       set = new Set();
       index.set(key, set);
     }
 
-    set.add(value);
-  }
-
-  private dropFromSet(index: Map<PID, Set<PID>>, key: PID, value: PID): void {
-    const set = index.get(key);
-    if (set === undefined) {
-      return;
+    if (set.has(value)) {
+      return false;
     }
 
-    set.delete(value);
+    set.add(value);
+    return true;
+  }
+
+  /** Drops one member, reporting whether it was present. */
+  private dropFromSet(index: Map<PID, Set<PID>>, key: PID, value: PID): boolean {
+    const set = index.get(key);
+    if (set === undefined) {
+      return false;
+    }
+
+    const removed = set.delete(value);
     if (set.size === 0) {
       index.delete(key);
     }
+
+    return removed;
   }
 
   /** Unlinks a node being replaced: it leaves the tree without taking

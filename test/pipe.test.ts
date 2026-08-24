@@ -22,17 +22,21 @@
  * SOFTWARE.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Actor } from "../src/actor";
+import type { IsolateRoute } from "../src/actor.ref";
 import { ActorSystem } from "../src/actor.system";
 import { discardLogger } from "../src/discard.logger";
 import { ErrDead, ErrPipeTimeout, ErrUndefinedTask } from "../src/errors";
 import type { Logger } from "../src/logger";
 import { Deadletter, PostStart } from "../src/messages";
+import { newPathAt, type Path } from "../src/path";
 import type { PID } from "../src/pid";
 import type { PipeTask } from "../src/pipe";
 import type { PipeOptions } from "../src/pipe.options";
 import type { ReceiveContext } from "../src/receive.context";
+import { completedRequest, type RequestCall } from "../src/reentrancy";
+import { routedPid } from "../src/routed.pid";
 
 class Load {
   constructor(readonly id: number) {}
@@ -515,5 +519,101 @@ describe("pipeToName", () => {
     await expect.poll(() => letters.length).toBe(1);
     expect(letters[0]?.reason).toBe(ErrPipeTimeout.message);
     expect(recorder.received).toHaveLength(0);
+  });
+});
+
+describe("pipeTo a routed target", () => {
+  let system: ActorSystem;
+  let letters: Deadletter[];
+
+  beforeEach(async () => {
+    system = new ActorSystem("routed-pipe", { logger: discardLogger });
+    await system.start();
+    letters = [];
+    system.subscribe((event) => {
+      if (event instanceof Deadletter) {
+        letters.push(event);
+      }
+    });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await system.stop();
+  });
+
+  /** A route that records every tell instead of delivering it. */
+  function routeStub(calls: string[]): IsolateRoute {
+    return {
+      workerId: 7,
+      tell: (to: Path, message: unknown): Error | null => {
+        calls.push(`tell:${to.name()}:${(message as Order).id}`);
+        return null;
+      },
+      ask: (): Promise<unknown> => Promise.resolve(undefined),
+      request: (): RequestCall => completedRequest(ErrDead),
+      watch: (): void => {},
+      unwatch: (): void => {},
+    };
+  }
+
+  /** A routed handle named `far`, wired to the recording route. */
+  function farOf(calls: string[]): PID {
+    return routedPid(
+      system,
+      newPathAt("far", { system: "routed-pipe", host: "127.0.0.1", port: 0 }, undefined, "1"),
+      routeStub(calls),
+    );
+  }
+
+  it("routes the result through the target's route instead of the liveness gate", async () => {
+    const piper: PID = await system.spawn("piper", new Piper());
+    const calls: string[] = [];
+    const far: PID = farOf(calls);
+
+    // A routed handle reports isRunning() false forever; the gate must
+    // not dead-letter the result, the route must carry it.
+    expect(far.isRunning()).toBe(false);
+    piper.pipeTo(far, Promise.resolve(new Order(12)));
+
+    await expect.poll(() => calls.length).toBe(1);
+    expect(calls[0]).toBe("tell:far:12");
+    expect(letters).toHaveLength(0);
+  });
+
+  it("routes a by-name result through a routed placement handle", async () => {
+    const piper: PID = await system.spawn("piper", new Piper());
+    const calls: string[] = [];
+    const far: PID = farOf(calls);
+
+    // pipeToName resolves the name at settlement time through actorOf,
+    // whose placement fallback answers a routed handle for a
+    // worker-placed actor; the pinned lookup models that answer.
+    vi.spyOn(system, "actorOf").mockReturnValue(far);
+    piper.pipeToName("far", Promise.resolve(new Order(3)));
+
+    await expect.poll(() => calls.length).toBe(1);
+    expect(calls[0]).toBe("tell:far:3");
+    expect(letters).toHaveLength(0);
+  });
+
+  it("drops a result that settles after the timeout instead of routing it", async () => {
+    const piper: PID = await system.spawn("piper", new Piper());
+    const calls: string[] = [];
+    const far: PID = farOf(calls);
+    const task: Deferred<Order> = deferred<Order>();
+
+    piper.pipeTo(far, task.promise, { timeout: 20 });
+
+    await expect.poll(() => letters.length).toBe(1);
+    expect(letters[0]?.reason).toBe(ErrPipeTimeout.message);
+    expect(letters[0]?.receiver).toBe(far.path().toString());
+
+    // A result arriving after the deadline finds the pipe settled and
+    // must never cross the route as a stale delivery.
+    task.resolve(new Order(9));
+    await pause(30);
+    expect(calls).toHaveLength(0);
+    expect(letters).toHaveLength(1);
   });
 });

@@ -28,13 +28,14 @@ if (err === ErrDead || err === ErrMailboxFull) {
 | `ErrInvalidReentrancyMode` | An unknown [reentrancy](actor/reentrancy.md) mode at spawn or on request options. |
 | `ErrInvalidRouteeDirective` | [`spawnRouter`](actor/routers.md) with an unknown routee directive. |
 | `ErrInvalidRoutingStrategy` | [`spawnRouter`](actor/routers.md) with an unknown routing strategy. |
-| `ErrInvalidTimeout` | [`ask`](actor/messaging.md) with a timeout that is not positive. |
+| `ErrInvalidTimeout` | Reserved. [`ask`](actor/messaging.md) and `request` now fall back to the system [`askTimeout`](actor-system/index.md) for a non-positive timeout instead of raising this. |
 | `ErrMailboxDisposed` | Enqueue on a [mailbox](actor/mailboxes.md) after the actor stopped, or [`ctx.stash`](actor/behaviors.md) while the actor is stopping. |
 | `ErrMailboxFull` | A bounded [mailbox](actor/mailboxes.md) is at capacity. |
 | `ErrNameRequired` | The [system name](actor-system/index.md) is empty. |
 | `ErrPipeTimeout` | A [pipe](actor/pipeto.md)'s timeout expired before its task settled. The reason on the resulting dead letter; nothing is delivered. |
 | `ErrReentrancyDisabled` | [`ctx.request`](actor/reentrancy.md) without a `reentrancy` config, or with mode `off`. |
 | `ErrReentrancyInFlightLimit` | A [request](actor/reentrancy.md) past the actor's `maxInFlight` cap. |
+| `ErrRemotingDisabled` | A remote operation such as `remoteLookup` on a system created without a `remote` configuration. See [Remoting](remoting/index.md). |
 | `ErrRequestCanceled` | A [request](actor/reentrancy.md) completed by `cancel()`. |
 | `ErrRequestTimeout` | An [`ask`](actor/messaging.md) or [`request`](actor/reentrancy.md) unanswered within one to two timeout periods. |
 | `ErrReservedName` | A name starting with the reserved prefix `NodeAkt`. |

@@ -1,0 +1,29 @@
+/* NodeAkt brand: the logo greens, not VitePress indigo. */
+:root {
+  --vp-c-brand-1: #2f7a32;
+  --vp-c-brand-2: #3e863d;
+  --vp-c-brand-3: #2d6b2c;
+  --vp-c-brand-soft: rgba(95, 160, 78, 0.14);
+  --nk-green: #5fa04e;
+  --nk-lime: #8cc84b;
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(120deg, #2f7a32 20%, #8cc84b 80%);
+}
+
+.dark {
+  --vp-c-brand-1: #8cc84b;
+  --vp-c-brand-2: #a4dc6e;
+  --vp-c-brand-3: #5fa04e;
+  --vp-c-brand-soft: rgba(140, 200, 75, 0.16);
+  --vp-home-hero-name-background: -webkit-linear-gradient(120deg, #5fa04e 15%, #c5ee86 85%);
+}
+
+/* The mark is a foreground graphic, not a blurred wash behind the hero. */
+.VPHomeHero .image-bg {
+  display: none;
+}
+
+.VPHomeHero .image-src {
+  max-width: 240px;
+  filter: none;
+}

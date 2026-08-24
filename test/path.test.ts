@@ -186,8 +186,19 @@ describe("parsePath", () => {
       "nodeakt://sys@h:1/",
       "nodeakt://sys@h:1//name",
       "nodeakt://sys@h:1/a//c",
+      // A non-canonical port would not stringify back to itself, so it
+      // is rejected rather than silently normalized.
+      "nodeakt://sys@h:007/name",
+      "nodeakt://sys@h:01/name",
     ]) {
       expect(() => parsePath(bad), bad).toThrow(TypeError);
+    }
+  });
+
+  it("round-trips every port it accepts", () => {
+    for (const port of ["0", "1", "80", "5100", "65535"]) {
+      const value: string = `nodeakt://sys@127.0.0.1:${port}/name`;
+      expect(parsePath(value).toString()).toBe(value);
     }
   });
 

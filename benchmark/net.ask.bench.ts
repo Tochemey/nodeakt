@@ -24,10 +24,10 @@
 
 import { connect } from "node:net";
 import { afterAll, describe, it } from "vitest";
-import { type DataEnvelope, type Hello, KIND_ASK, SERIALIZER_BINARY } from "../src/_net/envelope";
-import { LANE_CONTROL } from "../src/_net/frame";
-import { NetServer } from "../src/_net/server";
-import { Session } from "../src/_net/session";
+import { type DataEnvelope, type Hello, KIND_ASK, SERIALIZER_BINARY } from "../src/net/envelope";
+import { LANE_CONTROL } from "../src/net/frame";
+import { NetServer } from "../src/net/server";
+import { Session } from "../src/net/session";
 import {
   printBlock,
   printReport,

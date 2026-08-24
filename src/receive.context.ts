@@ -212,11 +212,11 @@ export class ReceiveContext {
 
   /**
    * Sends a message to `to` and waits for {@link response}. The call
-   * parks until the reply arrives or `timeout` milliseconds elapse.
+   * parks until the reply arrives or `timeout` milliseconds elapse; a
+   * non-positive or omitted `timeout` falls back to the system's
+   * `askTimeout`, so the call is never unbounded.
    *
    * @throws The {@link ErrDead} sentinel when the target is not running.
-   * @throws The {@link ErrInvalidTimeout} sentinel when `timeout` is not
-   * a positive duration.
    * @throws The {@link ErrRequestTimeout} sentinel when no reply arrives
    * in time.
    * @throws The mailbox rejection error when delivery fails.
@@ -262,6 +262,9 @@ export class ReceiveContext {
    * carrying the failing reason. To receive a failure as a message
    * instead, map the rejection before piping:
    * `task.catch((err) => new LoadFailed(err))`.
+   *
+   * A target on another isolate or node is piped like a local one: the
+   * result travels through the target's route.
    *
    * Stopping this actor does not cancel the task: the promise is
    * already running, and its result is still delivered when it settles.
@@ -445,6 +448,35 @@ export class ReceiveContext {
   /** Cancels a {@link watch} registration on `cid`. */
   unWatch(cid: PID): void {
     this.pid().unWatch(cid);
+  }
+
+  /**
+   * Resolves a top-level actor by name on the remote node at
+   * `host:port`, with the contract of `ActorSystem.remoteLookup`: the
+   * promise resolves with the remote actor's PID, or undefined when no
+   * running top-level actor holds the name there. Remote spawn is a
+   * system-level operation: reach it through the system,
+   * `actorSystem().remoteSpawn`.
+   */
+  remoteLookup(host: string, port: number, name: string): Promise<PID | undefined> {
+    return this.actorSystem().remoteLookup(host, port, name);
+  }
+
+  /**
+   * Restarts the named top-level actor on the remote node at
+   * `host:port`, with the contract of `ActorSystem.remoteReSpawn`: the
+   * promise resolves with the restarted actor's PID.
+   */
+  remoteReSpawn(host: string, port: number, name: string): Promise<PID> {
+    return this.actorSystem().remoteReSpawn(host, port, name);
+  }
+
+  /**
+   * Stops the named top-level actor on the remote node at `host:port`
+   * gracefully, with the contract of `ActorSystem.remoteStop`.
+   */
+  remoteStop(host: string, port: number, name: string): Promise<void> {
+    return this.actorSystem().remoteStop(host, port, name);
   }
 
   /**
@@ -709,7 +741,9 @@ export function createAskContext(
 /**
  * Constructs a receive context whose {@link ReceiveContext.response}
  * routes into the given callbacks, registering it with the timeout
- * generations when `timeout` is positive. Runtime plumbing shared by ask
+ * generations. Callers pass a positive `timeout` by contract, defaulted
+ * to the system's `askTimeout` upstream when the caller named none, so
+ * every reply-bearing context is bounded. Runtime plumbing shared by ask
  * and in-actor requests.
  *
  * @internal
@@ -729,10 +763,7 @@ export function createRequestContext(
     ctx.rearm(message, self, sender, resolve, reject);
   }
 
-  if (timeout > 0) {
-    enlist(ctx, timeout);
-  }
-
+  enlist(ctx, timeout);
   return ctx;
 }
 
