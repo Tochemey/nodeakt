@@ -29,9 +29,10 @@ import { describe, expect, it } from "vitest";
 
 /**
  * The transport boundary, enforced: `src/net/` modules import only
- * platform modules and each other, and the only module outside the
- * folder allowed to import from it is the `remoting.ts` seam. A
- * violation here is a circular-dependency risk by definition.
+ * platform modules and each other, and the only modules outside the
+ * folder allowed to import from it are the remoting seam modules,
+ * `remoting.ts` and its `remoting.*` companions. A violation here is a
+ * circular-dependency risk by definition.
  */
 
 const srcDir: string = fileURLToPath(new URL("../../src", import.meta.url));
@@ -67,7 +68,8 @@ describe("the net boundary", () => {
 
   it("lets only the remoting seam import from net", () => {
     for (const filePath of sourceFiles(srcDir)) {
-      if (filePath.endsWith("/remoting.ts")) {
+      const base: string = filePath.slice(filePath.lastIndexOf("/") + 1);
+      if (base === "remoting.ts" || base.startsWith("remoting.")) {
         continue;
       }
 

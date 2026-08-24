@@ -39,6 +39,7 @@ import {
   ErrInvalidActorName,
   ErrInvalidActorSystemName,
   ErrNameRequired,
+  ErrRemotingDisabled,
   ErrReservedName,
 } from "./errors";
 import { EventStream, type StreamSubscriber } from "./eventstream";
@@ -52,6 +53,8 @@ import { PID } from "./pid";
 import { PidTree } from "./pid.tree";
 import type { Placement } from "./placement";
 import { Props } from "./props";
+import type { RemoteOptions } from "./remote.options";
+import { Remoting } from "./remoting";
 import {
   deadletterName,
   isSystemName,
@@ -70,9 +73,11 @@ import { SystemGuardian } from "./system.guardian";
 import { systemPlacement } from "./system.placement";
 import { UserGuardian } from "./user.guardian";
 
-/** The node endpoint of a single-node actor system. */
-const HOST = "127.0.0.1";
-const PORT = 0;
+/** The node endpoint of a system with remoting disabled: the loopback
+ * host and an unbound port, so single-node paths stay stable and a
+ * remote endpoint, when enabled, overrides both. */
+const HOST: string = "127.0.0.1";
+const PORT: number = 0;
 
 /** The environment variable overriding the detected capacity: an
  * operational escape hatch for machines whose usable CPU count the
@@ -122,7 +127,9 @@ const SYSTEM_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-_]*$/;
  */
 export class ActorSystem {
   private readonly _name: string;
-  private readonly _address: PathAddress;
+  /** The node address every actor's path carries. Mutable so an
+   * ephemeral remoting port resolves to the bound port at start. */
+  private _address: PathAddress;
   private readonly _tree = new PidTree();
   private readonly _passivation = new PassivationManager();
   private readonly _scheduler = new Scheduler();
@@ -152,6 +159,13 @@ export class ActorSystem {
   /** How many isolates the system may run, detected at start. */
   private _capacity: number = 1;
 
+  /** The remoting configuration, or undefined for a single-node system. */
+  private readonly _remoteOptions: RemoteOptions | undefined;
+
+  /** The remoting layer once started, or null while remoting is disabled
+   * or the system is stopped. */
+  private _remoting: Remoting | null = null;
+
   /**
    * Creates an actor system with the given name.
    *
@@ -174,7 +188,12 @@ export class ActorSystem {
     }
 
     this._name = name;
-    this._address = { system: name, host: HOST, port: PORT };
+    this._remoteOptions = options?.remote;
+    this._address = {
+      system: name,
+      host: this._remoteOptions?.host ?? HOST,
+      port: this._remoteOptions?.port ?? PORT,
+    };
     this._logger = options?.logger ?? defaultLogger;
     this._events = new EventStream((err) => {
       this._logger.error("event subscriber failed", { error: err });
@@ -189,6 +208,23 @@ export class ActorSystem {
   /** Returns the logger the runtime reports through. */
   logger(): Logger {
     return this._logger;
+  }
+
+  /**
+   * Returns the host the system's node is reachable at: the configured
+   * remoting host, or the loopback address when remoting is disabled.
+   */
+  host(): string {
+    return this._address.host;
+  }
+
+  /**
+   * Returns the port the system's node listens on: the bound remoting
+   * port (resolved from an ephemeral `0`), or `0` when remoting is
+   * disabled.
+   */
+  port(): number {
+    return this._address.port;
   }
 
   /**
@@ -265,7 +301,11 @@ export class ActorSystem {
       return undefined;
     }
 
-    if (path.system() !== this._name || path.host() !== HOST || path.port() !== PORT) {
+    if (
+      path.system() !== this._name ||
+      path.host() !== this._address.host ||
+      path.port() !== this._address.port
+    ) {
       return undefined;
     }
 
@@ -399,6 +439,20 @@ export class ActorSystem {
     // system provisions for every core the machine gives it.
     this._capacity = detectCapacity();
 
+    // Remoting binds its endpoint before any actor exists, so every
+    // actor's path advertises the reachable node address. An ephemeral
+    // port resolves to the bound one here. A single-node system loads
+    // the seam but binds nothing, so it pays no runtime cost. A bind
+    // failure rejects, leaving the system unstarted.
+    if (this._remoteOptions !== undefined) {
+      this._remoting = await Remoting.start(this, this._remoteOptions);
+      this._address = {
+        system: this._name,
+        host: this._remoteOptions.host,
+        port: this._remoting.port,
+      };
+    }
+
     // Runtime actors rely on the long-lived default strategy and never
     // passivate. The tree records that the system and user guardians are
     // children of the root guardian and that the NoSender actor is a
@@ -441,6 +495,15 @@ export class ActorSystem {
     }
 
     this._stopping = true;
+
+    // Remoting closes first, while the system still serves: every
+    // connection is torn down at once, so in-flight remote asks fail
+    // cleanly and no listener outlives the system.
+    const remoting: Remoting | null = this._remoting;
+    this._remoting = null;
+    if (remoting !== null) {
+      await remoting.stop();
+    }
 
     // The pool goes first, while this system still serves: workers
     // drain their own actors and their final dead letters still reach
@@ -898,6 +961,115 @@ export class ActorSystem {
     }
 
     return pid;
+  }
+
+  /**
+   * Resolves a top-level actor by name on the remote node at
+   * `host:port` and returns its PID. The handle sends, asks, and
+   * watches over the network exactly as a local PID does; liveness
+   * across nodes is not synchronously knowable, so `isRunning()` on it
+   * reports false and `watch` is the way to observe its stop.
+   *
+   * @param host - The remote node's host.
+   * @param port - The remote node's port.
+   * @param name - The top-level actor name to resolve there.
+   *
+   * @returns The remote actor's PID, or `undefined` when no running
+   * top-level actor holds the name on that node.
+   *
+   * @throws The {@link ErrActorSystemNotStarted} sentinel when this
+   * system is not running.
+   * @throws The {@link ErrRemotingDisabled} sentinel when this system
+   * was created without a `remote` configuration.
+   * @throws The dial or transport failure when the node cannot be
+   * reached, and the {@link ErrRequestTimeout} sentinel when it does
+   * not answer in time.
+   */
+  async remoteLookup(host: string, port: number, name: string): Promise<PID | undefined> {
+    return this.requireRemoting().remoteLookup(host, port, name);
+  }
+
+  /**
+   * Spawns a top-level actor on the remote node at `host:port` and
+   * returns its PID. Construction crosses by name: the actor class must
+   * be registered with `registerActor` on both nodes, under a name no
+   * other registered class shares on the receiving one, and the `Props`
+   * arguments must be plain data. Spawn options that are live objects
+   * are refused exactly as they are for a placed spawn; `reentrancy`,
+   * being data, travels.
+   *
+   * @param host - The remote node's host.
+   * @param port - The remote node's port.
+   * @param name - The top-level name the actor will hold there.
+   * @param props - The actor's construction as data.
+   * @param options - The spawn options; only data options may travel.
+   *
+   * @returns The remote actor's PID once its `preStart` resolved there.
+   *
+   * @throws The {@link ErrActorSystemNotStarted} sentinel when this
+   * system is not running.
+   * @throws The {@link ErrRemotingDisabled} sentinel when this system
+   * was created without a `remote` configuration.
+   * @throws An {@link ActorNotRegisteredError} when the class is not
+   * registered locally, or not resolvable by name on the remote node.
+   * @throws The remote spawn failure otherwise, sentinel identity
+   * preserved: {@link ErrActorAlreadyExists} for a held name, an
+   * `ActorInitializationError` for a failing `preStart`, and friends.
+   */
+  async remoteSpawn(
+    host: string,
+    port: number,
+    name: string,
+    props: Props,
+    options?: SpawnOptions,
+  ): Promise<PID> {
+    return this.requireRemoting().remoteSpawn(host, port, name, props, options);
+  }
+
+  /**
+   * Restarts the named top-level actor on the remote node at
+   * `host:port` and returns its PID. The actor re-initializes in place
+   * through its lifecycle hooks: same path, same incarnation, fresh
+   * state; watchers receive nothing, because a restart is not a stop.
+   *
+   * @throws The {@link ErrActorSystemNotStarted} sentinel when this
+   * system is not running.
+   * @throws The {@link ErrRemotingDisabled} sentinel when this system
+   * was created without a `remote` configuration.
+   * @throws An {@link ActorNotFoundError} when no running top-level
+   * actor holds the name on that node.
+   */
+  async remoteReSpawn(host: string, port: number, name: string): Promise<PID> {
+    return this.requireRemoting().remoteReSpawn(host, port, name);
+  }
+
+  /**
+   * Stops the named top-level actor on the remote node at `host:port`
+   * gracefully: its mailbox drains, `postStop` runs, and its watchers
+   * receive `Terminated`. A name no running actor holds there is
+   * already stopped, so the call succeeds idempotently.
+   *
+   * @throws The {@link ErrActorSystemNotStarted} sentinel when this
+   * system is not running.
+   * @throws The {@link ErrRemotingDisabled} sentinel when this system
+   * was created without a `remote` configuration.
+   */
+  async remoteStop(host: string, port: number, name: string): Promise<void> {
+    return this.requireRemoting().remoteStop(host, port, name);
+  }
+
+  /** Returns the live remoting layer, or throws the reason there is
+   * none: an unstarted system, or one without a remote configuration. */
+  private requireRemoting(): Remoting {
+    if (!this.isRunning()) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    if (this._remoting === null) {
+      throw ErrRemotingDisabled;
+    }
+
+    return this._remoting;
   }
 
   /**

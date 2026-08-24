@@ -50,6 +50,11 @@ export interface ActorLocation {
 export class ActorRegistry {
   private readonly _locations = new Map<ActorClass, ActorLocation>();
 
+  /** The classes by their name, for resolutions that carry only a name
+   * (a remote spawn); a name two registered classes share resolves to
+   * nothing, because neither could be meant unambiguously. */
+  private readonly _byName = new Map<string, ActorClass | null>();
+
   /**
    * Registers an actor class as defined in the given module.
    * Registering the same class with the same module again is a no-op,
@@ -76,11 +81,27 @@ export class ActorRegistry {
     }
 
     this._locations.set(type, { module: moduleUrl, actor: type.name });
+
+    const holder = this._byName.get(type.name);
+    if (holder === undefined) {
+      this._byName.set(type.name, type);
+      return;
+    }
+
+    // A second class under the same name: the name alone no longer
+    // identifies either class.
+    this._byName.set(type.name, null);
   }
 
   /** Returns where the class can be rebuilt, or undefined when it was
    * never registered. */
   locationOf(type: ActorClass): ActorLocation | undefined {
     return this._locations.get(type);
+  }
+
+  /** Returns the registered class of that name, or undefined when the
+   * name was never registered or is shared by more than one class. */
+  classOf(name: string): ActorClass | undefined {
+    return this._byName.get(name) ?? undefined;
   }
 }

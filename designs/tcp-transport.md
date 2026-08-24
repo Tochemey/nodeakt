@@ -15,7 +15,7 @@ Discovery, membership, and placement across nodes (a future cluster plan). HTTP 
 
 ## Where it lives
 
-The transport is a freestanding package in `src/net/`, the one folder in an otherwise flat `src/`. It is self-contained by rule, not by taste: modules in `net/` import platform modules and each other, and nothing else. No envelope types, no message registry, no error sentinels, no scheduler; the transport deals in frames, opaque ref strings, serializer ids, payload bytes, numeric codes, and callbacks. The actor system plugs in through one seam module, `remoting.ts`, which lives outside the folder in flat `src/` and is the only module allowed to import from `net/`.
+The transport is a freestanding package in `src/net/`, the one folder in an otherwise flat `src/`. It is self-contained by rule, not by taste: modules in `net/` import platform modules and each other, and nothing else. No envelope types, no message registry, no error sentinels, no scheduler; the transport deals in frames, opaque ref strings, serializer ids, payload bytes, numeric codes, and callbacks. The actor system plugs in through the seam modules, `remoting.ts` and its `remoting.*` companions, which live outside the folder in flat `src/` and are the only modules allowed to import from `net/`.
 
 Dependencies therefore flow one way by construction and a circular import is impossible: `net/` cannot reach the runtime, and the runtime reaches `net/` only through the seam. A guard test enforces both rules by scanning import statements, so a violation fails CI instead of surviving as convention. A system that never enables remoting loads none of this and pays nothing.
 

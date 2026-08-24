@@ -150,6 +150,11 @@ export const ErrInvalidRouteeDirective: Error = new Error("invalid routee direct
  * broadcast has no single answer. */
 export const ErrFanOutAsk: Error = new Error("a fan-out router cannot answer an ask");
 
+/** Rejects a remote operation on a system that was created without a
+ * `remote` configuration; enable remoting when constructing the actor
+ * system. */
+export const ErrRemotingDisabled: Error = new Error("remoting is not enabled");
+
 /**
  * Raised when a message would cross an isolate boundary but its class
  * is not in the message registry, either while encoding on the sending

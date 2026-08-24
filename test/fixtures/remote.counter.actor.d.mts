@@ -22,16 +22,13 @@
  * SOFTWARE.
  */
 
-import type { Logger } from "./logger";
-import type { RemoteOptions } from "./remote.options";
+/** Declarations for the remote.counter.actor fixture. */
 
-/** Options customizing an actor system. */
-export interface ActorSystemOptions {
-  /** The logger the runtime reports through; one JSON line per entry on
-   * standard error at info level by default. */
-  logger?: Logger;
+import type { ReceiveContext } from "../../src/receive.context";
 
-  /** Enables remoting on the system. Absent by default, in which case
-   * the system is single-node and the transport never loads. */
-  remote?: RemoteOptions;
+export declare class RemoteCounter {
+  count: number;
+  preStart(): void;
+  receive(ctx: ReceiveContext): void;
+  postStop(): void;
 }

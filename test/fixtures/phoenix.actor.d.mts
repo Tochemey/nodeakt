@@ -22,16 +22,11 @@
  * SOFTWARE.
  */
 
-import type { Logger } from "./logger";
-import type { RemoteOptions } from "./remote.options";
+/** Declarations for the phoenix.actor fixture. */
 
-/** Options customizing an actor system. */
-export interface ActorSystemOptions {
-  /** The logger the runtime reports through; one JSON line per entry on
-   * standard error at info level by default. */
-  logger?: Logger;
-
-  /** Enables remoting on the system. Absent by default, in which case
-   * the system is single-node and the transport never loads. */
-  remote?: RemoteOptions;
+export declare class Phoenix {
+  boots: number;
+  preStart(): void;
+  receive(): void;
+  postStop(): void;
 }

@@ -448,6 +448,33 @@ export class ReceiveContext {
   }
 
   /**
+   * Resolves a top-level actor by name on the remote node at
+   * `host:port`, with the contract of `ActorSystem.remoteLookup`: the
+   * promise resolves with the remote actor's PID, or undefined when no
+   * running top-level actor holds the name there.
+   */
+  remoteLookup(host: string, port: number, name: string): Promise<PID | undefined> {
+    return this.actorSystem().remoteLookup(host, port, name);
+  }
+
+  /**
+   * Restarts the named top-level actor on the remote node at
+   * `host:port`, with the contract of `ActorSystem.remoteReSpawn`: the
+   * promise resolves with the restarted actor's PID.
+   */
+  remoteReSpawn(host: string, port: number, name: string): Promise<PID> {
+    return this.actorSystem().remoteReSpawn(host, port, name);
+  }
+
+  /**
+   * Stops the named top-level actor on the remote node at `host:port`
+   * gracefully, with the contract of `ActorSystem.remoteStop`.
+   */
+  remoteStop(host: string, port: number, name: string): Promise<void> {
+    return this.actorSystem().remoteStop(host, port, name);
+  }
+
+  /**
    * Marks the current message as unhandled: it is routed to the
    * system's dead letters carrying `ErrUnhandled` as the reason, and
    * processing continues normally. Prefer this over throwing when

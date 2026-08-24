@@ -22,16 +22,27 @@
  * SOFTWARE.
  */
 
-import type { Logger } from "./logger";
-import type { RemoteOptions } from "./remote.options";
+/** Test fixture: counts bumps and answers the count; preStart resets,
+ * so a respawn observably starts the state over. */
+export class RemoteCounter {
+  constructor() {
+    this.count = 0;
+  }
 
-/** Options customizing an actor system. */
-export interface ActorSystemOptions {
-  /** The logger the runtime reports through; one JSON line per entry on
-   * standard error at info level by default. */
-  logger?: Logger;
+  preStart() {
+    this.count = 0;
+  }
 
-  /** Enables remoting on the system. Absent by default, in which case
-   * the system is single-node and the transport never loads. */
-  remote?: RemoteOptions;
+  receive(ctx) {
+    if (ctx.message === "bump") {
+      this.count++;
+      return;
+    }
+
+    if (ctx.message === "count") {
+      ctx.response(this.count);
+    }
+  }
+
+  postStop() {}
 }

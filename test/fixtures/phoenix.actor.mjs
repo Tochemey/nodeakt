@@ -22,16 +22,21 @@
  * SOFTWARE.
  */
 
-import type { Logger } from "./logger";
-import type { RemoteOptions } from "./remote.options";
+/** Test fixture: boots once and refuses every rebirth, so a restart
+ * observably fails in preStart. */
+export class Phoenix {
+  constructor() {
+    this.boots = 0;
+  }
 
-/** Options customizing an actor system. */
-export interface ActorSystemOptions {
-  /** The logger the runtime reports through; one JSON line per entry on
-   * standard error at info level by default. */
-  logger?: Logger;
+  preStart() {
+    this.boots++;
+    if (this.boots > 1) {
+      throw new Error("no rebirth");
+    }
+  }
 
-  /** Enables remoting on the system. Absent by default, in which case
-   * the system is single-node and the transport never loads. */
-  remote?: RemoteOptions;
+  receive() {}
+
+  postStop() {}
 }

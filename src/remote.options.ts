@@ -22,16 +22,19 @@
  * SOFTWARE.
  */
 
-import type { Logger } from "./logger";
-import type { RemoteOptions } from "./remote.options";
+/**
+ * Enables remoting on an actor system: the node binds a listener on the
+ * given host and port, its actors' paths advertise that reachable
+ * endpoint, and messages addressed to another node travel over the
+ * network transport. A system created without this stays single-node
+ * and pays nothing for the transport.
+ */
+export interface RemoteOptions {
+  /** The host the node binds and advertises. A concrete address such as
+   * `127.0.0.1` or `0.0.0.0`, not a name to resolve. */
+  host: string;
 
-/** Options customizing an actor system. */
-export interface ActorSystemOptions {
-  /** The logger the runtime reports through; one JSON line per entry on
-   * standard error at info level by default. */
-  logger?: Logger;
-
-  /** Enables remoting on the system. Absent by default, in which case
-   * the system is single-node and the transport never loads. */
-  remote?: RemoteOptions;
+  /** The port the node binds. `0` lets the operating system choose a
+   * free port, readable afterwards through `ActorSystem.port`. */
+  port: number;
 }

@@ -29,8 +29,18 @@ new ActorSystem(name, options?)
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `logger` | `defaultLogger` | Structured logger the runtime reports through. See [Logging](logging.md). |
+| `remote` | none | Enables remoting. A `RemoteOptions` with the `host` and `port` the node binds. |
 
-The system's node address is currently `127.0.0.1:0`. Paths look like `nodeakt://orders@127.0.0.1:0/greeter`. Remoting is not implemented. The host and port are in the address so it can stay stable when remoting lands.
+Without `remote`, the system is single-node: its node address is `127.0.0.1:0`, paths look like `nodeakt://orders@127.0.0.1:0/greeter`, and the network transport never loads. Pass `remote` to bind a listener and advertise a reachable endpoint:
+
+```ts
+const system = new ActorSystem("orders", { remote: { host: "127.0.0.1", port: 0 } });
+await system.start();
+system.host(); // "127.0.0.1"
+system.port(); // the bound port; a configured 0 resolves to the port the OS chose
+```
+
+`RemoteOptions` takes a `host` (a concrete address such as `127.0.0.1` or `0.0.0.0`, not a name to resolve) and a `port` (`0` lets the operating system pick a free one). `host()` and `port()` report the node's endpoint; every actor's path advertises it, so `nodeakt://orders@127.0.0.1:5100/greeter` names the same actor from any node.
 
 ## Start and stop
 
