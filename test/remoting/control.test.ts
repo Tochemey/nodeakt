@@ -45,11 +45,14 @@ import { registerActor } from "../../src/registration";
 import { routedPid } from "../../src/routed.pid";
 import { Phoenix } from "../fixtures/phoenix.actor.mjs";
 import { Registered } from "../fixtures/registered.actor.mjs";
+import { Relay } from "../fixtures/relay.actor.mjs";
 import { RemoteCounter } from "../fixtures/remote.counter.actor.mjs";
+import { remoteSystem, until, withSystems } from "./helpers";
 
 const registeredModule: string = new URL("../fixtures/registered.actor.mjs", import.meta.url).href;
 const counterModule: string = new URL("../fixtures/remote.counter.actor.mjs", import.meta.url).href;
 const phoenixModule: string = new URL("../fixtures/phoenix.actor.mjs", import.meta.url).href;
+const relayModule: string = new URL("../fixtures/relay.actor.mjs", import.meta.url).href;
 
 class Stray implements Actor {
   preStart(): void {}
@@ -85,6 +88,7 @@ beforeAll((): void => {
   registerActor(Registered, registeredModule);
   registerActor(RemoteCounter, counterModule);
   registerActor(Phoenix, phoenixModule);
+  registerActor(Relay, relayModule);
   registerActor(TwinA, "file:///twin-a.actor.ts");
   registerActor(TwinB, "file:///twin-b.actor.ts");
 });
@@ -92,41 +96,6 @@ beforeAll((): void => {
 afterAll((): void => {
   vi.unstubAllEnvs();
 });
-
-function remoteSystem(name: string): ActorSystem {
-  return new ActorSystem(name, {
-    logger: discardLogger,
-    remote: { host: "127.0.0.1", port: 0 },
-  });
-}
-
-async function until(label: string, read: () => boolean): Promise<void> {
-  for (let i: number = 0; i < 800; i++) {
-    if (read()) {
-      return;
-    }
-
-    await new Promise<void>((resolve): void => {
-      setTimeout(resolve, 5);
-    });
-  }
-
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-async function withSystems(fn: (a: ActorSystem, b: ActorSystem) => Promise<void>): Promise<void> {
-  const a: ActorSystem = remoteSystem("alpha");
-  const b: ActorSystem = remoteSystem("beta");
-  await a.start();
-  await b.start();
-
-  try {
-    await fn(a, b);
-  } finally {
-    await a.stop();
-    await b.stop();
-  }
-}
 
 describe("remoteSpawn", () => {
   it("spawns on the remote node and messages it", async () => {
@@ -251,7 +220,11 @@ describe("remoteReSpawn", () => {
       await a.remoteSpawn(b.host(), b.port(), "phoenix", Props.create(Phoenix));
       const rejection: Promise<PID> = a.remoteReSpawn(b.host(), b.port(), "phoenix");
       await expect(rejection).rejects.toSatisfy((err: unknown): boolean => {
-        return err instanceof Error && err.message.includes("failed to initialize");
+        if (!(err instanceof Error) || err.name !== "ActorInitializationError") {
+          return false;
+        }
+
+        return err.message.includes("failed to initialize");
       });
     });
   });
@@ -325,6 +298,13 @@ describe("remoteStop", () => {
       await expect(rejection).rejects.toSatisfy((err: unknown): boolean => {
         return err instanceof Error && err.message.includes("another isolate");
       });
+
+      // A respawn meets the same honest refusal: the actor lives, but
+      // lifecycle control cannot reach its isolate yet.
+      const respawn: Promise<PID> = a.remoteReSpawn(b.host(), b.port(), "placed");
+      await expect(respawn).rejects.toSatisfy((err: unknown): boolean => {
+        return err instanceof Error && err.message.includes("another isolate");
+      });
     });
   });
 });
@@ -389,5 +369,37 @@ describe("remote control guards", () => {
     );
     await expect(system.remoteReSpawn("127.0.0.1", 1, "x")).rejects.toBe(ErrActorSystemNotStarted);
     await expect(system.remoteStop("127.0.0.1", 1, "x")).rejects.toBe(ErrActorSystemNotStarted);
+  });
+});
+
+describe("remote spawn arguments and options", () => {
+  it("refuses a constructor argument that cannot cross", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const rejection: Promise<PID> = a.remoteSpawn(
+        b.host(),
+        b.port(),
+        "boxed-arg",
+        Props.create(Registered, ((): string => "fr") as unknown as string),
+      );
+      await expect(rejection).rejects.toBeInstanceOf(TypeError);
+    });
+  });
+
+  it("carries the reentrancy option into a working request", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const reentrant: PID = await a.remoteSpawn(b.host(), b.port(), "relay", Props.create(Relay), {
+        reentrancy: { mode: "allowAll" },
+      });
+      expect(await a.noSender().ask(reentrant, "go", 2000)).toBe("ok:pong");
+
+      const plain: PID = await a.remoteSpawn(
+        b.host(),
+        b.port(),
+        "relay-plain",
+        Props.create(Relay),
+      );
+      const refused: unknown = await a.noSender().ask(plain, "go", 2000);
+      expect(String(refused).startsWith("refused:")).toBe(true);
+    });
   });
 });

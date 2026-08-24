@@ -24,10 +24,9 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { Actor } from "../../src/actor";
-import { ActorSystem } from "../../src/actor.system";
-import { discardLogger } from "../../src/discard.logger";
+import type { ActorSystem } from "../../src/actor.system";
 import { ErrDead } from "../../src/errors";
-import { Deadletter, PostStart } from "../../src/messages";
+import { Deadletter, PostStart, Terminated } from "../../src/messages";
 import {
   type DataEnvelope,
   ERROR_BAD_REQUEST,
@@ -45,7 +44,8 @@ import type { PID } from "../../src/pid";
 import type { ReceiveContext } from "../../src/receive.context";
 import { registerMessage } from "../../src/registration";
 import { decodeFailure } from "../../src/remoting.codec";
-import { cleanupNet, dialSession, startServer } from "../net/helpers";
+import { cleanupNet, dialSession, hello, startServer } from "../net/helpers";
+import { remoteSystem, until } from "./helpers";
 
 class Probe {
   constructor(readonly n: number) {}
@@ -68,27 +68,6 @@ class Collector implements Actor {
   }
 
   postStop(): void {}
-}
-
-function remoteSystem(name: string): ActorSystem {
-  return new ActorSystem(name, {
-    logger: discardLogger,
-    remote: { host: "127.0.0.1", port: 0 },
-  });
-}
-
-async function until(label: string, read: () => boolean): Promise<void> {
-  for (let i: number = 0; i < 800; i++) {
-    if (read()) {
-      return;
-    }
-
-    await new Promise<void>((resolve): void => {
-      setTimeout(resolve, 5);
-    });
-  }
-
-  throw new Error(`timed out waiting for ${label}`);
 }
 
 function payloadOf(value: unknown): Uint8Array {
@@ -265,11 +244,15 @@ describe("inbound delivery edges", () => {
 
       const session: Session = await dialSession(system.port());
       const missing: string = `nodeakt://beta@127.0.0.1:${system.port()}/nobody`;
-      session.tell(envelope({ to: missing, typeRef: "Probe", payload: payloadOf({ n: 2 }) }));
+      const from: string = "nodeakt://ghost@10.9.9.9:9/g";
+      session.tell(
+        envelope({ to: missing, sender: from, typeRef: "Probe", payload: payloadOf({ n: 2 }) }),
+      );
 
       await until("the dead letter", (): boolean => deadletters.length >= 1);
       const letter: Deadletter = deadletters[0] as Deadletter;
       expect(letter.receiver).toBe(missing);
+      expect(letter.sender).toBe(from);
       expect(letter.reason).toBe(ErrDead.message);
       expect(letter.message).toBeInstanceOf(Probe);
     } finally {
@@ -666,6 +649,202 @@ describe("a misbehaving remote node", () => {
       await expect(rejection).rejects.toSatisfy((err: unknown): boolean => {
         return err instanceof Error && err.name === "ValueDecodeError";
       });
+    } finally {
+      await system.stop();
+    }
+  });
+});
+
+describe("malformed control shapes", () => {
+  it("answers a decodable payload of the wrong shape with a bad request", async () => {
+    const system: ActorSystem = remoteSystem("beta");
+    await system.start();
+
+    try {
+      const session: Session = await dialSession(system.port());
+      const requests: { typeRef: string; body: unknown }[] = [
+        { typeRef: "nodeakt.remote.lookup", body: null },
+        { typeRef: "nodeakt.remote.lookup", body: { wrong: 1 } },
+        { typeRef: "nodeakt.remote.spawn", body: null },
+        { typeRef: "nodeakt.remote.spawn", body: { name: "x", actor: 5 } },
+        { typeRef: "nodeakt.remote.spawn", body: { name: "x", actor: "A", args: "not-a-list" } },
+        { typeRef: "nodeakt.remote.respawn", body: 42 },
+        { typeRef: "nodeakt.remote.stop", body: null },
+      ];
+
+      for (const request of requests) {
+        const rejection: Promise<ReplyEnvelope> = session.ask(
+          envelope({
+            kind: KIND_ASK,
+            typeRef: request.typeRef,
+            payload: payloadOf(request.body),
+          }),
+          2000,
+        );
+        await expect(rejection).rejects.toSatisfy((err: unknown): boolean => {
+          if (!(err instanceof PeerError) || err.code !== ERROR_BAD_REQUEST) {
+            return false;
+          }
+
+          return err.message.includes("malformed");
+        });
+      }
+    } finally {
+      await system.stop();
+    }
+  });
+});
+
+describe("refused replies", () => {
+  /** Answers any probe with a payload far above the small negotiated
+   * message cap, so the session must refuse the reply. */
+  class BigMouth implements Actor {
+    preStart(): void {}
+
+    receive(ctx: ReceiveContext): void {
+      if (ctx.message instanceof PostStart) {
+        return;
+      }
+
+      ctx.response({ blob: new Uint8Array(64 * 1024) });
+    }
+
+    postStop(): void {}
+  }
+
+  it("settles the ask with the refusal when the reply exceeds the negotiated cap", async () => {
+    const system: ActorSystem = remoteSystem("beta");
+    await system.start();
+
+    try {
+      const local: PID = await system.spawn("big", new BigMouth());
+      const session: Session = await dialSession(
+        system.port(),
+        hello({ systemName: "client", maxFrameSize: 16 * 1024, maxMessageSize: 16 * 1024 }),
+      );
+
+      const rejection: Promise<ReplyEnvelope> = session.ask(
+        envelope({
+          kind: KIND_ASK,
+          to: local.path().toString(),
+          typeRef: "Probe",
+          payload: payloadOf({ n: 1 }),
+        }),
+        2000,
+      );
+      await expect(rejection).rejects.toSatisfy((err: unknown): boolean => {
+        return err instanceof PeerError && err.message.includes("exceeds");
+      });
+    } finally {
+      await system.stop();
+    }
+  });
+});
+
+describe("unsolicited death notifications", () => {
+  /** Collects every Terminated it is notified with. */
+  class Bystander implements Actor {
+    readonly terminated: string[] = [];
+
+    preStart(): void {}
+
+    receive(ctx: ReceiveContext): void {
+      if (ctx.message instanceof Terminated) {
+        this.terminated.push(ctx.message.actorPath);
+      }
+    }
+
+    postStop(): void {}
+  }
+
+  it("drops a Terminated that settles no watch this node holds", async () => {
+    const system: ActorSystem = remoteSystem("alpha");
+    await system.start();
+
+    try {
+      const bystander: Bystander = new Bystander();
+      const collector: Collector = new Collector();
+      const bystanderPid: PID = await system.spawn("bystander", bystander);
+      const probePid: PID = await system.spawn("probe-sink", collector);
+      const session: Session = await dialSession(system.port());
+
+      session.tell(
+        envelope({
+          to: bystanderPid.path().toString(),
+          typeRef: "nodeakt.Terminated",
+          payload: payloadOf({ actorPath: "nodeakt://x@10.0.0.4:1/foo" }),
+        }),
+      );
+      session.tell(
+        envelope({
+          to: probePid.path().toString(),
+          typeRef: "Probe",
+          payload: payloadOf({ n: 8 }),
+        }),
+      );
+
+      // Lane FIFO orders the probe behind the forged notification, so
+      // its arrival proves the notification was already dropped.
+      await until("the probe", (): boolean => collector.received.length >= 1);
+      expect(bystander.terminated.length).toBe(0);
+    } finally {
+      await system.stop();
+    }
+  });
+});
+
+describe("inbound watches over dialed sessions", () => {
+  it("releases a watch pushed over a dialed connection once its node dies", async () => {
+    const system: ActorSystem = remoteSystem("alpha");
+    await system.start();
+
+    try {
+      const sink: Collector = new Collector();
+      const sinkPid: PID = await system.spawn("sink", sink);
+      const sinkPath: string = sinkPid.path().toString();
+
+      // The far node answers the lookup and pushes a watch back over
+      // the same accepted connection, registering itself as a watcher
+      // through a session this node dialed.
+      const server: NetServer = await startServer(
+        {},
+        {
+          onData: (session: Session, arrived: DataEnvelope, correlation: number): void => {
+            if (arrived.to !== "") {
+              return;
+            }
+
+            session.reply(correlation, {
+              serializerId: SERIALIZER_BINARY,
+              typeRef: "",
+              payload: payloadOf(null),
+            });
+            session.tell(
+              envelope({
+                kind: KIND_WATCH,
+                to: sinkPath,
+                sender: `nodeakt://ghost@127.0.0.1:${server.address.port}/g`,
+              }),
+            );
+          },
+        },
+      );
+
+      expect(await system.remoteLookup("127.0.0.1", server.address.port, "x")).toBeUndefined();
+      await until("the pushed watch to land", (): boolean => system.isRunning());
+      await new Promise<void>((resolve): void => {
+        setTimeout(resolve, 100);
+      });
+
+      // The node dies; the lane closure sweeps the registration the
+      // close callback cannot reach, so the sink's eventual stop tells
+      // no ghost and the system still stops cleanly.
+      await server.shutdown(-1);
+      await new Promise<void>((resolve): void => {
+        setTimeout(resolve, 150);
+      });
+      await sinkPid.shutdown();
+      expect(sink.received.length).toBe(0);
     } finally {
       await system.stop();
     }

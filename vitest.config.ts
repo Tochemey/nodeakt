@@ -2,6 +2,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // A leaked handle surfaces as a named report instead of a silent
+    // hang in CI.
+    reporters: ["default", "hanging-process"],
     coverage: {
       provider: "v8",
       // text for the terminal, lcov for coverage services such as Codecov.

@@ -147,6 +147,10 @@ const REVISION_CHUNKING: number = 2;
 const REVISION_TABLES: number = 3;
 const REVISION_CREDITS: number = 4;
 
+/** The highest capability revision this transport implements: what an
+ * owner should advertise, so it can never lag or outrun the wire. */
+export const REVISION_CURRENT: number = REVISION_CREDITS;
+
 /**
  * Deadline for repaying grant bytes still below the batch threshold.
  * Batching keeps grant traffic negligible, but a remainder held

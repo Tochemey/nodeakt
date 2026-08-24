@@ -24,12 +24,12 @@
 
 import { describe, expect, it } from "vitest";
 import type { Actor } from "../../src/actor";
-import { ActorSystem } from "../../src/actor.system";
-import { discardLogger } from "../../src/discard.logger";
+import type { ActorSystem } from "../../src/actor.system";
 import { ErrDead } from "../../src/errors";
 import { Deadletter, Terminated } from "../../src/messages";
 import type { PID } from "../../src/pid";
 import type { ReceiveContext } from "../../src/receive.context";
+import { remoteSystem, sleep, until, withSystems } from "./helpers";
 
 /** Does nothing; exists to be watched and stopped. */
 class Idle implements Actor {
@@ -53,47 +53,6 @@ class Watcher implements Actor {
   }
 
   postStop(): void {}
-}
-
-function remoteSystem(name: string): ActorSystem {
-  return new ActorSystem(name, {
-    logger: discardLogger,
-    remote: { host: "127.0.0.1", port: 0 },
-  });
-}
-
-async function until(label: string, read: () => boolean): Promise<void> {
-  for (let i: number = 0; i < 800; i++) {
-    if (read()) {
-      return;
-    }
-
-    await new Promise<void>((resolve): void => {
-      setTimeout(resolve, 5);
-    });
-  }
-
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve): void => {
-    setTimeout(resolve, ms);
-  });
-}
-
-async function withSystems(fn: (a: ActorSystem, b: ActorSystem) => Promise<void>): Promise<void> {
-  const a: ActorSystem = remoteSystem("alpha");
-  const b: ActorSystem = remoteSystem("beta");
-  await a.start();
-  await b.start();
-
-  try {
-    await fn(a, b);
-  } finally {
-    await a.stop();
-    await b.stop();
-  }
 }
 
 describe("remote death watch", () => {
@@ -150,6 +109,15 @@ describe("remote death watch", () => {
         const onC: PID = (await a.remoteLookup(c.host(), c.port(), "survivor")) as PID;
         watcherPid.watch(onB);
         watcherPid.watch(onC);
+
+        // Reverse watches put inbound registrations on alpha, one from
+        // the node about to die and one from the survivor, so alpha's
+        // sweeps meet a closed and a live delivering session.
+        await a.spawn("sink", new Idle());
+        const sinkOnB: PID = (await b.remoteLookup(a.host(), a.port(), "sink")) as PID;
+        const sinkOnC: PID = (await c.remoteLookup(a.host(), a.port(), "sink")) as PID;
+        (await b.spawn("b-watcher", new Watcher())).watch(sinkOnB);
+        (await c.spawn("c-watcher", new Watcher())).watch(sinkOnC);
         await sleep(50);
 
         await b.stop();
@@ -309,6 +277,31 @@ describe("remote death watch", () => {
       watcherPid.unWatch(remote);
       await sleep(200);
       expect(deadletters.length).toBe(0);
+    });
+  });
+});
+
+describe("watcher independence", () => {
+  it("keeps the second watcher notified when the first unwatches", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const first: Watcher = new Watcher();
+      const second: Watcher = new Watcher();
+      const firstPid: PID = await a.spawn("first", first);
+      const secondPid: PID = await a.spawn("second", second);
+      const local: PID = await b.spawn("subject", new Idle());
+
+      const remote: PID = (await a.remoteLookup(b.host(), b.port(), "subject")) as PID;
+      firstPid.watch(remote);
+      secondPid.watch(remote);
+      await sleep(50);
+      firstPid.unWatch(remote);
+      await sleep(50);
+
+      await local.shutdown();
+      await until("the second watcher's Terminated", (): boolean => second.terminated.length >= 1);
+      await sleep(150);
+      expect(first.terminated.length).toBe(0);
+      expect(second.terminated.length).toBe(1);
     });
   });
 });

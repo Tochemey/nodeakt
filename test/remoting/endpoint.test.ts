@@ -22,11 +22,18 @@
  * SOFTWARE.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { Actor } from "../../src/actor";
 import { ActorSystem } from "../../src/actor.system";
 import { discardLogger } from "../../src/discard.logger";
+import type { DataEnvelope, Hello } from "../../src/net/envelope";
+import { SERIALIZER_BINARY } from "../../src/net/envelope";
+import type { NetServer } from "../../src/net/server";
+import type { Session } from "../../src/net/session";
+import { ByteWriter, encodeValue } from "../../src/net/values";
 import type { PID } from "../../src/pid";
+import { cleanupNet, dialSession, hello, startServer } from "../net/helpers";
+import { remoteSystem } from "./helpers";
 
 /** A do-nothing actor, enough to mint a path and be looked up. */
 class Idle implements Actor {
@@ -35,14 +42,6 @@ class Idle implements Actor {
   receive(): void {}
 
   postStop(): void {}
-}
-
-/** A system with remoting enabled on an ephemeral loopback port. */
-function remoteSystem(name: string): ActorSystem {
-  return new ActorSystem(name, {
-    logger: discardLogger,
-    remote: { host: "127.0.0.1", port: 0 },
-  });
 }
 
 describe("remoting endpoint", () => {
@@ -121,6 +120,67 @@ describe("remoting endpoint", () => {
     } finally {
       await one.stop();
       await two.stop();
+    }
+  });
+});
+
+describe("the advertised endpoint identity", () => {
+  afterEach(cleanupNet);
+
+  function nullPayload(): Uint8Array {
+    const writer: ByteWriter = new ByteWriter();
+    encodeValue(writer, null);
+    return writer.bytes().slice();
+  }
+
+  it("advertises the bound port to dialers when configured ephemeral", async () => {
+    const system: ActorSystem = remoteSystem("orders");
+    await system.start();
+
+    try {
+      const session: Session = await dialSession(system.port());
+      expect((session.remote as Hello).port).toBe(system.port());
+      expect((session.remote as Hello).systemName).toBe("orders");
+    } finally {
+      await system.stop();
+    }
+  });
+
+  it("advertises a nonzero configured port verbatim", async () => {
+    const server: NetServer = await startServer({
+      local: hello({ systemName: "fixed", port: 7777 }),
+    });
+    const session: Session = await dialSession(server.address.port);
+    expect((session.remote as Hello).port).toBe(7777);
+  });
+
+  it("advertises the bound port in the HELLO of every dialed peer", async () => {
+    const system: ActorSystem = remoteSystem("orders");
+    await system.start();
+
+    try {
+      const remotes: Hello[] = [];
+      const server: NetServer = await startServer(
+        {},
+        {
+          onSession: (session: Session): void => {
+            remotes.push(session.remote as Hello);
+          },
+          onData: (session: Session, _envelope: DataEnvelope, correlation: number): void => {
+            session.reply(correlation, {
+              serializerId: SERIALIZER_BINARY,
+              typeRef: "",
+              payload: nullPayload(),
+            });
+          },
+        },
+      );
+
+      expect(await system.remoteLookup("127.0.0.1", server.address.port, "x")).toBeUndefined();
+      expect(remotes.length).toBeGreaterThan(0);
+      expect((remotes[0] as Hello).port).toBe(system.port());
+    } finally {
+      await system.stop();
     }
   });
 });

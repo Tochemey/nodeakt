@@ -49,7 +49,8 @@ export interface NetServerOptions {
   readonly port?: number;
   /**
    * The local HELLO parameters answered to every dialer. The lane
-   * field is ignored: the acceptor echoes each dialer's lane.
+   * field is ignored: the acceptor echoes each dialer's lane. A zero
+   * port is advertised as the bound port once listening.
    */
   readonly local: Hello;
   /** Refuses connections beyond this count; zero means unlimited. */
@@ -92,8 +93,13 @@ export class NetServer {
   private _drainResolve: (() => void) | null = null;
   private _address: BoundAddress = { host: "", port: 0 };
 
+  /** The HELLO answered to dialers, its ephemeral port resolved to the
+   * bound one once listening. */
+  private _local: Hello;
+
   private constructor(options: NetServerOptions, handlers: NetServerHandlers) {
     this._options = options;
+    this._local = options.local;
     this._handlers = handlers;
     this._timers = options.timers ?? defaultTimers;
     this._listener = createServer((socket: Socket): void => this.onConnection(socket));
@@ -115,6 +121,12 @@ export class NetServer {
           });
           const bound: AddressInfo = server._listener.address() as AddressInfo;
           server._address = { host: bound.address, port: bound.port };
+          // An ephemeral local port advertises the bound one, so the
+          // HELLO a session answers names an endpoint a peer can dial.
+          if (options.local.port === 0) {
+            server._local = { ...options.local, port: bound.port };
+          }
+
           resolve(server);
         });
       },
@@ -173,7 +185,7 @@ export class NetServer {
       },
     };
 
-    Session.accept(socket, this._options.local, handlers, sessionOptions).then(
+    Session.accept(socket, this._local, handlers, sessionOptions).then(
       (session: Session): void => {
         this._handshaking.delete(socket);
         /* v8 ignore next 5 -- handshake-versus-shutdown race: the

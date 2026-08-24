@@ -34,13 +34,16 @@ import {
   ErrMailboxFull,
   ErrReentrancyDisabled,
   ErrRemotingDisabled,
+  ErrRequestCanceled,
   ErrRequestTimeout,
   TypeNotRegisteredError,
 } from "../../src/errors";
 import { Deadletter, PostStart } from "../../src/messages";
 import type { PID } from "../../src/pid";
 import type { ReceiveContext } from "../../src/receive.context";
+import type { RequestCall } from "../../src/reentrancy";
 import { registerMessage } from "../../src/registration";
+import { remoteSystem, until, withSystems } from "./helpers";
 
 class Ping {
   constructor(readonly n: number) {}
@@ -177,41 +180,6 @@ class Requester implements Actor {
   }
 
   postStop(): void {}
-}
-
-function remoteSystem(name: string): ActorSystem {
-  return new ActorSystem(name, {
-    logger: discardLogger,
-    remote: { host: "127.0.0.1", port: 0 },
-  });
-}
-
-async function until(label: string, read: () => boolean): Promise<void> {
-  for (let i: number = 0; i < 800; i++) {
-    if (read()) {
-      return;
-    }
-
-    await new Promise<void>((resolve): void => {
-      setTimeout(resolve, 5);
-    });
-  }
-
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-async function withSystems(fn: (a: ActorSystem, b: ActorSystem) => Promise<void>): Promise<void> {
-  const a: ActorSystem = remoteSystem("alpha");
-  const b: ActorSystem = remoteSystem("beta");
-  await a.start();
-  await b.start();
-
-  try {
-    await fn(a, b);
-  } finally {
-    await a.stop();
-    await b.stop();
-  }
 }
 
 describe("remote lookup and tell", () => {
@@ -415,7 +383,13 @@ describe("remote ask", () => {
 
       const rejection: Promise<unknown> = a.noSender().ask(pid, new BadReply(), 2000);
       await expect(rejection).rejects.toSatisfy((err: unknown): boolean => {
-        return err instanceof Error && err.name === "TypeNotRegisteredError";
+        if (!(err instanceof Error) || err.name !== "TypeNotRegisteredError") {
+          return false;
+        }
+
+        // The failure crossed as name and message, so the asker learns
+        // exactly which type refused to travel.
+        return err.message.includes("UnregisteredReply");
       });
     });
   });
@@ -574,6 +548,276 @@ describe("remoteLookup guards", () => {
       await expect(rejection).rejects.toSatisfy((err: unknown): boolean => {
         return err instanceof Error && err !== ErrRequestTimeout;
       });
+    });
+  });
+});
+
+/** Registered class carrying every rich value the codec supports plus
+ * a nested unregistered instance, whose prototype documentedly drops. */
+class Rich {
+  constructor(
+    readonly when: Date,
+    readonly tags: Map<string, number>,
+    readonly ids: Set<number>,
+    readonly blob: Uint8Array,
+    readonly nested: PlainPoint,
+  ) {}
+}
+
+class PlainPoint {
+  constructor(readonly x: number) {}
+}
+
+registerMessage(Rich);
+
+/** Parks asks until released, then answers them, so a reply can be
+ * arranged to arrive after the asker gave up. */
+class ReplyGate implements Actor {
+  private readonly parked: (() => void)[] = [];
+
+  preStart(): void {}
+
+  receive(ctx: ReceiveContext): Promise<void> | undefined {
+    const message: unknown = ctx.message;
+    if (message instanceof Ask) {
+      return new Promise<void>((resolve): void => {
+        this.parked.push((): void => {
+          ctx.response(new Answer(message.n));
+          resolve();
+        });
+      });
+    }
+
+    return undefined;
+  }
+
+  release(): void {
+    for (const fire of this.parked) {
+      fire();
+    }
+
+    this.parked.length = 0;
+  }
+
+  postStop(): void {}
+}
+
+/** Issues one request and cancels it on demand, recording outcomes. */
+class Canceller implements Actor {
+  readonly outcomes: (Error | null)[] = [];
+  private call: RequestCall | null = null;
+
+  constructor(private readonly target: () => PID) {}
+
+  preStart(): void {}
+
+  receive(ctx: ReceiveContext): void {
+    if (ctx.message === "go") {
+      this.call = ctx.request(this.target(), new Ask(1), { timeout: 5000 });
+      this.call.onReply((_reply: unknown, error: Error | null): void => {
+        this.outcomes.push(error);
+      });
+      return;
+    }
+
+    if (ctx.message === "cancel") {
+      (this.call as RequestCall).cancel();
+    }
+  }
+
+  postStop(): void {}
+}
+
+describe("messaging edges", () => {
+  it("delivers a burst of tells in send order with prototypes intact", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const collector: Collector = new Collector();
+      await b.spawn("greeter", collector);
+      const pid: PID = (await a.remoteLookup(b.host(), b.port(), "greeter")) as PID;
+
+      for (let i: number = 1; i <= 100; i++) {
+        expect(a.noSender().tell(pid, new Ping(i))).toBeNull();
+      }
+
+      await until("all hundred tells", (): boolean => collector.received.length >= 100);
+      const ns: number[] = collector.received.map((entry: { message: unknown }): number => {
+        expect(entry.message).toBeInstanceOf(Ping);
+        return (entry.message as Ping).n;
+      });
+      expect(ns).toEqual(Array.from({ length: 100 }, (_: unknown, i: number): number => i + 1));
+    });
+  });
+
+  it("rejects every ask in flight when the node dies", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const gate: Gate = new Gate();
+      await b.spawn("gate", gate);
+      const pid: PID = (await a.remoteLookup(b.host(), b.port(), "gate")) as PID;
+
+      const outcomes: Error[] = [];
+      for (let i: number = 0; i < 5; i++) {
+        a.noSender()
+          .ask(pid, new Ask(i), 10_000)
+          .then(
+            (): void => {
+              throw new Error("an in-flight ask resolved across a dead connection");
+            },
+            (err: Error): void => {
+              outcomes.push(err);
+            },
+          );
+      }
+
+      // Let the asks cross before the node dies under them. The stop
+      // parks on the gated mailbox, so the gate opens once the asks
+      // have already been failed by the connection teardown.
+      await new Promise<void>((resolve): void => {
+        setTimeout(resolve, 100);
+      });
+      const stopping: Promise<void> = b.stop();
+      await until("every ask to fail", (): boolean => outcomes.length >= 5);
+      for (const err of outcomes) {
+        expect(err).toBeInstanceOf(Error);
+        expect(err).not.toBe(ErrRequestTimeout);
+      }
+
+      gate.release();
+      await stopping;
+    });
+  });
+
+  it("drops a reply arriving after the ask timed out", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const gate: ReplyGate = new ReplyGate();
+      await b.spawn("gate", gate);
+      await b.spawn("echo", new Echo());
+      const gated: PID = (await a.remoteLookup(b.host(), b.port(), "gate")) as PID;
+      const echo: PID = (await a.remoteLookup(b.host(), b.port(), "echo")) as PID;
+
+      await expect(a.noSender().ask(gated, new Ask(1), 200)).rejects.toBe(ErrRequestTimeout);
+
+      // The release sends the late reply; the pending entry is gone, so
+      // the transport drops it and the connection stays healthy.
+      gate.release();
+      const answer: unknown = await a.noSender().ask(echo, new Ask(41), 2000);
+      expect((answer as Answer).n).toBe(42);
+    });
+  });
+
+  it("dead-letters a tell pinned to a stale incarnation", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const first: Collector = new Collector();
+      const original: PID = await b.spawn("greeter", first);
+      const stale: PID = (await a.remoteLookup(b.host(), b.port(), "greeter")) as PID;
+
+      const deadletters: Deadletter[] = [];
+      b.subscribe((event: unknown): void => {
+        if (event instanceof Deadletter) {
+          deadletters.push(event);
+        }
+      });
+
+      await original.shutdown();
+      const second: Collector = new Collector();
+      await b.spawn("greeter", second);
+
+      expect(a.noSender().tell(stale, new Ping(9))).toBeNull();
+      await until("the dead letter", (): boolean => deadletters.length >= 1);
+      expect((deadletters[0] as Deadletter).receiver).toBe(stale.path().toString());
+      expect(second.received.length).toBe(0);
+    });
+  });
+
+  it("distinguishes same-named systems by port alone", async () => {
+    const one: ActorSystem = remoteSystem("alpha");
+    const two: ActorSystem = remoteSystem("alpha");
+    await one.start();
+    await two.start();
+
+    try {
+      const collector: Collector = new Collector();
+      await two.spawn("echo", new Echo());
+      await two.spawn("greeter", collector);
+      const echo: PID = (await one.remoteLookup(two.host(), two.port(), "echo")) as PID;
+      const greeter: PID = (await one.remoteLookup(two.host(), two.port(), "greeter")) as PID;
+
+      const answer: unknown = await one.noSender().ask(echo, new Ask(1), 2000);
+      expect((answer as Answer).n).toBe(2);
+
+      const caller: PID = await one.spawn("caller", new Collector());
+      caller.tell(greeter, new Ping(1));
+      await until("the tell", (): boolean => collector.received.length >= 1);
+      const sender: PID = (collector.received[0] as { sender: PID }).sender;
+      expect(sender.path().port()).toBe(one.port());
+      expect(sender.path().port()).not.toBe(two.port());
+    } finally {
+      await one.stop();
+      await two.stop();
+    }
+  });
+
+  it("carries rich values and flattens a nested class instance", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const collector: Collector = new Collector();
+      await b.spawn("greeter", collector);
+      const pid: PID = (await a.remoteLookup(b.host(), b.port(), "greeter")) as PID;
+
+      const sent: Rich = new Rich(
+        new Date(1_700_000_000_000),
+        new Map([["a", 1]]),
+        new Set([7, 9]),
+        Uint8Array.of(1, 2, 3),
+        new PlainPoint(5),
+      );
+      expect(a.noSender().tell(pid, sent)).toBeNull();
+      await until("the rich tell", (): boolean => collector.received.length >= 1);
+
+      const arrived: Rich = (collector.received[0] as { message: unknown }).message as Rich;
+      expect(arrived).toBeInstanceOf(Rich);
+      expect(arrived.when).toBeInstanceOf(Date);
+      expect(arrived.when.getTime()).toBe(1_700_000_000_000);
+      expect(arrived.tags).toBeInstanceOf(Map);
+      expect(arrived.tags.get("a")).toBe(1);
+      expect(arrived.ids).toBeInstanceOf(Set);
+      expect(arrived.ids.has(9)).toBe(true);
+      expect(arrived.blob).toBeInstanceOf(Uint8Array);
+      expect([...arrived.blob]).toEqual([1, 2, 3]);
+
+      // The nested instance survives as its data; its prototype does
+      // not, the documented value-domain semantics.
+      expect(arrived.nested).not.toBeInstanceOf(PlainPoint);
+      expect(arrived.nested).toEqual({ x: 5 });
+    });
+  });
+});
+
+describe("remote request cancellation", () => {
+  it("settles a cancelled request exactly once and swallows the late reply", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const gate: Gate = new Gate();
+      await b.spawn("gate", gate);
+      const remote: PID = (await a.remoteLookup(b.host(), b.port(), "gate")) as PID;
+
+      const canceller: Canceller = new Canceller((): PID => remote);
+      const pid: PID = await a.spawn("canceller", canceller, {
+        reentrancy: { mode: "allowAll" },
+      });
+
+      a.noSender().tell(pid, "go");
+      await new Promise<void>((resolve): void => {
+        setTimeout(resolve, 100);
+      });
+      a.noSender().tell(pid, "cancel");
+      await until("the cancellation", (): boolean => canceller.outcomes.length >= 1);
+      expect(canceller.outcomes[0]).toBe(ErrRequestCanceled);
+
+      // The gate releases the late reply; the handle already settled,
+      // so the continuation must not run a second time.
+      gate.release();
+      await new Promise<void>((resolve): void => {
+        setTimeout(resolve, 150);
+      });
+      expect(canceller.outcomes.length).toBe(1);
     });
   });
 });

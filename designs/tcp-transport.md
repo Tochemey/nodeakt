@@ -234,7 +234,7 @@ The engine never yields a frame to dispatch without bounding its own cadence: in
 
 `net/server.ts` owns exactly the listener lifecycle; everything after accept is a session.
 
-- **Bind and listen** on a configured host and port (port 0 supported for tests; the bound address is queryable). TLS is the same server with a `node:tls` listener and is configuration, not a protocol change.
+- **Bind and listen** on a configured host and port (port 0 supported for tests; the bound address is queryable). A local HELLO advertising port 0 is patched to the bound port once listening, so an ephemeral endpoint never advertises an unbindable identity. TLS is the same server with a `node:tls` listener and is configuration, not a protocol change.
 - **Accept** wires the socket into a framed connection, arms the 10-second handshake deadline, and runs the acceptor side of HELLO. A connection that fails the handshake is closed and never reaches the session table. `keepAlive` is enabled on every accepted socket.
 - **Accounting** tracks accepted and active connections, exposes both, and supports an optional max-connections cap that refuses beyond the limit.
 - **Shutdown** is one method with one duration semantic: positive waits up to that long for active sessions to drain, zero waits indefinitely, negative closes everything now. Draining means the listener closes first (no new connections), sessions get a connection-scoped ERROR flushed best-effort, and each session's teardown fails its pending asks. Shutdown is idempotent.

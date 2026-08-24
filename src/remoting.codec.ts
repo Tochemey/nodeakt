@@ -38,6 +38,10 @@ import { ByteReader, type ByteWriter, decodeValue, encodeValue } from "./net/val
  * @internal
  */
 
+/** The bias between a wire sentinel and the runtime's sentinel index:
+ * zero on the wire means none, so an index travels as one plus itself. */
+const WIRE_SENTINEL_BIAS: number = 1;
+
 /**
  * A runtime message in wire form: the registered type id (empty for
  * passthrough data) and the value-codec encoding of its data.
@@ -65,7 +69,7 @@ export function encodePayload(codec: Codec, writer: ByteWriter, value: unknown):
   const wire: WireMessage = codec.encodeMessage(value);
   writer.reset();
   encodeValue(writer, wire.data);
-  return { typeRef: wire.type, payload: Uint8Array.from(writer.bytes()) };
+  return { typeRef: wire.type, payload: writer.bytes().slice() };
 }
 
 /**
@@ -97,7 +101,7 @@ export function encodeFailure(error: Error): ErrorBody {
   const wire: WireError = encodeError(error);
   return {
     code: ERROR_APPLICATION,
-    sentinel: wire.sentinel + 1,
+    sentinel: wire.sentinel + WIRE_SENTINEL_BIAS,
     name: wire.name,
     message: wire.message,
   };
@@ -112,5 +116,5 @@ export function encodeFailure(error: Error): ErrorBody {
  * @internal
  */
 export function decodeFailure(sentinel: number, name: string, message: string): Error {
-  return decodeError({ sentinel: sentinel - 1, name, message });
+  return decodeError({ sentinel: sentinel - WIRE_SENTINEL_BIAS, name, message });
 }

@@ -451,7 +451,9 @@ export class ReceiveContext {
    * Resolves a top-level actor by name on the remote node at
    * `host:port`, with the contract of `ActorSystem.remoteLookup`: the
    * promise resolves with the remote actor's PID, or undefined when no
-   * running top-level actor holds the name there.
+   * running top-level actor holds the name there. Remote spawn is a
+   * system-level operation: reach it through the system,
+   * `actorSystem().remoteSpawn`.
    */
   remoteLookup(host: string, port: number, name: string): Promise<PID | undefined> {
     return this.actorSystem().remoteLookup(host, port, name);

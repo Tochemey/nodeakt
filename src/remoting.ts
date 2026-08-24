@@ -49,16 +49,17 @@ import {
 import { LANE_CONTROL } from "./net/frame";
 import { Peer } from "./net/peer";
 import { NetServer } from "./net/server";
-import { ErrAskTimeout, PeerError, type Session } from "./net/session";
+import { ErrAskTimeout, PeerError, REVISION_CURRENT, type Session } from "./net/session";
 import { ByteReader, ByteWriter, decodeValue, encodeValue } from "./net/values";
 import { type Path, parsePath } from "./path";
 import type { PID } from "./pid";
-import { Props } from "./props";
+import { type ActorClass, Props } from "./props";
 import type { ActorRecipe } from "./protocol";
 import {
   completedRequest,
   type Reentrancy,
   type RequestCall,
+  type RequestHandle,
   type RequestOptions,
 } from "./reentrancy";
 import { defaultActorRegistry, defaultMessageRegistry, placedRecipe } from "./registration";
@@ -88,12 +89,19 @@ import type { SpawnOptions } from "./spawn.options";
  * paths a local message uses. The bridge between runtime messages and
  * wire payloads lives in `remoting.codec.ts`.
  *
+ * The trust model is a private, trusted network: traffic is plaintext
+ * TCP, and an envelope's sender path is self-declared, so a hostile
+ * peer can grow the sender cache and steer reply dials with forged
+ * paths. Authentication, transport security, and bounding those
+ * resources against hostile input belong to the hardening slice;
+ * nothing here should face an untrusted network before it lands.
+ *
  * @internal
  */
 
-/** The capability revision the endpoint advertises: the first shipped
- * transport implements the whole ladder. */
-const CAPABILITY_REVISION: number = 4;
+/** The capability revision the endpoint advertises: whatever the
+ * transport implements, so the seam can never lag or outrun the wire. */
+const CAPABILITY_REVISION: number = REVISION_CURRENT;
 
 /** The size caps and receive window the endpoint advertises, the
  * transport's own defaults (16 MiB) and its default concurrent-transfer
@@ -129,6 +137,15 @@ const CONTROL_RESPAWN: string = "nodeakt.remote.respawn";
  * gracefully. */
 const CONTROL_STOP: string = "nodeakt.remote.stop";
 
+/** The target path of a control envelope: control requests address the
+ * node itself, so the field is deliberately empty. An absent sender
+ * shares the spelling, so dispatch names this constant. */
+const CONTROL_TARGET: string = "";
+
+/** The shutdown grace handed to the endpoint on stop: negative means
+ * destroy every connection now. */
+const SHUTDOWN_NOW: number = -1;
+
 /** What a control lookup answers with: where the actor lives and which
  * incarnation holds the name, or null when no running top-level actor
  * does. */
@@ -157,6 +174,28 @@ interface RemoteWatch {
   readonly watcher: PID;
   readonly target: string;
   readonly node: string;
+}
+
+/** One watch a far node registered here over the wire: the local
+ * target and the watcher handle registered on it. */
+interface InboundWatch {
+  readonly target: PID;
+  readonly watcher: PID;
+}
+
+/** The peer-map key of one remote node. */
+function nodeKey(host: string, port: number): string {
+  return `${host}:${port}`;
+}
+
+/** The registration key of one outbound watch: who watches what. */
+function watchKey(watcher: string, target: string): string {
+  return `${watcher}#${target}`;
+}
+
+/** The cache key of one foreign sender: its path and incarnation. */
+function senderKey(sender: string, uid: string): string {
+  return `${sender}#${uid}`;
 }
 
 /** Builds the HELLO the endpoint advertises to every peer it accepts or
@@ -193,12 +232,24 @@ export class Remoting {
   /** The retained scratch buffer every outbound payload encodes into. */
   private readonly _writer: ByteWriter = new ByteWriter();
 
-  /** The outbound side, one peer per remote node, dialed lazily. */
+  /** The outbound side, one peer per remote node, dialed lazily.
+   * Peers are never evicted before stop, so a long-lived node holds
+   * one per distinct endpoint it ever contacted; reclaiming dead ones
+   * belongs to the hardening slice. */
   private readonly _peers = new Map<string, Peer>();
 
   /** Handles minted for foreign senders, per path and incarnation, so
-   * the same sender always resolves to the same handle instance. */
+   * the same sender always resolves to the same handle instance. The
+   * cache grows with every distinct sender incarnation this node ever
+   * hears from and is released only at stop; bounding it against
+   * hostile or long-horizon input belongs to the hardening slice. */
   private readonly _senders = new Map<string, PID>();
+
+  /** Watch registrations that arrived over the wire, per delivering
+   * session. The watching node treats that session's loss as the death
+   * of everything it watched here, so the registrations are dead
+   * weight the moment the session closes and are swept then. */
+  private readonly _inboundWatches = new Map<Session, InboundWatch[]>();
 
   /** The watches this node registered on remote actors, keyed by
    * watcher and target path, settled by an inbound Terminated or by the
@@ -224,15 +275,25 @@ export class Remoting {
   static async start(system: ActorSystem, options: RemoteOptions): Promise<Remoting> {
     const local: Hello = buildHello(system.name(), options);
     let seam: Remoting | null = null;
+    // The casts below never observe the null: a handshake needs socket
+    // round trips, which cannot complete before listen resolves and
+    // the assignment underneath runs on that very resolution turn.
     const server: NetServer = await NetServer.listen(
       { host: options.host, port: options.port, local },
       {
         onData: (session: Session, envelope: DataEnvelope, correlation: number): void => {
           (seam as Remoting).onData(session, envelope, correlation);
         },
+        onSessionClose: (session: Session): void => {
+          (seam as Remoting).sweepInbound(session);
+        },
       },
     );
-    seam = new Remoting(system, server, local);
+
+    // An ephemeral port resolves to the bound one, so every HELLO this
+    // node dials out advertises an endpoint a peer can reach; the
+    // server patches its own copy the same way for accepted sessions.
+    seam = new Remoting(system, server, { ...local, port: server.address.port });
     return seam;
   }
 
@@ -255,7 +316,7 @@ export class Remoting {
     }
 
     this._peers.clear();
-    await this._server.shutdown(-1);
+    await this._server.shutdown(SHUTDOWN_NOW);
   }
 
   /**
@@ -267,7 +328,9 @@ export class Remoting {
    */
   async remoteLookup(host: string, port: number, name: string): Promise<PID | undefined> {
     const reply: ReplyEnvelope = await this.controlAsk(host, port, CONTROL_LOOKUP, { name });
-    const answer = decodeValue(new ByteReader(reply.payload)) as ControlActorRef | null;
+    const answer: ControlActorRef | null = decodeValue(
+      new ByteReader(reply.payload),
+    ) as ControlActorRef | null;
     if (answer === null) {
       return undefined;
     }
@@ -330,7 +393,7 @@ export class Remoting {
   ): Promise<ReplyEnvelope> {
     const envelope: DataEnvelope = {
       kind: KIND_ASK,
-      to: "",
+      to: CONTROL_TARGET,
       uid: "",
       sender: "",
       senderUid: "",
@@ -349,13 +412,13 @@ export class Remoting {
 
   /** Mints the remote handle a control answer names. */
   private mintFrom(reply: ReplyEnvelope, host: string, port: number): PID {
-    const answer = decodeValue(new ByteReader(reply.payload)) as ControlActorRef;
+    const answer: ControlActorRef = decodeValue(new ByteReader(reply.payload)) as ControlActorRef;
     return routedPid(this._system, parsePath(answer.path, answer.uid), this.routeTo(host, port));
   }
 
   /** Returns the wire-backed route to the node at `host:port`; a PID
    * minted with it sends, asks, and watches over the transport. */
-  routeTo(host: string, port: number): IsolateRoute {
+  private routeTo(host: string, port: number): IsolateRoute {
     return {
       workerId: REMOTE_WORKER_ID,
       tell: (to: Path, message: unknown, sender?: PID): Error | null =>
@@ -383,10 +446,10 @@ export class Remoting {
     }
 
     const target: string = to.toString();
-    this._watches.set(`${watcher.path().toString()}#${target}`, {
+    this._watches.set(watchKey(watcher.path().toString(), target), {
       watcher,
       target,
-      node: `${host}:${port}`,
+      node: nodeKey(host, port),
     });
     this.peerFor(host, port).tell(this.watchEnvelope(KIND_WATCH, to, watcher));
   }
@@ -398,7 +461,7 @@ export class Remoting {
       return;
     }
 
-    this._watches.delete(`${watcher.path().toString()}#${to.toString()}`);
+    this._watches.delete(watchKey(watcher.path().toString(), to.toString()));
     this.peerFor(host, port).tell(this.watchEnvelope(KIND_UNWATCH, to, watcher));
   }
 
@@ -426,6 +489,16 @@ export class Remoting {
    * sweep, since its watchers are shutting down with it.
    */
   private onLaneClose(node: string, lane: number): void {
+    // Watches a far node registered here rode sessions of its own; any
+    // lane closure is a chance to release the ones whose delivering
+    // session has since closed, wherever the close callback could not
+    // reach (sessions this node dialed report no per-session close).
+    for (const tracked of [...this._inboundWatches.keys()]) {
+      if (tracked.closed) {
+        this.sweepInbound(tracked);
+      }
+    }
+
     if (lane !== LANE_CONTROL || !this._system.isRunning()) {
       return;
     }
@@ -454,18 +527,20 @@ export class Remoting {
     try {
       wire = encodePayload(this._codec, this._writer, message);
     } catch (err) {
-      const error = err as Error;
+      const error: Error = err as Error;
       this._system.toDeadletter(sender?.path().toString(), to.toString(), message, error);
       return error;
     }
 
-    this.peerFor(host, port).tell(this.dataEnvelope(KIND_TELL, to, wire, 0, sender));
+    this.peerFor(host, port).tell(this.dataEnvelope(KIND_TELL, to, wire, sender));
     return null;
   }
 
   /** Sends one ask over the wire; the transport owns the pending entry
    * and its timer, so settlement arrives as a promise. The receiving
-   * node sees the remaining budget and re-derives its own deadline. */
+   * node sees the remaining budget and re-derives its own deadline.
+   * The timer arms once the lane is acquired, so a first ask on a cold
+   * lane can additionally wait out the dial before its budget starts. */
   private ask(
     host: string,
     port: number,
@@ -486,12 +561,12 @@ export class Remoting {
     try {
       wire = encodePayload(this._codec, this._writer, message);
     } catch (err) {
-      const error = err as Error;
+      const error: Error = err as Error;
       this._system.toDeadletter(sender?.path().toString(), to.toString(), message, error);
       return Promise.reject(error);
     }
 
-    const envelope: DataEnvelope = this.dataEnvelope(KIND_ASK, to, wire, 0, sender);
+    const envelope: DataEnvelope = this.dataEnvelope(KIND_ASK, to, wire, sender);
     return this.peerFor(host, port)
       .ask(envelope, timeout)
       .then(
@@ -506,7 +581,10 @@ export class Remoting {
    * admission runs against the sender's reentrancy configuration and
    * the continuation runs on the sender's own turn. The handle settles
    * exactly once, so a reply racing a cancel is dropped by the
-   * bookkeeping, never delivered twice. */
+   * bookkeeping, never delivered twice. A request carrying no timeout,
+   * or one cancelled mid-flight, keeps its pending entry on the
+   * connection until the connection ends: the transport offers no
+   * withdrawal, so the entry is bounded by the connection's life. */
   private request(
     host: string,
     port: number,
@@ -519,7 +597,7 @@ export class Remoting {
       return completedRequest(ErrDead);
     }
 
-    const opened = sender.openRequest(options);
+    const opened: RequestHandle | Error = sender.openRequest(options);
     if (opened instanceof Error) {
       return completedRequest(opened);
     }
@@ -528,14 +606,14 @@ export class Remoting {
     try {
       wire = encodePayload(this._codec, this._writer, message);
     } catch (err) {
-      const error = err as Error;
+      const error: Error = err as Error;
       this._system.toDeadletter(sender.path().toString(), to.toString(), message, error);
       return completedRequest(error);
     }
 
-    const handle = opened;
+    const handle: RequestHandle = opened;
     const timeout: number = options?.timeout ?? 0;
-    const envelope: DataEnvelope = this.dataEnvelope(KIND_ASK, to, wire, 0, sender);
+    const envelope: DataEnvelope = this.dataEnvelope(KIND_ASK, to, wire, sender);
 
     this.peerFor(host, port)
       .ask(envelope, timeout)
@@ -564,13 +642,13 @@ export class Remoting {
    * the node itself, everything else resolves to a local actor and
    * delivers through the ordinary send paths. */
   private onData(session: Session, envelope: DataEnvelope, correlation: number): void {
-    if (envelope.to === "") {
+    if (envelope.to === CONTROL_TARGET) {
       this.handleControl(session, envelope, correlation);
       return;
     }
 
     if (envelope.kind === KIND_WATCH) {
-      this.handleWatch(envelope);
+      this.handleWatch(session, envelope);
       return;
     }
 
@@ -583,30 +661,37 @@ export class Remoting {
     try {
       message = decodePayload(this._codec, envelope.typeRef, envelope.payload);
     } catch (err) {
-      this.undeliverable(session, envelope, correlation, envelope.payload, err as Error);
+      // The payload may alias the receive buffer, and the dead letter
+      // retains it, so hand over a copy.
+      this.undeliverable(session, envelope, correlation, envelope.payload.slice(), err as Error);
       return;
     }
 
-    // A death notification settles this side's watch entry, so the
-    // connection's eventual close never delivers a second Terminated
-    // for it.
+    // A death notification is delivered only when it settles a watch
+    // this node holds: the far node's notification travels on its own
+    // dialed connection, so without the gate a lost unwatch or a
+    // redelivered watch frame would notify an actor that unwatched,
+    // and a connection sweep followed by the real stop would notify
+    // the same watcher twice.
     if (message instanceof Terminated) {
-      this._watches.delete(`${envelope.to}#${message.actorPath}`);
+      if (!this._watches.delete(watchKey(envelope.to, message.actorPath))) {
+        return;
+      }
     }
 
-    const target = this.targetOf(envelope);
+    const target: PID | undefined = this.targetOf(envelope);
     if (target === undefined) {
       this.undeliverable(session, envelope, correlation, message, ErrDead);
       return;
     }
 
-    const sender = this.senderOf(envelope);
+    const sender: PID = this.senderOf(envelope);
     if (correlation === 0) {
       sender.tell(target, message);
       return;
     }
 
-    const err = target.deliverAsk(
+    const err: Error | null = target.deliverAsk(
       message,
       sender,
       envelope.timeout,
@@ -649,30 +734,61 @@ export class Remoting {
    * becomes true. A watch without a resolvable sender is a forged frame
    * and is dropped.
    */
-  private handleWatch(envelope: DataEnvelope): void {
-    const watcher = this.senderOf(envelope);
+  private handleWatch(session: Session, envelope: DataEnvelope): void {
+    const watcher: PID = this.senderOf(envelope);
     if (watcher === this._system.noSender()) {
       return;
     }
 
-    const target = this.targetOf(envelope);
+    const target: PID | undefined = this.targetOf(envelope);
     if (target === undefined || !target.isRunning()) {
       this._system.noSender().tell(watcher, new Terminated(envelope.to));
       return;
     }
 
     target.addWatcher(watcher);
+    this.trackInbound(session, target, watcher);
+  }
+
+  /** Records one wire-registered watch under its delivering session. An
+   * unwatch does not prune the record: the sweep's removal of an
+   * already-removed watcher is a no-op, so the list may hold settled
+   * entries rather than pay a scan per unwatch. */
+  private trackInbound(session: Session, target: PID, watcher: PID): void {
+    let list: InboundWatch[] | undefined = this._inboundWatches.get(session);
+    if (list === undefined) {
+      list = [];
+      this._inboundWatches.set(session, list);
+    }
+
+    list.push({ target, watcher });
+  }
+
+  /** Releases every watcher a closed session registered: the watching
+   * node treats the same connection loss as the death of everything it
+   * watched here, so the registrations are settled the moment the
+   * session is gone. */
+  private sweepInbound(session: Session): void {
+    const list: InboundWatch[] | undefined = this._inboundWatches.get(session);
+    if (list === undefined) {
+      return;
+    }
+
+    this._inboundWatches.delete(session);
+    for (const { target, watcher } of list) {
+      target.removeWatcher(watcher);
+    }
   }
 
   /** Removes the far watcher from the local actor; the sender cache
    * guarantees the same handle instance that was registered. */
   private handleUnwatch(envelope: DataEnvelope): void {
-    const watcher = this.senderOf(envelope);
+    const watcher: PID = this.senderOf(envelope);
     if (watcher === this._system.noSender()) {
       return;
     }
 
-    const target = this.targetOf(envelope);
+    const target: PID | undefined = this.targetOf(envelope);
     if (target === undefined || !target.isRunning()) {
       return;
     }
@@ -682,8 +798,8 @@ export class Remoting {
 
   /** Settles one control request against this node. Control envelopes
    * carry an empty target path; a control tell is meaningless and is
-   * dropped, and an unknown request answers a request-scoped failure so
-   * a newer peer settles instead of timing out. */
+   * dropped, and an unknown or malformed request answers a
+   * request-scoped failure so a peer settles instead of timing out. */
   private handleControl(session: Session, envelope: DataEnvelope, correlation: number): void {
     if (correlation === 0) {
       return;
@@ -717,13 +833,53 @@ export class Remoting {
       return;
     }
 
-    this.badControl(session, correlation, envelope.typeRef);
+    session.replyError(
+      correlation,
+      this.badRequest(`unknown control request "${envelope.typeRef}"`),
+    );
+  }
+
+  /** The actor name a control request carries, or undefined for a
+   * payload of the wrong shape, which the value codec can legitimately
+   * decode from a malformed or hostile request. */
+  private controlName(data: unknown): string | undefined {
+    if (typeof data !== "object" || data === null) {
+      return undefined;
+    }
+
+    const name: unknown = (data as { name?: unknown }).name;
+    return typeof name === "string" ? name : undefined;
+  }
+
+  /** The spawn request a control payload carries, or undefined for a
+   * payload of the wrong shape. */
+  private spawnRequestOf(data: unknown): ControlSpawn | undefined {
+    if (typeof data !== "object" || data === null) {
+      return undefined;
+    }
+
+    const request = data as { name?: unknown; actor?: unknown; args?: unknown };
+    if (typeof request.name !== "string" || typeof request.actor !== "string") {
+      return undefined;
+    }
+
+    if (request.args !== undefined && !Array.isArray(request.args)) {
+      return undefined;
+    }
+
+    return request as ControlSpawn;
   }
 
   /** Answers a lookup with where the named top-level actor lives, or
    * null when no running actor holds the name. */
   private handleLookup(session: Session, correlation: number, data: unknown): void {
-    const pid = this._system.actorOf((data as { name: string }).name);
+    const name: string | undefined = this.controlName(data);
+    if (name === undefined) {
+      session.replyError(correlation, this.badRequest("malformed lookup request"));
+      return;
+    }
+
+    const pid: PID | undefined = this._system.actorOf(name);
     const answer: ControlActorRef | null =
       pid === undefined ? null : { path: pid.path().toString(), uid: pid.path().uid() };
     this.replyControl(session, correlation, answer);
@@ -735,8 +891,13 @@ export class Remoting {
    * failures travel back settling the ask, sentinel identity
    * preserved. */
   private handleSpawn(session: Session, correlation: number, data: unknown): void {
-    const request = data as ControlSpawn;
-    const type = defaultActorRegistry.classOf(request.actor);
+    const request: ControlSpawn | undefined = this.spawnRequestOf(data);
+    if (request === undefined) {
+      session.replyError(correlation, this.badRequest("malformed spawn request"));
+      return;
+    }
+
+    const type: ActorClass | undefined = defaultActorRegistry.classOf(request.actor);
     if (type === undefined) {
       session.replyError(correlation, encodeFailure(new ActorNotRegisteredError(request.actor)));
       return;
@@ -760,12 +921,20 @@ export class Remoting {
   /** Restarts the named actor in place: same path, same incarnation,
    * fresh state through its lifecycle hooks. */
   private handleRespawn(session: Session, correlation: number, data: unknown): void {
-    const pid = this._system.actorOf((data as { name: string }).name);
+    const name: string | undefined = this.controlName(data);
+    if (name === undefined) {
+      session.replyError(correlation, this.badRequest("malformed respawn request"));
+      return;
+    }
+
+    const pid: PID | undefined = this._system.actorOf(name);
     if (pid === undefined) {
-      session.replyError(
-        correlation,
-        encodeFailure(new ActorNotFoundError((data as { name: string }).name)),
-      );
+      session.replyError(correlation, encodeFailure(new ActorNotFoundError(name)));
+      return;
+    }
+
+    if (pid.isRouted()) {
+      session.replyError(correlation, encodeFailure(this.placedRefusal(name, "respawned")));
       return;
     }
 
@@ -785,9 +954,20 @@ export class Remoting {
   /** Stops the named actor gracefully; a name nobody holds is already
    * stopped, so the request succeeds idempotently. */
   private handleStop(session: Session, correlation: number, data: unknown): void {
-    const pid = this._system.actorOf((data as { name: string }).name);
+    const name: string | undefined = this.controlName(data);
+    if (name === undefined) {
+      session.replyError(correlation, this.badRequest("malformed stop request"));
+      return;
+    }
+
+    const pid: PID | undefined = this._system.actorOf(name);
     if (pid === undefined) {
       this.replyControl(session, correlation, null);
+      return;
+    }
+
+    if (pid.isRouted()) {
+      session.replyError(correlation, encodeFailure(this.placedRefusal(name, "stopped")));
       return;
     }
 
@@ -795,27 +975,35 @@ export class Remoting {
       (): void => {
         this.replyControl(session, correlation, null);
       },
+      /* v8 ignore start -- a graceful stop of a running local actor
+         does not reject; the arm exists so a future refusal still
+         settles the ask instead of stranding it. */
       (err: Error): void => {
         session.replyError(correlation, encodeFailure(err));
       },
+      /* v8 ignore stop */
     );
   }
 
-  /** Answers a control request the node does not know; split out so the
-   * dispatch above stays a flat list of guards. */
-  private badControl(session: Session, correlation: number, typeRef: string): void {
-    session.replyError(correlation, this.badRequest(`unknown control request "${typeRef}"`));
+  /** The honest refusal for lifecycle control of an actor placed on
+   * another isolate of this node: reaching it through the pool is not
+   * wired yet, and the placement is a same-machine detail the caller
+   * could not know about. */
+  private placedRefusal(name: string, verb: string): Error {
+    return new Error(
+      `actor "${name}" is placed on another isolate of its node and cannot be ${verb} remotely yet`,
+    );
   }
 
   /** Builds the request-scoped failure body of a malformed or unknown
    * control request. */
   private badRequest(message: string): ErrorBody {
-    return { code: ERROR_BAD_REQUEST, sentinel: 0, name: "Error", message };
+    return { code: ERROR_BAD_REQUEST, sentinel: 0, name: "", message };
   }
 
   /** Answers one control request with a plain value. */
   private replyControl(session: Session, correlation: number, value: unknown): void {
-    session.reply(correlation, {
+    this.sendReply(session, correlation, {
       serializerId: SERIALIZER_BINARY,
       typeRef: "",
       payload: this.encodeControl(value),
@@ -833,11 +1021,22 @@ export class Remoting {
       return;
     }
 
-    session.reply(correlation, {
+    this.sendReply(session, correlation, {
       serializerId: SERIALIZER_BINARY,
       typeRef: wire.typeRef,
       payload: wire.payload,
     });
+  }
+
+  /** Hands one reply to the session, falling back to a request-scoped
+   * failure when the session refuses it (an oversize reply, a full
+   * admission budget): error frames are admission-exempt, so the asker
+   * settles with the real reason instead of waiting out its timeout. */
+  private sendReply(session: Session, correlation: number, reply: ReplyEnvelope): void {
+    const refused: Error | null = session.reply(correlation, reply);
+    if (refused !== null) {
+      session.replyError(correlation, encodeFailure(refused));
+    }
   }
 
   /** Resolves the envelope's target to the live local PID it addresses,
@@ -852,7 +1051,7 @@ export class Remoting {
       return undefined;
     }
 
-    const pid = this._system.resolvePath(path);
+    const pid: PID | undefined = this._system.resolvePath(path);
     if (pid === undefined) {
       return undefined;
     }
@@ -874,6 +1073,15 @@ export class Remoting {
       return this._system.noSender();
     }
 
+    // Cache first: a hit skips the path parse entirely, and a cached
+    // handle is foreign by construction, since a sender of this very
+    // node is never cached.
+    const key: string = senderKey(envelope.sender, envelope.senderUid);
+    const cached: PID | undefined = this._senders.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     let path: Path;
     try {
       path = parsePath(envelope.sender, envelope.senderUid);
@@ -885,20 +1093,8 @@ export class Remoting {
       return this._system.resolvePath(path) ?? this._system.noSender();
     }
 
-    return this.senderHandle(path, envelope.sender, envelope.senderUid);
-  }
-
-  /** Returns the stable handle of a foreign sender, minting it on first
-   * sight; identity stays per path and incarnation, which watch removal
-   * relies on. */
-  private senderHandle(path: Path, sender: string, senderUid: string): PID {
-    const key: string = `${sender}#${senderUid}`;
-    let handle = this._senders.get(key);
-    if (handle === undefined) {
-      handle = routedPid(this._system, path, this.routeTo(path.host(), path.port()));
-      this._senders.set(key, handle);
-    }
-
+    const handle: PID = routedPid(this._system, path, this.routeTo(path.host(), path.port()));
+    this._senders.set(key, handle);
     return handle;
   }
 
@@ -917,21 +1113,17 @@ export class Remoting {
     return envelope.sender === "" ? undefined : envelope.sender;
   }
 
-  /** Builds one outbound data envelope around an encoded payload. */
-  private dataEnvelope(
-    kind: number,
-    to: Path,
-    wire: WirePayload,
-    timeout: number,
-    sender?: PID,
-  ): DataEnvelope {
+  /** Builds one outbound data envelope around an encoded payload. The
+   * timeout field rides as zero: the session stamps an ask's remaining
+   * budget at send time, and a tell carries none. */
+  private dataEnvelope(kind: number, to: Path, wire: WirePayload, sender?: PID): DataEnvelope {
     return {
       kind,
       to: to.toString(),
       uid: to.uid(),
       sender: sender?.path().toString() ?? "",
       senderUid: sender?.path().uid() ?? "",
-      timeout,
+      timeout: 0,
       serializerId: SERIALIZER_BINARY,
       typeRef: wire.typeRef,
       payload: wire.payload,
@@ -941,8 +1133,8 @@ export class Remoting {
   /** Returns the peer of the node at `host:port`, creating it on first
    * use; dialing stays lazy inside the peer itself. */
   private peerFor(host: string, port: number): Peer {
-    const key: string = `${host}:${port}`;
-    let peer = this._peers.get(key);
+    const key: string = nodeKey(host, port);
+    let peer: Peer | undefined = this._peers.get(key);
     if (peer === undefined) {
       peer = new Peer(host, port, this._local, {
         onData: (session: Session, envelope: DataEnvelope, correlation: number): void => {
@@ -969,8 +1161,8 @@ export class Remoting {
    * changed mid-flight. */
   private deadLetterOut(envelope: DataEnvelope, reason: Error): void {
     if (envelope.kind === KIND_WATCH) {
-      const key: string = `${envelope.sender}#${envelope.to}`;
-      const entry = this._watches.get(key);
+      const key: string = watchKey(envelope.sender, envelope.to);
+      const entry: RemoteWatch | undefined = this._watches.get(key);
       if (entry !== undefined && this._system.isRunning()) {
         this._watches.delete(key);
         this._system.noSender().tell(entry.watcher, new Terminated(entry.target));
@@ -1018,6 +1210,6 @@ export class Remoting {
   private encodeControl(value: unknown): Uint8Array {
     this._writer.reset();
     encodeValue(this._writer, value);
-    return Uint8Array.from(this._writer.bytes());
+    return this._writer.bytes().slice();
   }
 }
