@@ -40,11 +40,23 @@ import { advertisedHost } from "./host";
 import { ChargeCard, Declined, Receipt } from "./messages";
 
 /** Charges above this limit are refused, so the demo shows declines. */
-const CHARGE_LIMIT_CENTS: number = 50_000;
+const CHARGE_LIMIT_PENCE: number = 50_000;
 
 /** The one card the issuer always refuses, so the demo shows both
  * outcomes deterministically. */
 const HOTLISTED_LAST4: string = "0042";
+
+/** When the one-shot maintenance drill fires after boot. */
+const MAINTENANCE_AFTER_MS: number = 25_000;
+
+/** How long the maintenance drill keeps the actor down. */
+const MAINTENANCE_MS: number = 5000;
+
+function pause(ms: number): Promise<void> {
+  return new Promise<void>((resolve: () => void): void => {
+    setTimeout(resolve, ms);
+  });
+}
 
 /**
  * The payment service as an actor: private state (the transaction
@@ -69,7 +81,7 @@ class PaymentsActor implements Actor {
       return;
     }
 
-    if (message.amountCents > CHARGE_LIMIT_CENTS) {
+    if (message.amountPence > CHARGE_LIMIT_PENCE) {
       console.log(`[payments] DECLINED ${message.orderId}: over the charge limit`);
       ctx.response(new Declined(message.orderId, "amount over the charge limit"));
       return;
@@ -78,9 +90,9 @@ class PaymentsActor implements Actor {
     this.transactions++;
     const transactionId: string = `txn-${String(this.transactions).padStart(5, "0")}`;
     console.log(
-      `[payments] charged ${message.orderId}: $${(message.amountCents / 100).toFixed(2)} (${transactionId})`,
+      `[payments] charged ${message.orderId}: £${(message.amountPence / 100).toFixed(2)} (${transactionId})`,
     );
-    ctx.response(new Receipt(message.orderId, transactionId, message.amountCents));
+    ctx.response(new Receipt(message.orderId, transactionId, message.amountPence));
   }
 
   postStop(): void {}
@@ -93,7 +105,7 @@ const system: ActorSystem = new ActorSystem("payments", {
   remote: { host, port },
 });
 await system.start();
-const payments: PID = await system.spawn("payments", new PaymentsActor());
+let payments: PID = await system.spawn("payments", new PaymentsActor());
 
 console.log(`[payments] up: ${payments.path().toString()}`);
 
@@ -110,3 +122,23 @@ process.on("SIGINT", (): void => {
 process.on("SIGTERM", (): void => {
   void shutdown("SIGTERM");
 });
+
+/** The actor-level drill, run once a while after boot: stop just the
+ * payments actor while the node stays up, then respawn a fresh
+ * incarnation after a pause. Watchers on other nodes receive the same
+ * Terminated a node death produces; the two causes are
+ * indistinguishable on purpose. */
+async function maintenance(): Promise<void> {
+  console.log("[payments] maintenance: stopping the payments actor; the node stays up");
+  await payments.shutdown();
+  await pause(MAINTENANCE_MS);
+  payments = await system.spawn("payments", new PaymentsActor());
+  console.log(`[payments] maintenance done: ${payments.path().toString()}`);
+}
+
+// The drill fires once per run, unreferenced so it never holds a
+// stopping process open.
+const drill: NodeJS.Timeout = setTimeout((): void => {
+  void maintenance();
+}, MAINTENANCE_AFTER_MS);
+drill.unref();

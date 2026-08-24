@@ -144,17 +144,17 @@ Core count, timings, and speedup depend on the machine. Hybrid performance/effic
 
 ## Across machines: `remoting`
 
-The capstone: a checkout node and a payments node as two Docker Compose services, each one actor system. The checkout desk resolves the payments actor with `remoteLookup`, charges through it with an `ask` piped back to its own mailbox, and `watch`es it, so the payments node dying arrives as a `Terminated` message. The desk queues orders through the outage and flushes them when the node returns.
+The capstone: a checkout node and a payments node as two Docker Compose services, each one actor system. The checkout desk resolves the payments actor with `remoteLookup`, charges through it with an `ask` piped back to its own mailbox, and `watch`es it, so the payments actor stopping, or its whole node dying, arrives as the same `Terminated` message. The desk queues orders through the outage and flushes them when the node returns.
 
 [remoting/README.md](https://github.com/Tochemey/nodeakt/blob/main/examples/remoting/README.md), `make remoting`
 
 ```text
-checkout-1  | [checkout] order ord-0004: barista course ($899.00)
+checkout-1  | [checkout] order ord-0004: barista course (£899.00)
 payments-1  | [payments] DECLINED ord-0004: over the charge limit
 checkout-1  | [checkout] payments is GONE; queueing orders and re-resolving
-checkout-1  | [checkout] ord-0007 queued; 3 order(s) waiting
+checkout-1  | [checkout] ord-0016 queued; 1 order(s) waiting
 checkout-1  | [checkout] payments connected: nodeakt://payments@172.19.0.2:5100/payments
-checkout-1  | [checkout] flushing 5 queued order(s)
+checkout-1  | [checkout] flushing 3 queued order(s)
 ```
 
 This one needs Docker; the example's README also shows a two-terminal run with plain `tsx`. Kill the payments service mid-run and bring it back: the failover is the demo.

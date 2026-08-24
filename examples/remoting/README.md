@@ -12,7 +12,7 @@ flowchart LR
   end
   desk -->|"ask: ChargeCard"| pay
   pay -->|"Receipt / Declined"| desk
-  desk -.->|"watch: Terminated when the node dies"| pay
+  desk -.->|"watch: Terminated when it stops"| pay
 ```
 
 Every arrow is a message over plaintext TCP on the Compose network.
@@ -38,17 +38,21 @@ docker compose -f examples/remoting/docker-compose.yml up --build
 Steady state looks like this (one order per tick; the barista course exceeds the charge limit and the mugs ride a hotlisted card, so both decline paths appear):
 
 ```
-checkout-1  | [checkout] order ord-0001: espresso beans, 1kg ($23.50)
-payments-1  | [payments] charged ord-0001: $23.50 (txn-00001)
+checkout-1  | [checkout] order ord-0001: espresso beans, 1kg (£23.50)
+payments-1  | [payments] charged ord-0001: £23.50 (txn-00001)
 checkout-1  | [checkout] ord-0001 paid (txn-00001)
-checkout-1  | [checkout] order ord-0004: barista course ($899.00)
+checkout-1  | [checkout] order ord-0004: barista course (£899.00)
 payments-1  | [payments] DECLINED ord-0004: over the charge limit
 checkout-1  | [checkout] ord-0004 declined: amount over the charge limit
 ```
 
 ## Break it
 
-In a second terminal, take the payments node down and bring it back:
+You watch an **actor**, never a node: the desk's `watch` is on the payments actor's PID. A node dying simply terminates every actor it hosted, so both causes arrive as the same `Terminated` message, indistinguishable on purpose, and one recovery path covers them. The example drills both.
+
+**The actor stops, the node stays up.** This one runs by itself: about 25 seconds in, the payments node performs a maintenance restart, stopping the payments actor and respawning a fresh incarnation five seconds later. The container never blinks; the desk still sees a death.
+
+**The node dies.** In a second terminal:
 
 ```bash
 docker compose -f examples/remoting/docker-compose.yml stop payments
@@ -56,14 +60,19 @@ docker compose -f examples/remoting/docker-compose.yml stop payments
 docker compose -f examples/remoting/docker-compose.yml start payments
 ```
 
-The desk sees the death as a message, holds the shop's orders, and recovers on its own:
+Either way the desk sees the death as a message, holds the shop's orders, and recovers on its own:
 
 ```
+payments-1  | [payments] maintenance: stopping the payments actor; the node stays up
 checkout-1  | [checkout] payments is GONE; queueing orders and re-resolving
-checkout-1  | [checkout] order ord-0007: pour-over kettle ($69.00)
-checkout-1  | [checkout] ord-0007 queued; 2 order(s) waiting
+checkout-1  | [checkout] order ord-0016: espresso beans, 1kg (£23.50)
+checkout-1  | [checkout] ord-0016 queued; 1 order(s) waiting
+checkout-1  | [checkout] order ord-0018: hand grinder (£128.00)
+checkout-1  | [checkout] ord-0018 queued; 3 order(s) waiting
+payments-1  | [payments] maintenance done: nodeakt://payments@172.19.0.2:5100/payments
 checkout-1  | [checkout] payments connected: nodeakt://payments@172.19.0.2:5100/payments
-checkout-1  | [checkout] flushing 2 queued order(s)
+checkout-1  | [checkout] flushing 3 queued order(s)
+checkout-1  | [checkout] ord-0016 paid (txn-00001)
 ```
 
 `docker compose down` stops both nodes; each handles `SIGTERM` with a graceful `system.stop()`.
@@ -80,7 +89,7 @@ NODEAKT_HOST=127.0.0.1 NODEAKT_PORT=5100 pnpm example examples/remoting/payments
 NODEAKT_HOST=127.0.0.1 NODEAKT_PORT=5200 pnpm example examples/remoting/checkout.ts
 ```
 
-Kill and restart terminal 1 to run the same failover drill.
+Kill and restart terminal 1 for the node-death drill; the actor-death one, the maintenance restart, runs by itself in both setups.
 
 ## How the nodes find each other
 

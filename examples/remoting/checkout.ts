@@ -75,16 +75,16 @@ class ChargeFailed {
  * paths of the payments actor deterministically. */
 interface CartTemplate {
   readonly item: string;
-  readonly amountCents: number;
+  readonly amountPence: number;
   readonly last4: string;
 }
 
 const CARTS: readonly CartTemplate[] = [
-  { item: "espresso beans, 1kg", amountCents: 2350, last4: "4242" },
-  { item: "pour-over kettle", amountCents: 6900, last4: "4242" },
-  { item: "hand grinder", amountCents: 12800, last4: "4242" },
-  { item: "barista course", amountCents: 89900, last4: "4242" },
-  { item: "ceramic mugs, set of 4", amountCents: 4200, last4: "0042" },
+  { item: "espresso beans, 1kg", amountPence: 2350, last4: "4242" },
+  { item: "pour-over kettle", amountPence: 6900, last4: "4242" },
+  { item: "hand grinder", amountPence: 12800, last4: "4242" },
+  { item: "barista course", amountPence: 89900, last4: "4242" },
+  { item: "ceramic mugs, set of 4", amountPence: 4200, last4: "0042" },
 ];
 
 function pause(ms: number): Promise<void> {
@@ -175,11 +175,11 @@ class CheckoutDesk implements Actor {
     this.minted++;
     const charge: ChargeCard = new ChargeCard(
       `ord-${String(this.minted).padStart(4, "0")}`,
-      template.amountCents,
+      template.amountPence,
       template.last4,
     );
     console.log(
-      `[checkout] order ${charge.orderId}: ${template.item} ($${(template.amountCents / 100).toFixed(2)})`,
+      `[checkout] order ${charge.orderId}: ${template.item} (£${(template.amountPence / 100).toFixed(2)})`,
     );
 
     if (this.payments === null) {

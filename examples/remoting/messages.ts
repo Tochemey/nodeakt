@@ -35,7 +35,7 @@ import { registerMessage } from "../../src/index";
 export class ChargeCard {
   constructor(
     readonly orderId: string,
-    readonly amountCents: number,
+    readonly amountPence: number,
     readonly last4: string,
   ) {}
 }
@@ -45,7 +45,7 @@ export class Receipt {
   constructor(
     readonly orderId: string,
     readonly transactionId: string,
-    readonly amountCents: number,
+    readonly amountPence: number,
   ) {}
 }
 
