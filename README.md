@@ -35,16 +35,34 @@ Requires Node.js 22+, Bun 1.3+, or Deno 2+. ESM only (`import`, not `require`). 
 - **Multi-core.** Spawn actors across every machine core without touching workers or threads yourself. An actor's address works the same locally and across cores, on Node.js, Bun, and Deno alike.
 - **Remoting.** Look up, spawn, watch, and message actors on another machine over TCP with the same PID API: tell, ask, request, forward, pipeTo, and death watch all cross nodes, with typed messages and identical failure semantics.
 
-The full API is in [Documentation](#documentation). What is not built yet is under [Not there yet](#not-there-yet).
+The full API is in [Documentation](#documentation).
 
 ## Install
 
-```bash
-npm  install @tochemey/nodeakt
+```sh
+npm install @tochemey/nodeakt
+```
+
+```sh
 pnpm add @tochemey/nodeakt
+```
+
+```sh
 yarn add @tochemey/nodeakt
-bun  add @tochemey/nodeakt
+```
+
+```sh
+bun add @tochemey/nodeakt
+```
+
+```sh
 deno add npm:@tochemey/nodeakt
+```
+
+Then import from the package:
+
+```ts
+import { ActorSystem } from "@tochemey/nodeakt";
 ```
 
 Then head to [Getting started](https://tochemey.github.io/nodeakt/guide/) for a first actor.
@@ -58,19 +76,5 @@ Then head to [Getting started](https://tochemey.github.io/nodeakt/guide/) for a 
 
 ## Releases
 
-nodeakt is pre-1.0. The API is settling and minor versions may still move it.
-
-- **Nightly.** Every green push to `main` publishes a build to npm under the `nightly` dist-tag, versioned `X.Y.Z-nightly.<date>.<sha>`. Install it with `pnpm add @tochemey/nodeakt@nightly`. Nightlies never touch `latest`.
 - **Stable.** A stable release is cut by pushing a version tag. The release pipeline folds the accumulated [changesets](https://github.com/changesets/changesets) into `CHANGELOG.md`, publishes to npm as `latest` with provenance, and creates the GitHub release from the changelog.
-
-## Not there yet
-
-Remoting connects nodes point to point over TCP, plaintext or TLS, on trusted networks. The larger distribution features on top of it do not exist yet:
-
-- **Clustering.** No discovery, no membership, no cluster sharding; nodes are addressed explicitly by host and port. Also not yet: authentication on the remoting transport, and remote reach into worker-placed actors.
-- **Persistence.** Actor state is in-memory only. There is no event sourcing or durable state.
-- **Virtual actors (grains).** Actors are explicitly spawned and addressed. There is no on-demand activation model.
-- **Cron schedules.** `schedule` and `scheduleOnce` cover delayed and repeating sends; cron-expression schedules do not exist yet.
-- **Metrics.** Structured logging exists. Metrics and tracing hooks do not.
-
-If one of these matters to you, open an issue describing the use case. It helps order the roadmap.
+- **Nightly.** Every green push to `main` publishes a build to npm under the `nightly` dist-tag, versioned `X.Y.Z-nightly.<date>.<sha>`. Install it with `pnpm add @tochemey/nodeakt@nightly`. Nightlies never touch `latest`.

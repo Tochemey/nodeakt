@@ -56,6 +56,10 @@ if (parentPort !== null && boot !== null) {
     }
 
     const system = new ActorSystem(boot.systemName, boot.quiet ? { logger: discardLogger } : {});
+    // The facade adopts the node's advertised address before any actor
+    // exists, so paths minted on this isolate are canonical for the
+    // whole node and inbound envelopes resolve here.
+    system.adoptAddress(boot.host, boot.port);
     await system.start();
     const runtime = new WorkerRuntime(system, registry, parentPort as MessagePort, boot.workerId);
     runtime.announce();

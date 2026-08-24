@@ -1357,6 +1357,19 @@ export class PID {
   }
 
   /**
+   * The isolate route this handle sends through, or null for a local
+   * actor. Runtime plumbing for the seams that compose transports: a
+   * network-inbound envelope aimed at a placed actor re-mints its
+   * handle on this route so the envelope's incarnation pin survives
+   * the second hop.
+   *
+   * @internal
+   */
+  route(): IsolateRoute | null {
+    return this._route;
+  }
+
+  /**
    * Reports whether this PID is the routed handle of an actor owned by
    * another isolate. A routed actor's liveness is not synchronously
    * knowable on this isolate, so local state checks do not apply to it.

@@ -2,9 +2,6 @@
 
 NodeAkt is an actor framework for Node.js, Bun, and Deno. An actor owns private state and a mailbox. The runtime delivers one message at a time to that actor, so the state needs no lock. Actors talk only by sending messages.
 
-> [!NOTE]
-> nodeakt is pre-1.0. The API is settling and minor versions may still move it. Every green push to `main` publishes a nightly build; see [Releases](https://github.com/Tochemey/nodeakt#releases).
-
 ## Requirements
 
 One of these runtimes:

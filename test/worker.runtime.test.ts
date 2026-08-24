@@ -42,7 +42,9 @@ import { registerActor } from "../src/registration";
 import { applySetup, spawnRecipe, WorkerRuntime } from "../src/worker.runtime";
 
 const aliasedModule = new URL("./fixtures/aliased.actor.mjs", import.meta.url).href;
+const countingModule = new URL("./fixtures/counting.actor.mjs", import.meta.url).href;
 const echoModule = new URL("./fixtures/echo.actor.mjs", import.meta.url).href;
+const phoenixModule = new URL("./fixtures/phoenix.actor.mjs", import.meta.url).href;
 const setupModule = new URL("./fixtures/wire.setup.mjs", import.meta.url).href;
 const slowModule = new URL("./fixtures/slow.actor.mjs", import.meta.url).href;
 
@@ -146,6 +148,134 @@ describe("WorkerRuntime", () => {
 
     const reply = await mainMesh.ask(1, parsePath(spawned.path, spawned.uid), "ping", 1000);
     expect(reply).toBe("hi:ping");
+  });
+
+  it("restarts an owned actor in place on the control plane's order", async () => {
+    post({
+      kind: "spawn",
+      seq: 1,
+      name: "tally",
+      recipe: { module: countingModule, actor: "Counting", args: [] },
+    });
+    await receivedWhere((m) => m.kind === "spawned");
+
+    const pid = facade.actorOf("tally") as PID;
+    facade.noSender().tell(pid, "bump");
+    facade.noSender().tell(pid, "bump");
+    await expect(facade.noSender().ask(pid, "count", 1000)).resolves.toBe(2);
+
+    // The restart reruns the lifecycle hooks in place: the tally
+    // begins a fresh life under the same name.
+    post({ kind: "restart", seq: 2, name: "tally" });
+    const controlled = await receivedWhere((m) => m.kind === "controlled" && m.seq === 2);
+    expect(controlled.kind).toBe("controlled");
+    if (controlled.kind === "controlled") {
+      expect(controlled.error).toBeNull();
+    }
+
+    await expect(facade.noSender().ask(pid, "count", 1000)).resolves.toBe(0);
+  });
+
+  it("answers a restart of a name this isolate does not own with not-found", async () => {
+    // An unknown name, and a name the replicated table places on
+    // another isolate: lifecycle orders act on owned actors alone.
+    post({ kind: "restart", seq: 3, name: "ghost" });
+    const unknown = await receivedWhere((m) => m.kind === "controlled" && m.seq === 3);
+    if (unknown.kind === "controlled") {
+      expect(decodeError(unknown.error as NonNullable<typeof unknown.error>).name).toBe(
+        "ActorNotFoundError",
+      );
+    }
+
+    post({ kind: "name-added", name: "elsewhere", workerId: 2 });
+    post({ kind: "restart", seq: 4, name: "elsewhere" });
+    const routed = await receivedWhere((m) => m.kind === "controlled" && m.seq === 4);
+    if (routed.kind === "controlled") {
+      expect(decodeError(routed.error as NonNullable<typeof routed.error>).name).toBe(
+        "ActorNotFoundError",
+      );
+    }
+  });
+
+  it("answers a failing restart with its error", async () => {
+    post({
+      kind: "spawn",
+      seq: 5,
+      name: "phoenix",
+      recipe: { module: phoenixModule, actor: "Phoenix", args: [] },
+    });
+    await receivedWhere((m) => m.kind === "spawned");
+
+    post({ kind: "restart", seq: 6, name: "phoenix" });
+    const controlled = await receivedWhere((m) => m.kind === "controlled" && m.seq === 6);
+    if (controlled.kind === "controlled") {
+      expect(decodeError(controlled.error as NonNullable<typeof controlled.error>).message).toBe(
+        "actor phoenix failed to initialize",
+      );
+    }
+  });
+
+  it("stops an owned actor on order, idempotently, and frees its name", async () => {
+    post({
+      kind: "spawn",
+      seq: 7,
+      name: "leaving",
+      recipe: { module: echoModule, actor: "Echo", args: ["bye"] },
+    });
+    await receivedWhere((m) => m.kind === "spawned");
+
+    post({ kind: "stop-actor", seq: 8, name: "leaving" });
+    const controlled = await receivedWhere((m) => m.kind === "controlled" && m.seq === 8);
+    if (controlled.kind === "controlled") {
+      expect(controlled.error).toBeNull();
+    }
+
+    // The stop announced itself, so the control plane frees the name.
+    await receivedWhere((m) => m.kind === "actor-stopped" && m.name === "leaving");
+    expect(facade.actorOf("leaving")).toBeUndefined();
+
+    // Already stopped: the second order succeeds without an actor.
+    post({ kind: "stop-actor", seq: 9, name: "leaving" });
+    const again = await receivedWhere((m) => m.kind === "controlled" && m.seq === 9);
+    if (again.kind === "controlled") {
+      expect(again.error).toBeNull();
+    }
+  });
+
+  it("refuses placed lifecycle orders through the facade's own placement", async () => {
+    // Lifecycle control of placed actors enters through the main
+    // isolate alone; a facade ordering it is a programming error.
+    await expect(facade.respawnPlaced("anything")).rejects.toSatisfy(
+      (err: unknown): boolean => err instanceof Error && err.name === "ActorNotFoundError",
+    );
+    await expect(facade.stopPlaced("anything")).rejects.toSatisfy(
+      (err: unknown): boolean => err instanceof Error && err.name === "ActorNotFoundError",
+    );
+
+    // A system with no placement at all: nothing to respawn, nothing
+    // left to stop.
+    await expect(mainSystem.respawnPlaced("anything")).rejects.toSatisfy(
+      (err: unknown): boolean => err instanceof Error && err.name === "ActorNotFoundError",
+    );
+    await expect(mainSystem.stopPlaced("anything")).resolves.toBeUndefined();
+  });
+
+  it("adopts the node's advertised address before starting", async () => {
+    const adopted = new ActorSystem("sys", { logger: discardLogger });
+    adopted.adoptAddress("10.1.2.3", 4567);
+    await adopted.start();
+
+    try {
+      const pid = await adopted.spawn("resident", {
+        preStart(): void {},
+        receive(): void {},
+        postStop(): void {},
+      } as Actor);
+      expect(pid.path().host()).toBe("10.1.2.3");
+      expect(pid.path().port()).toBe(4567);
+    } finally {
+      await adopted.stop();
+    }
   });
 
   it("reports a duplicate name with the sentinel's identity intact", async () => {

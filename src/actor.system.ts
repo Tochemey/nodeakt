@@ -34,6 +34,7 @@ import {
 } from "./deadletter";
 import { discardLogger } from "./discard.logger";
 import {
+  ActorNotFoundError,
   ErrActorAlreadyExists,
   ErrActorSystemNotStarted,
   ErrInvalidActorName,
@@ -1081,6 +1082,65 @@ export class ActorSystem {
    */
   async remoteStop(host: string, port: number, name: string): Promise<void> {
     return this.requireRemoting().remoteStop(host, port, name);
+  }
+
+  /**
+   * Adopts the node's advertised address on a worker facade, before
+   * the system starts, so every isolate mints and resolves the same
+   * canonical paths. Runtime plumbing for the worker entry; the main
+   * isolate's address comes from its own remote configuration instead.
+   *
+   * @internal
+   */
+  adoptAddress(host: string, port: number): void {
+    this._address = { system: this._name, host, port };
+  }
+
+  /**
+   * The wire-backed handle of an actor on another node, or undefined
+   * when the path belongs to this node or the system has no remoting.
+   * Runtime plumbing for the isolate transport: an envelope arriving
+   * from a worker isolate can name a foreign path (a placed actor
+   * answering a remote sender), and this is the seam that carries it
+   * onward over the network.
+   *
+   * @internal
+   */
+  remoteHandle(path: Path): PID | undefined {
+    return this._remoting?.handleFor(path);
+  }
+
+  /**
+   * Restarts a top-level actor this node placed on a worker isolate,
+   * in place: same PID, same incarnation, fresh state. Runtime
+   * plumbing for the remote control endpoint; rejects with
+   * {@link ActorNotFoundError} when no placement holds the name.
+   *
+   * @internal
+   */
+  respawnPlaced(name: string): Promise<void> {
+    const placement = this._placement;
+    if (placement === null) {
+      return Promise.reject(new ActorNotFoundError(name));
+    }
+
+    return placement.respawn(name);
+  }
+
+  /**
+   * Stops a top-level actor this node placed on a worker isolate,
+   * gracefully and idempotently. Runtime plumbing for the remote
+   * control endpoint.
+   *
+   * @internal
+   */
+  stopPlaced(name: string): Promise<void> {
+    const placement = this._placement;
+    if (placement === null) {
+      return Promise.resolve();
+    }
+
+    return placement.stopActor(name);
   }
 
   /** Returns the live remoting layer, or throws the reason there is

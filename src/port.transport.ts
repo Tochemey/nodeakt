@@ -26,7 +26,15 @@ import type { MessagePort } from "node:worker_threads";
 import type { IsolateRoute } from "./actor.ref";
 import type { ActorSystem } from "./actor.system";
 import { Codec, decodeError, encodeError } from "./codec";
-import type { Envelope, WireMessage } from "./envelope";
+import {
+  ENVELOPE_ASK,
+  ENVELOPE_REPLY,
+  ENVELOPE_TELL,
+  ENVELOPE_UNWATCH,
+  ENVELOPE_WATCH,
+  type Envelope,
+  type WireMessage,
+} from "./envelope";
 import { ErrDead } from "./errors";
 import type { MessageRegistry } from "./message.registry";
 import { Terminated } from "./messages";
@@ -51,6 +59,13 @@ interface Pending {
  * the send carried no sender. */
 function senderPathOf(envelope: Envelope): string | undefined {
   return envelope.sender === "" ? undefined : envelope.sender;
+}
+
+/** The registry key of one outbound watch: who watches what. The one
+ * place the template lives; the settle on an arriving Terminated must
+ * find exactly the entry the watch call recorded. */
+function watchKeyOf(watcher: string, target: string): string {
+  return `${watcher}#${target}`;
 }
 
 /** Collects every transferable ArrayBuffer reachable from the value:
@@ -242,7 +257,7 @@ export class PortTransport {
     }
 
     const err = this.post({
-      kind: "tell",
+      kind: ENVELOPE_TELL,
       to: to.toString(),
       uid: to.uid(),
       sender: sender?.path().toString() ?? "",
@@ -320,7 +335,7 @@ export class PortTransport {
     });
 
     const err = this.post({
-      kind: "ask",
+      kind: ENVELOPE_ASK,
       to: to.toString(),
       uid: to.uid(),
       sender: sender?.path().toString() ?? "",
@@ -395,7 +410,7 @@ export class PortTransport {
     });
 
     const err = this.post({
-      kind: "ask",
+      kind: ENVELOPE_ASK,
       to: to.toString(),
       uid: to.uid(),
       sender: sender.path().toString(),
@@ -431,12 +446,12 @@ export class PortTransport {
       return;
     }
 
-    this._watches.set(`${watcher.id()}#${to.toString()}`, {
+    this._watches.set(watchKeyOf(watcher.id(), to.toString()), {
       watcher,
       target: to.toString(),
     });
     this.post({
-      kind: "watch",
+      kind: ENVELOPE_WATCH,
       to: to.toString(),
       uid: to.uid(),
       sender: watcher.path().toString(),
@@ -456,9 +471,9 @@ export class PortTransport {
       return;
     }
 
-    this._watches.delete(`${watcher.id()}#${to.toString()}`);
+    this._watches.delete(watchKeyOf(watcher.id(), to.toString()));
     this.post({
-      kind: "unwatch",
+      kind: ENVELOPE_UNWATCH,
       to: to.toString(),
       uid: to.uid(),
       sender: watcher.path().toString(),
@@ -551,7 +566,7 @@ export class PortTransport {
    * contract can grow without breaking older isolates. */
   private deliver(envelope: Envelope): void {
     if (this._closed) {
-      if (envelope.kind === "tell" || envelope.kind === "ask") {
+      if (envelope.kind === ENVELOPE_TELL || envelope.kind === ENVELOPE_ASK) {
         this._system.toDeadletter(
           senderPathOf(envelope),
           envelope.to,
@@ -563,27 +578,27 @@ export class PortTransport {
       return;
     }
 
-    if (envelope.kind === "tell") {
+    if (envelope.kind === ENVELOPE_TELL) {
       this.deliverTell(envelope);
       return;
     }
 
-    if (envelope.kind === "ask") {
+    if (envelope.kind === ENVELOPE_ASK) {
       this.deliverAsk(envelope);
       return;
     }
 
-    if (envelope.kind === "reply") {
+    if (envelope.kind === ENVELOPE_REPLY) {
       this.deliverReply(envelope);
       return;
     }
 
-    if (envelope.kind === "watch") {
+    if (envelope.kind === ENVELOPE_WATCH) {
       this.deliverWatch(envelope);
       return;
     }
 
-    if (envelope.kind === "unwatch") {
+    if (envelope.kind === ENVELOPE_UNWATCH) {
       this.deliverUnwatch(envelope);
     }
   }
@@ -604,7 +619,7 @@ export class PortTransport {
     const target = this.target(envelope);
     if (target === null || !target.isRunning()) {
       this.post({
-        kind: "tell",
+        kind: ENVELOPE_TELL,
         to: envelope.sender,
         uid: envelope.senderUid,
         sender: "",
@@ -652,7 +667,7 @@ export class PortTransport {
     // A death notification settles this side's watch entry, so the
     // close sweep never delivers a second Terminated for it.
     if (message instanceof Terminated) {
-      this._watches.delete(`${envelope.to}#${message.actorPath}`);
+      this._watches.delete(watchKeyOf(envelope.to, message.actorPath));
     }
 
     const target = this.target(envelope);
@@ -737,7 +752,7 @@ export class PortTransport {
     }
 
     const err = this.post({
-      kind: "reply",
+      kind: ENVELOPE_REPLY,
       to: "",
       uid: "",
       sender: "",
@@ -756,7 +771,7 @@ export class PortTransport {
   /** Posts a failed reply; the error wire form always clones. */
   private replyFailure(cid: number, error: Error): void {
     this.post({
-      kind: "reply",
+      kind: ENVELOPE_REPLY,
       to: "",
       uid: "",
       sender: "",
@@ -771,9 +786,14 @@ export class PortTransport {
 
   /** Resolves the envelope's target to the live PID it addresses, or
    * null when nothing lives at the path or the living actor is a
-   * different incarnation than the envelope was pinned to. */
+   * different incarnation than the envelope was pinned to. A path of
+   * another node entirely resolves to its wire-backed handle when the
+   * system carries remoting: that is how a placed actor's reply or
+   * death notification to a remote sender leaves the machine, worker
+   * to main isolate here, main isolate to the far node on the wire. */
   private target(envelope: Envelope): PID | null {
-    const pid = this._system.resolvePath(parsePath(envelope.to, envelope.uid));
+    const path = parsePath(envelope.to, envelope.uid);
+    const pid = this._system.resolvePath(path) ?? this._system.remoteHandle(path);
     if (pid === undefined) {
       return null;
     }

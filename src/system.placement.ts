@@ -117,6 +117,10 @@ export async function systemPlacement(
       return routedPid(system, path, route);
     },
 
+    respawn: (name) => pool.restartPlaced(name),
+
+    stopActor: (name) => pool.stopPlaced(name),
+
     stop: () => pool.stop(),
   };
 }

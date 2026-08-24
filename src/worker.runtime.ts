@@ -28,14 +28,37 @@ import type { IsolateRoute } from "./actor.ref";
 import type { ActorSystem } from "./actor.system";
 import { Codec, decodeError, encodeError } from "./codec";
 import type { WireMessage } from "./envelope";
-import { ErrDead } from "./errors";
+import { ActorNotFoundError, ErrDead } from "./errors";
 import { Mesh } from "./mesh";
 import type { MessageRegistry } from "./message.registry";
 import { Deadletter } from "./messages";
 import { addressOf, newPathAt, parsePath } from "./path";
 import type { PID } from "./pid";
 import type { Props } from "./props";
-import type { ActorRecipe, ControlMessage, WorkerMessage } from "./protocol";
+import {
+  type ActorRecipe,
+  CONTROL_CLAIMED,
+  CONTROL_CONNECT,
+  CONTROL_DISCONNECT,
+  CONTROL_NAME_ADDED,
+  CONTROL_NAME_FREED,
+  CONTROL_PLACED,
+  CONTROL_RESTART,
+  CONTROL_SPAWN,
+  CONTROL_STOP,
+  CONTROL_STOP_ACTOR,
+  type ControlMessage,
+  WORKER_ACTOR_STOPPED,
+  WORKER_CLAIM,
+  WORKER_CONTROLLED,
+  WORKER_DEADLETTER,
+  WORKER_PLACE,
+  WORKER_READY,
+  WORKER_SPAWN_FAILED,
+  WORKER_SPAWNED,
+  WORKER_STOPPED,
+  type WorkerMessage,
+} from "./protocol";
 import { placedRecipe } from "./registration";
 import { routedPid } from "./routed.pid";
 import type { SpawnOptions } from "./spawn.options";
@@ -188,10 +211,14 @@ export class WorkerRuntime {
     system.attachPlacement({
       claim: (name) => this.claimName(name),
       free: (name) => {
-        this.post({ kind: "actor-stopped", name });
+        this.post({ kind: WORKER_ACTOR_STOPPED, name });
       },
       place: (name, props, options) => this.placeProps(name, props, options),
       find: (name) => this.findName(name),
+      // Lifecycle control of placed actors enters through the main
+      // isolate alone (remoting lives there); a facade cannot order it.
+      respawn: (name) => Promise.reject(new ActorNotFoundError(name)),
+      stopActor: (name) => Promise.reject(new ActorNotFoundError(name)),
       stop: () => Promise.resolve(),
     });
 
@@ -210,7 +237,7 @@ export class WorkerRuntime {
     system.subscribe((event) => {
       if (event instanceof Deadletter) {
         this.post({
-          kind: "deadletter",
+          kind: WORKER_DEADLETTER,
           sender: event.sender,
           receiver: event.receiver,
           message: this.wireOf(event.message),
@@ -222,7 +249,7 @@ export class WorkerRuntime {
 
   /** Announces the isolate as booted and ready for wiring. */
   announce(): void {
-    this.post({ kind: "ready" });
+    this.post({ kind: WORKER_READY });
   }
 
   /** Returns the isolate's mesh. */
@@ -233,32 +260,32 @@ export class WorkerRuntime {
   /** Executes one control message; unknown kinds are ignored so the
    * protocol can grow without breaking older workers. */
   private async handle(message: ControlMessage): Promise<void> {
-    if (message.kind === "connect") {
+    if (message.kind === CONTROL_CONNECT) {
       this._mesh.connect(message.workerId, message.port);
       return;
     }
 
-    if (message.kind === "disconnect") {
+    if (message.kind === CONTROL_DISCONNECT) {
       this._mesh.disconnect(message.workerId);
       return;
     }
 
-    if (message.kind === "spawn") {
+    if (message.kind === CONTROL_SPAWN) {
       await this.spawn(message.seq, message.name, message.recipe);
       return;
     }
 
-    if (message.kind === "name-added") {
+    if (message.kind === CONTROL_NAME_ADDED) {
       this._names.set(message.name, message.workerId);
       return;
     }
 
-    if (message.kind === "name-freed") {
+    if (message.kind === CONTROL_NAME_FREED) {
       this._names.delete(message.name);
       return;
     }
 
-    if (message.kind === "claimed") {
+    if (message.kind === CONTROL_CLAIMED) {
       const settle = this._claims.get(message.seq);
       if (settle !== undefined) {
         this._claims.delete(message.seq);
@@ -268,14 +295,70 @@ export class WorkerRuntime {
       return;
     }
 
-    if (message.kind === "placed") {
+    if (message.kind === CONTROL_PLACED) {
       this.settlePlacement(message);
       return;
     }
 
-    if (message.kind === "stop") {
+    if (message.kind === CONTROL_RESTART) {
+      await this.restartActor(message.seq, message.name);
+      return;
+    }
+
+    if (message.kind === CONTROL_STOP_ACTOR) {
+      await this.stopActor(message.seq, message.name);
+      return;
+    }
+
+    if (message.kind === CONTROL_STOP) {
       await this.stop();
     }
+  }
+
+  /** The live top-level actor this isolate's own tree holds under the
+   * name, or undefined: lifecycle orders act on the owned actor, never
+   * on a routed handle the replicated name table could resolve. */
+  private ownActor(name: string): PID | undefined {
+    const pid = this._system.actorOf(name);
+    if (pid === undefined || pid.isRouted()) {
+      return undefined;
+    }
+
+    return pid;
+  }
+
+  /** Restarts the named actor in place on the control plane's order:
+   * same PID, same incarnation, fresh state through its lifecycle
+   * hooks. A name this isolate does not own answers the not-found
+   * failure, sentinel identity preserved on the far side. */
+  private async restartActor(seq: number, name: string): Promise<void> {
+    const pid = this.ownActor(name);
+    if (pid === undefined) {
+      this.post({ kind: WORKER_CONTROLLED, seq, error: encodeError(new ActorNotFoundError(name)) });
+      return;
+    }
+
+    try {
+      await pid.restart();
+      this.post({ kind: WORKER_CONTROLLED, seq, error: null });
+    } catch (err) {
+      this.post({ kind: WORKER_CONTROLLED, seq, error: encodeError(err as Error) });
+    }
+  }
+
+  /** Stops the named actor gracefully on the control plane's order; a
+   * name this isolate does not own is already stopped, so the order
+   * succeeds idempotently. The stop frees the name through the same
+   * announcement every placed stop makes. */
+  private async stopActor(seq: number, name: string): Promise<void> {
+    const pid = this.ownActor(name);
+    if (pid === undefined) {
+      this.post({ kind: WORKER_CONTROLLED, seq, error: null });
+      return;
+    }
+
+    await pid.shutdown();
+    this.post({ kind: WORKER_CONTROLLED, seq, error: null });
   }
 
   /** Claims a top-level name with the control plane; a name this
@@ -289,7 +372,7 @@ export class WorkerRuntime {
     const seq = this._nextSeq++;
     return new Promise((resolve) => {
       this._claims.set(seq, resolve);
-      this.post({ kind: "claim", seq, name });
+      this.post({ kind: WORKER_CLAIM, seq, name });
     });
   }
 
@@ -301,12 +384,12 @@ export class WorkerRuntime {
     const seq = this._nextSeq++;
     return new Promise<PID>((resolve, reject) => {
       this._placements.set(seq, { resolve, reject });
-      this.post({ kind: "place", seq, name, recipe });
+      this.post({ kind: WORKER_PLACE, seq, name, recipe });
     });
   }
 
   /** Settles one placement request from the control plane's answer. */
-  private settlePlacement(message: Extract<ControlMessage, { kind: "placed" }>): void {
+  private settlePlacement(message: Extract<ControlMessage, { kind: typeof CONTROL_PLACED }>): void {
     const pending = this._placements.get(message.seq);
     if (pending === undefined) {
       return;
@@ -359,11 +442,11 @@ export class WorkerRuntime {
     try {
       const pid = await spawnRecipe(this._system, name, recipe);
       pid.onStopped(() => {
-        this.post({ kind: "actor-stopped", name });
+        this.post({ kind: WORKER_ACTOR_STOPPED, name });
       });
-      this.post({ kind: "spawned", seq, path: pid.path().toString(), uid: pid.path().uid() });
+      this.post({ kind: WORKER_SPAWNED, seq, path: pid.path().toString(), uid: pid.path().uid() });
     } catch (err) {
-      this.post({ kind: "spawn-failed", seq, error: encodeError(err as Error) });
+      this.post({ kind: WORKER_SPAWN_FAILED, seq, error: encodeError(err as Error) });
     } finally {
       this._placing.delete(name);
     }
@@ -373,7 +456,7 @@ export class WorkerRuntime {
   private async stop(): Promise<void> {
     this._mesh.close();
     await this._system.stop();
-    this.post({ kind: "stopped" });
+    this.post({ kind: WORKER_STOPPED });
 
     // Deno's worker-threads compatibility layer omits close() on the
     // boot port; the pool terminates the isolate after "stopped", so

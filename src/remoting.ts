@@ -1169,6 +1169,22 @@ export class Remoting {
       return;
     }
 
+    // An ask to a placed actor composes the two transports: the send
+    // rides the isolate route, the worker's response settles the route's
+    // promise back on this isolate, and the settlement bridges to the
+    // wire correlation, so the remote asker cannot tell the placement.
+    if (target.isRouted()) {
+      sender.ask(target, message, envelope.timeout).then(
+        (value: unknown): void => {
+          this.reply(session, correlation, value);
+        },
+        (reason: Error): void => {
+          session.replyError(correlation, encodeFailure(reason));
+        },
+      );
+      return;
+    }
+
     const err: Error | null = target.deliverAsk(
       message,
       sender,
@@ -1334,8 +1350,21 @@ export class Remoting {
     }
 
     const target: PID | undefined = this.targetOf(envelope);
-    if (target === undefined || !target.isRunning()) {
+    if (target === undefined || (!target.isRouted() && !target.isRunning())) {
       this._system.noSender().tell(watcher, new Terminated(envelope.to));
+      return;
+    }
+
+    // A placed target's registration rides the isolate route: the
+    // owning worker registers the remote watcher handle, its actor's
+    // stop tells that handle, and the notification travels main
+    // isolate first, then over the wire. The worker keys registrations
+    // by the watcher's path, not this handle's identity, so nothing
+    // pins the sender cache; a target the worker already lost answers
+    // the immediate Terminated from over there.
+    if (target.isRouted()) {
+      watcher.watch(target);
+      this.trackInbound(session, target, watcher, envelope);
       return;
     }
 
@@ -1425,6 +1454,13 @@ export class Remoting {
 
     this._inboundWatches.delete(session);
     for (const { target, watcher, watcherKey } of list) {
+      // A placed target's registration lives on its worker; cancelling
+      // rides the route (idempotent over there) and released no pin.
+      if (target.isRouted()) {
+        watcher.unWatch(target);
+        continue;
+      }
+
       if (target.removeWatcher(watcher)) {
         this.releaseSender(watcherKey, target.path().toString());
       }
@@ -1440,7 +1476,14 @@ export class Remoting {
     }
 
     const target: PID | undefined = this.targetOf(envelope);
-    if (target === undefined || !target.isRunning()) {
+    if (target === undefined || (!target.isRouted() && !target.isRunning())) {
+      return;
+    }
+
+    // A placed target's cancellation rides the isolate route; the
+    // worker removes by the watcher's path, and nothing was pinned.
+    if (target.isRouted()) {
+      watcher.unWatch(target);
       return;
     }
 
@@ -1586,8 +1629,21 @@ export class Remoting {
       return;
     }
 
+    // A placed actor restarts through the pool's control plane, on its
+    // owning isolate; the answer names the placed handle, incarnation
+    // unpinned exactly as a lookup answers it.
     if (pid.isRouted()) {
-      session.replyError(correlation, encodeFailure(this.placedRefusal(name, "respawned")));
+      this._system.respawnPlaced(name).then(
+        (): void => {
+          this.replyControl(session, correlation, {
+            path: pid.path().toString(),
+            uid: pid.path().uid(),
+          });
+        },
+        (err: Error): void => {
+          session.replyError(correlation, encodeFailure(err));
+        },
+      );
       return;
     }
 
@@ -1619,8 +1675,17 @@ export class Remoting {
       return;
     }
 
+    // A placed actor stops through the pool's control plane, on its
+    // owning isolate, idempotently like the local branch below.
     if (pid.isRouted()) {
-      session.replyError(correlation, encodeFailure(this.placedRefusal(name, "stopped")));
+      this._system.stopPlaced(name).then(
+        (): void => {
+          this.replyControl(session, correlation, null);
+        },
+        (err: Error): void => {
+          session.replyError(correlation, encodeFailure(err));
+        },
+      );
       return;
     }
 
@@ -1635,16 +1700,6 @@ export class Remoting {
         session.replyError(correlation, encodeFailure(err));
       },
       /* v8 ignore stop */
-    );
-  }
-
-  /** The honest refusal for lifecycle control of an actor placed on
-   * another isolate of this node: reaching it through the pool is not
-   * wired yet, and the placement is a same-machine detail the caller
-   * could not know about. */
-  private placedRefusal(name: string, verb: string): Error {
-    return new Error(
-      `actor "${name}" is placed on another isolate of its node and cannot be ${verb} remotely yet`,
     );
   }
 
@@ -1710,7 +1765,10 @@ export class Remoting {
     }
 
     const pid: PID | undefined = this.targetOf(envelope);
-    if (pid !== undefined) {
+    // A placed actor's handle is never cached: its owning isolate can
+    // change when the name is re-placed, and only the registry lookup
+    // tracks that, so a routed target resolves per delivery.
+    if (pid !== undefined && !pid.isRouted()) {
       session.cachePathHandle(envelope.to, pid);
     }
 
@@ -1724,10 +1782,11 @@ export class Remoting {
     return pid.isRunning() && (envelope.uid === "" || envelope.uid === pid.path().uid());
   }
 
-  /** Resolves the envelope's target to the live local PID it addresses,
-   * or undefined when the path is malformed, nothing lives at it, or
-   * the living actor is a different incarnation than the envelope was
-   * pinned to. */
+  /** Resolves the envelope's target to the live PID it addresses: a
+   * local actor of the main tree, or the routed handle of a top-level
+   * actor this node placed on one of its worker isolates. Undefined
+   * when the path is malformed, nothing lives at it, or the living
+   * actor is a different incarnation than the envelope was pinned to. */
   private targetOf(envelope: DataEnvelope): PID | undefined {
     let path: Path;
     try {
@@ -1736,7 +1795,7 @@ export class Remoting {
       return undefined;
     }
 
-    const pid: PID | undefined = this._system.resolvePath(path);
+    const pid: PID | undefined = this._system.resolvePath(path) ?? this.placedTargetOf(path);
     if (pid === undefined) {
       return undefined;
     }
@@ -1746,6 +1805,36 @@ export class Remoting {
     }
 
     return pid;
+  }
+
+  /**
+   * The placement fallback of {@link targetOf}: a top-level path of
+   * this very node that the main tree does not hold may name an actor
+   * placed on a worker isolate, which the same registry `actorOf`
+   * consults resolves to its routed handle. Delivery through it rides
+   * the isolate route, so the network and the port transports compose.
+   * Only a routed answer counts: a live local actor would have
+   * resolved on the tree already.
+   */
+  private placedTargetOf(path: Path): PID | undefined {
+    if (!this.isLocalNode(path) || path.parent() !== undefined) {
+      return undefined;
+    }
+
+    const pid: PID | undefined = this._system.actorOf(path.name());
+    if (pid === undefined || !pid.isRouted()) {
+      return undefined;
+    }
+
+    // An envelope pinned to an incarnation re-mints the handle around
+    // its own path, so the pin rides the isolate route and the owning
+    // worker enforces it; an unpinned envelope reuses the registry's
+    // handle as is.
+    if (path.uid() === pid.path().uid()) {
+      return pid;
+    }
+
+    return routedPid(this._system, path, pid.route() as IsolateRoute);
   }
 
   /** Resolves the envelope's sender. A sender on this very node
@@ -1786,10 +1875,46 @@ export class Remoting {
       return this._system.resolvePath(path) ?? this._system.noSender();
     }
 
+    return this.mintSender(key, path);
+  }
+
+  /** Mints and caches the routed handle of one foreign sender; the
+   * shared tail of {@link senderOf} and {@link handleFor}. */
+  private mintSender(key: string, path: Path): PID {
     const handle: PID = routedPid(this._system, path, this.routeTo(path.host(), path.port()));
     this._senders.set(key, { handle, pins: new Set<string>() });
     this.evictSenders(key);
     return handle;
+  }
+
+  /**
+   * The wire-backed handle of an actor on another node, or undefined
+   * for a path of this very node. The isolate transport consults this
+   * when an envelope from a worker names a foreign path, which is how
+   * a placed actor's reply or death notification to a remote sender
+   * crosses back: worker to main isolate on the port, main isolate to
+   * the far node on the wire. Handles come from the same cache the
+   * inbound side uses, so identity stays stable across both doors.
+   *
+   * @internal
+   */
+  handleFor(path: Path): PID | undefined {
+    if (this.isLocalNode(path)) {
+      return undefined;
+    }
+
+    const key: string = senderKey(path.toString(), path.uid());
+    const cached: SenderEntry | undefined = this._senders.get(key);
+    if (cached !== undefined) {
+      if (this._senders.size >= SENDER_CACHE_SIZE) {
+        this._senders.delete(key);
+        this._senders.set(key, cached);
+      }
+
+      return cached.handle;
+    }
+
+    return this.mintSender(key, path);
   }
 
   /**

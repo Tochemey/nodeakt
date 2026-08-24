@@ -119,7 +119,7 @@ Throws `TypeError` when the id is empty or already bound to a different class. R
 
 Top-level names remain unique across isolates once the pool is active. `actorOf` finds a placed actor by name.
 
-The same handle contract carries over to actors on other machines, with the network's own edges; see [Remoting](../remoting/index.md#what-a-remote-pid-does).
+The same handle contract carries over to actors on other machines, with the network's own edges; see [Remoting](../remoting/index.md#what-a-remote-pid-does). The two compose: an actor placed on a worker isolate is reachable from other nodes by name, watchable across the wire, and remotely respawnable and stoppable, exactly like one on the main isolate.
 
 ## Payloads
 

@@ -62,6 +62,21 @@ export interface Placement {
    * or undefined when no isolate holds it. */
   find(name: string): PID | undefined;
 
+  /**
+   * Restarts the placed top-level actor in place on its owning
+   * isolate: same PID, same incarnation, fresh state through its
+   * lifecycle hooks. Only the pool-owning implementation can order
+   * this; a worker facade rejects, since lifecycle control of placed
+   * actors enters through the main isolate alone.
+   */
+  respawn(name: string): Promise<void>;
+
+  /** Stops the placed top-level actor gracefully on its owning
+   * isolate; a name no isolate holds is already stopped, so the order
+   * succeeds idempotently. Pool-owning implementation only, like
+   * {@link respawn}. */
+  stopActor(name: string): Promise<void>;
+
   /** Tears the placement down; only the implementation that owns the
    * pool does anything here. */
   stop(): Promise<void>;

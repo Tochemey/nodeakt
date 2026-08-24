@@ -6,10 +6,7 @@ body:
     attributes:
       value: |
         Describe the problem before the solution: the strongest feature requests explain
-        a real use case the runtime cannot serve today. The README's "Not there yet"
-        section lists known roadmap items (remoting, persistence, grains, scheduled
-        messages, routers, metrics); a use case for one of those is exactly what helps
-        order that roadmap, so file it here.
+        a real use case the runtime cannot serve today.
   - type: textarea
     id: problem
     attributes:

@@ -27,11 +27,34 @@ import { ActorRef } from "./actor.ref";
 import type { ActorSystem } from "./actor.system";
 import { Codec, decodeError, encodeError } from "./codec";
 import { ControlPlane, mainWorkerId } from "./control.plane";
-import { ErrActorAlreadyExists, ErrDead } from "./errors";
+import { ActorNotFoundError, ErrActorAlreadyExists, ErrDead } from "./errors";
 import { Mesh } from "./mesh";
 import type { MessageRegistry } from "./message.registry";
 import { addressOf, newPathAt, parsePath } from "./path";
-import type { ActorRecipe, ControlMessage, WorkerBootData, WorkerMessage } from "./protocol";
+import {
+  type ActorRecipe,
+  CONTROL_CLAIMED,
+  CONTROL_CONNECT,
+  CONTROL_DISCONNECT,
+  CONTROL_NAME_ADDED,
+  CONTROL_NAME_FREED,
+  CONTROL_PLACED,
+  CONTROL_RESTART,
+  CONTROL_SPAWN,
+  CONTROL_STOP,
+  CONTROL_STOP_ACTOR,
+  type ControlMessage,
+  WORKER_ACTOR_STOPPED,
+  WORKER_CLAIM,
+  WORKER_CONTROLLED,
+  WORKER_DEADLETTER,
+  WORKER_PLACE,
+  WORKER_READY,
+  WORKER_SPAWN_FAILED,
+  WORKER_SPAWNED,
+  type WorkerBootData,
+  type WorkerMessage,
+} from "./protocol";
 import { applySetup, spawnRecipe } from "./worker.runtime";
 
 /**
@@ -148,6 +171,13 @@ export class WorkerPool {
   private readonly _ready = new Map<number, ReadyWaiter>();
   private readonly _pending = new Map<number, PendingSpawn>();
 
+  /** Lifecycle orders (restart, stop-actor) awaiting a worker's
+   * `controlled` reply, by sequence. */
+  private readonly _controls = new Map<
+    number,
+    { workerId: number; resolve: () => void; reject: (error: Error) => void }
+  >();
+
   /** Names whose placement is in flight on this isolate, so the claim
    * an instance spawn makes for the same placement is a no-op instead
    * of a duplicate registration. */
@@ -198,7 +228,7 @@ export class WorkerPool {
 
     const refused = this._plane.register(name, workerId);
     if (refused === null) {
-      this.broadcast({ kind: "name-added", name, workerId });
+      this.broadcast({ kind: CONTROL_NAME_ADDED, name, workerId });
     }
 
     return refused;
@@ -208,7 +238,7 @@ export class WorkerPool {
    * names are a no-op. */
   release(name: string): void {
     this._plane.free(name);
-    this.broadcast({ kind: "name-freed", name });
+    this.broadcast({ kind: CONTROL_NAME_FREED, name });
   }
 
   /** Posts one control message to every live worker. */
@@ -276,12 +306,12 @@ export class WorkerPool {
         pid.onStopped(() => {
           this.release(name);
         });
-        this.broadcast({ kind: "name-added", name, workerId: mainWorkerId });
+        this.broadcast({ kind: CONTROL_NAME_ADDED, name, workerId: mainWorkerId });
         return new ActorRef(this._system, pid.path(), this._mesh.route(mainWorkerId));
       }
 
       const spawned = await this.spawnOn(workerId, name, recipe);
-      this.broadcast({ kind: "name-added", name, workerId });
+      this.broadcast({ kind: CONTROL_NAME_ADDED, name, workerId });
       return new ActorRef(
         this._system,
         parsePath(spawned.path, spawned.uid),
@@ -337,6 +367,8 @@ export class WorkerPool {
     const boot: WorkerBootData = {
       workerId,
       systemName: this._system.name(),
+      host: this._system.host(),
+      port: this._system.port(),
       quiet: this._options.quiet ?? false,
       setup: this._options.setup ?? null,
     };
@@ -373,7 +405,7 @@ export class WorkerPool {
     for (const id of ids) {
       const channel = new MessageChannel();
       this._mesh.connect(id, channel.port1);
-      this.send(id, { kind: "connect", workerId: mainWorkerId, port: channel.port2 }, [
+      this.send(id, { kind: CONTROL_CONNECT, workerId: mainWorkerId, port: channel.port2 }, [
         channel.port2,
       ]);
     }
@@ -383,12 +415,12 @@ export class WorkerPool {
         const channel = new MessageChannel();
         this.send(
           ids[i] as number,
-          { kind: "connect", workerId: ids[j] as number, port: channel.port1 },
+          { kind: CONTROL_CONNECT, workerId: ids[j] as number, port: channel.port1 },
           [channel.port1],
         );
         this.send(
           ids[j] as number,
-          { kind: "connect", workerId: ids[i] as number, port: channel.port2 },
+          { kind: CONTROL_CONNECT, workerId: ids[i] as number, port: channel.port2 },
           [channel.port2],
         );
       }
@@ -401,8 +433,54 @@ export class WorkerPool {
     const reply = new Promise<SpawnedAt>((resolve, reject) => {
       this._pending.set(seq, { workerId, resolve, reject });
     });
-    this.send(workerId, { kind: "spawn", seq, name, recipe });
+    this.send(workerId, { kind: CONTROL_SPAWN, seq, name, recipe });
     return reply;
+  }
+
+  /** Sends one lifecycle order and settles on the worker's reply; the
+   * owning worker's death rejects it with {@link ErrDead}. */
+  private controlOn(
+    workerId: number,
+    order:
+      | { kind: typeof CONTROL_RESTART; seq: number; name: string }
+      | { kind: typeof CONTROL_STOP_ACTOR; seq: number; name: string },
+  ): Promise<void> {
+    const reply = new Promise<void>((resolve, reject) => {
+      this._controls.set(order.seq, { workerId, resolve, reject });
+    });
+    this.send(workerId, order);
+    return reply;
+  }
+
+  /**
+   * Restarts the placed top-level actor in place on its owning worker:
+   * same PID, same incarnation, fresh state through its lifecycle
+   * hooks. Rejects with {@link ActorNotFoundError} for a name no
+   * worker owns (an actor of the main isolate resolves on the tree and
+   * never reaches here), and with the restart failure otherwise.
+   */
+  restartPlaced(name: string): Promise<void> {
+    const workerId = this.ownerOf(name);
+    if (workerId === undefined || workerId === mainWorkerId || !this._workers.has(workerId)) {
+      return Promise.reject(new ActorNotFoundError(name));
+    }
+
+    return this.controlOn(workerId, { kind: CONTROL_RESTART, seq: this._nextSeq++, name });
+  }
+
+  /**
+   * Stops the placed top-level actor gracefully on its owning worker.
+   * A name no worker owns is already stopped, so the order succeeds
+   * idempotently; the stop frees the name through the worker's own
+   * announcement.
+   */
+  stopPlaced(name: string): Promise<void> {
+    const workerId = this.ownerOf(name);
+    if (workerId === undefined || workerId === mainWorkerId || !this._workers.has(workerId)) {
+      return Promise.resolve();
+    }
+
+    return this.controlOn(workerId, { kind: CONTROL_STOP_ACTOR, seq: this._nextSeq++, name });
   }
 
   /** Routes one control reply from a worker. Late and forged frames
@@ -411,7 +489,7 @@ export class WorkerPool {
    * ready announcement must not disturb the control plane. "stopped"
    * needs no action because stop awaits the exit itself. */
   private onMessage(workerId: number, message: WorkerMessage): void {
-    if (message.kind === "ready") {
+    if (message.kind === WORKER_READY) {
       const waiter = this._ready.get(workerId);
       if (waiter === undefined) {
         return;
@@ -422,38 +500,54 @@ export class WorkerPool {
       return;
     }
 
-    if (message.kind === "actor-stopped") {
+    if (message.kind === WORKER_ACTOR_STOPPED) {
       this.release(message.name);
       return;
     }
 
-    if (message.kind === "claim") {
+    if (message.kind === WORKER_CLAIM) {
       const refused = this.claim(message.name, workerId);
       this.send(workerId, {
-        kind: "claimed",
+        kind: CONTROL_CLAIMED,
         seq: message.seq,
         error: refused === null ? null : encodeError(refused),
       });
       return;
     }
 
-    if (message.kind === "place") {
+    if (message.kind === WORKER_PLACE) {
       void this.placeFor(workerId, message.seq, message.name, message.recipe);
       return;
     }
 
-    if (message.kind === "deadletter") {
+    if (message.kind === WORKER_DEADLETTER) {
       this.republish(message);
       return;
     }
 
-    if (message.kind === "spawned" || message.kind === "spawn-failed") {
+    if (message.kind === WORKER_CONTROLLED) {
+      const pending = this._controls.get(message.seq);
+      if (pending === undefined || pending.workerId !== workerId) {
+        return;
+      }
+
+      this._controls.delete(message.seq);
+      if (message.error === null) {
+        pending.resolve();
+        return;
+      }
+
+      pending.reject(decodeError(message.error));
+      return;
+    }
+
+    if (message.kind === WORKER_SPAWNED || message.kind === WORKER_SPAWN_FAILED) {
       const pending = this._pending.get(message.seq);
       if (pending === undefined || pending.workerId !== workerId) {
         return;
       }
 
-      if (message.kind === "spawned") {
+      if (message.kind === WORKER_SPAWNED) {
         this._pending.delete(message.seq);
         pending.resolve({ path: message.path, uid: message.uid });
         return;
@@ -471,7 +565,9 @@ export class WorkerPool {
   /** Publishes a worker facade's forwarded dead letter on the main
    * system, where the one logical event stream lives; a payload this
    * side cannot restore is published as its raw wire data. */
-  private republish(forwarded: Extract<WorkerMessage, { readonly kind: "deadletter" }>): void {
+  private republish(
+    forwarded: Extract<WorkerMessage, { readonly kind: typeof WORKER_DEADLETTER }>,
+  ): void {
     let message: unknown;
     try {
       message = this._codec.decodeMessage(forwarded.message);
@@ -498,7 +594,7 @@ export class WorkerPool {
     try {
       const ref = await this.place(name, recipe);
       this.send(workerId, {
-        kind: "placed",
+        kind: CONTROL_PLACED,
         seq,
         error: null,
         workerId: ref.workerId() ?? mainWorkerId,
@@ -507,7 +603,7 @@ export class WorkerPool {
       });
     } catch (err) {
       this.send(workerId, {
-        kind: "placed",
+        kind: CONTROL_PLACED,
         seq,
         error: encodeError(err as Error),
         workerId: mainWorkerId,
@@ -537,13 +633,20 @@ export class WorkerPool {
       }
     }
 
+    for (const [seq, pending] of this._controls) {
+      if (pending.workerId === workerId) {
+        this._controls.delete(seq);
+        pending.reject(ErrDead);
+      }
+    }
+
     if (!this._stopping) {
       for (const id of this._workers.keys()) {
-        this.send(id, { kind: "disconnect", workerId });
+        this.send(id, { kind: CONTROL_DISCONNECT, workerId });
       }
 
       for (const name of freed) {
-        this.broadcast({ kind: "name-freed", name });
+        this.broadcast({ kind: CONTROL_NAME_FREED, name });
       }
     }
   }
@@ -557,7 +660,7 @@ export class WorkerPool {
       return;
     }
 
-    this.send(workerId, { kind: "stop" });
+    this.send(workerId, { kind: CONTROL_STOP });
     const graceful = await settledWithin(exited, this._options.stopTimeout ?? 5000);
     if (!graceful) {
       await worker.terminate();

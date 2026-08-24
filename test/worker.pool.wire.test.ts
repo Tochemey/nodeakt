@@ -28,7 +28,7 @@ import { threadId } from "node:worker_threads";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ActorSystem } from "../src/actor.system";
 import { discardLogger } from "../src/discard.logger";
-import { ErrActorAlreadyExists } from "../src/errors";
+import { ErrActorAlreadyExists, ErrDead } from "../src/errors";
 import type { Logger } from "../src/logger";
 import { MessageRegistry } from "../src/message.registry";
 import { Deadletter } from "../src/messages";
@@ -43,7 +43,9 @@ import { Job, Receipt } from "./fixtures/wire.messages.mjs";
 const outDir = resolve("node_modules/.cache/nodeakt-worker-wire-test");
 const registeredModule = new URL("./fixtures/registered.actor.mjs", import.meta.url).href;
 const entry = resolve(outDir, "worker.entry.mjs");
+const blockStopModule = new URL("./fixtures/block.stop.actor.mjs", import.meta.url).href;
 const echoModule = new URL("./fixtures/echo.actor.mjs", import.meta.url).href;
+const phoenixModule = new URL("./fixtures/phoenix.actor.mjs", import.meta.url).href;
 const hogModule = new URL("./fixtures/hog.actor.mjs", import.meta.url).href;
 const typedModule = new URL("./fixtures/typed.actor.mjs", import.meta.url).href;
 const stoppingModule = new URL("./fixtures/stopping.actor.mjs", import.meta.url).href;
@@ -276,6 +278,114 @@ describe("WorkerPool control-plane hardening", () => {
 
     await pool.stop();
     await system.stop();
+  }, 30_000);
+
+  it("routes lifecycle orders to the owning worker and settles their replies", async () => {
+    const system = new ActorSystem("orders", { logger: discardLogger });
+    await system.start();
+    const pool = new WorkerPool(system, new MessageRegistry(), { size: 1, entry, quiet: true });
+    await pool.start();
+
+    try {
+      await pool.place("subject", { module: echoModule, actor: "Echo", args: ["s"] });
+      await expect(pool.restartPlaced("subject")).resolves.toBeUndefined();
+
+      await expect(pool.stopPlaced("subject")).resolves.toBeUndefined();
+      await expect.poll(() => pool.ownerOf("subject")).toBeUndefined();
+
+      // Nobody owns the name any more: restart refuses, stop succeeds
+      // idempotently. A name claimed by the main isolate behaves the
+      // same, since lifecycle orders reach workers alone.
+      await expect(pool.restartPlaced("subject")).rejects.toSatisfy(
+        (err: unknown): boolean => err instanceof Error && err.name === "ActorNotFoundError",
+      );
+      await expect(pool.stopPlaced("subject")).resolves.toBeUndefined();
+
+      pool.claim("central");
+      await expect(pool.restartPlaced("central")).rejects.toSatisfy(
+        (err: unknown): boolean => err instanceof Error && err.name === "ActorNotFoundError",
+      );
+      await expect(pool.stopPlaced("central")).resolves.toBeUndefined();
+    } finally {
+      await pool.stop();
+      await system.stop();
+    }
+  }, 30_000);
+
+  it("ignores late and forged controlled replies", async () => {
+    const system = new ActorSystem("orders", { logger: discardLogger });
+    await system.start();
+    const pool = new WorkerPool(system, new MessageRegistry(), { size: 1, entry, quiet: true });
+    await pool.start();
+    const internals = pool as unknown as PoolInternals;
+
+    try {
+      await pool.place("slowpoke", { module: slowModule, actor: "Slow" });
+
+      // A reply for a sequence nothing awaits is a no-op; a reply for
+      // a live order from the wrong worker must not settle it either.
+      internals.onMessage(1, { kind: "controlled", seq: 999, error: null });
+
+      const restarting = pool.restartPlaced("slowpoke");
+      const seq = ((pool as unknown as { _nextSeq: number })._nextSeq - 1) as number;
+      internals.onMessage(99, { kind: "controlled", seq, error: null });
+
+      // The genuine reply still lands: the slow rebirth completes.
+      await expect(restarting).resolves.toBeUndefined();
+    } finally {
+      await pool.stop();
+      await system.stop();
+    }
+  }, 30_000);
+
+  it("settles a failing restart with the worker's own error", async () => {
+    const system = new ActorSystem("orders", { logger: discardLogger });
+    await system.start();
+    const pool = new WorkerPool(system, new MessageRegistry(), { size: 1, entry, quiet: true });
+    await pool.start();
+
+    try {
+      // The phoenix refuses every rebirth: the restart failure crosses
+      // the control port and settles the order, message intact.
+      await pool.place("phoenix-x", { module: phoenixModule, actor: "Phoenix" });
+      await expect(pool.restartPlaced("phoenix-x")).rejects.toThrow(
+        "actor phoenix-x failed to initialize",
+      );
+    } finally {
+      await pool.stop();
+      await system.stop();
+    }
+  }, 30_000);
+
+  it("rejects in-flight lifecycle orders when the owning worker dies, sparing the others", async () => {
+    const system = new ActorSystem("orders", { logger: discardLogger });
+    await system.start();
+    const pool = new WorkerPool(system, new MessageRegistry(), { size: 2, entry, quiet: true });
+    await pool.start();
+
+    try {
+      // Two placements land on the two workers (least-occupied policy).
+      await pool.place("stuck", { module: blockStopModule, actor: "BlockStop" });
+      await pool.place("slowpoke", { module: slowModule, actor: "Slow" });
+      const stuckOwner = pool.ownerOf("stuck") as number;
+      expect(pool.ownerOf("slowpoke")).not.toBe(stuckOwner);
+
+      // The stop can never finish gracefully (postStop parks forever);
+      // terminating the owner settles that order with the death, while
+      // the other worker's slow rebirth still completes.
+      const stopping = pool.stopPlaced("stuck");
+      const restarting = pool.restartPlaced("slowpoke");
+      const worker = (
+        pool as unknown as { _workers: Map<number, { terminate(): void }> }
+      )._workers.get(stuckOwner) as { terminate(): void };
+      worker.terminate();
+
+      await expect(stopping).rejects.toBe(ErrDead);
+      await expect(restarting).resolves.toBeUndefined();
+    } finally {
+      await pool.stop();
+      await system.stop();
+    }
   }, 30_000);
 
   it("treats control traffic for unknown workers as a no-op", async () => {

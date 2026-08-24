@@ -34,7 +34,18 @@
  *
  * @internal
  */
-export type EnvelopeKind = "tell" | "ask" | "reply" | "watch" | "unwatch";
+export const ENVELOPE_TELL: "tell" = "tell";
+export const ENVELOPE_ASK: "ask" = "ask";
+export const ENVELOPE_REPLY: "reply" = "reply";
+export const ENVELOPE_WATCH: "watch" = "watch";
+export const ENVELOPE_UNWATCH: "unwatch" = "unwatch";
+
+export type EnvelopeKind =
+  | typeof ENVELOPE_TELL
+  | typeof ENVELOPE_ASK
+  | typeof ENVELOPE_REPLY
+  | typeof ENVELOPE_WATCH
+  | typeof ENVELOPE_UNWATCH;
 
 /**
  * One message payload in wire form: the registered type id and the

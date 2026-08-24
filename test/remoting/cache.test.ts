@@ -36,6 +36,7 @@ import {
 } from "../../src/net/envelope";
 import type { Session } from "../../src/net/session";
 import { ByteWriter, encodeValue } from "../../src/net/values";
+import { type Path, parsePath } from "../../src/path";
 import type { PID } from "../../src/pid";
 import type { ReceiveContext } from "../../src/receive.context";
 import { registerMessage } from "../../src/registration";
@@ -447,6 +448,39 @@ describe("the sender cache bound", () => {
       // watcher through the ordinary delivery path.
       await subject.shutdown();
       await until("the Terminated", (): boolean => collector.senders.length >= 1);
+    } finally {
+      await system.stop();
+    }
+  });
+
+  it("hands the isolate transport stable foreign handles from the same cache", async () => {
+    const system: ActorSystem = remoteSystem("cachy");
+    await system.start();
+
+    try {
+      const seam: Remoting = seamOf(system);
+      const local: Path = parsePath(`nodeakt://cachy@127.0.0.1:${system.port()}/resident`, "1");
+      const far: Path = parsePath("nodeakt://elsewhere@127.0.0.1:1/caller", "7");
+
+      // A path of this very node is not the seam's to answer; a
+      // foreign path resolves to one stable handle, cache-first, so
+      // the identity the port transport hands out matches what the
+      // inbound side registered.
+      expect(seam.handleFor(local)).toBeUndefined();
+      const first: PID = seam.handleFor(far) as PID;
+      expect(first).toBeDefined();
+      expect(seam.handleFor(far)).toBe(first);
+
+      // At the cap the hit refreshes recency, exactly as an inbound
+      // envelope's hit does, so the active handle outlives the next
+      // insert's eviction pass instead of aging out as the oldest.
+      for (let i: number = 0; i < SENDER_CACHE_SIZE - 1; i++) {
+        seam.handleFor(parsePath(`nodeakt://elsewhere@127.0.0.1:1/churn-${i}`, ""));
+      }
+
+      expect(seam.handleFor(far)).toBe(first);
+      seam.handleFor(parsePath("nodeakt://elsewhere@127.0.0.1:1/overflow", ""));
+      expect(seam.handleFor(far)).toBe(first);
     } finally {
       await system.stop();
     }

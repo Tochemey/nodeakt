@@ -87,7 +87,7 @@ const charger = await system.remoteSpawn("10.0.0.9", 5100, "charger", Props.crea
 - Constructor arguments cross the wire codec, and the `reentrancy` spawn option travels; live-object options (`mailbox`, `supervisor`, `passivationStrategy`) are refused, as in every `Props` spawn.
 - A spawn failure on the far node (the name already held, `preStart` throwing) settles the returned promise with that failure.
 
-`remoteReSpawn` and `remoteStop` manage the actor afterwards by name. An actor the remote node placed on one of its worker isolates cannot be respawned or stopped remotely yet; those calls reject with an explanatory error.
+`remoteReSpawn` and `remoteStop` manage the actor afterwards by name, wherever the remote node runs it: an actor placed on one of its worker isolates restarts or stops through that node's own control plane, exactly as one on its main isolate does.
 
 ## Death watch across nodes
 
@@ -118,6 +118,5 @@ The failure taxonomy is uniform with the local one: synchronous refusals return,
 
 ## Limits
 
-- Inbound remote messages reach actors on the receiving node's **main isolate**. Combining remoting with worker placement on the same node works for outbound traffic, but a worker-placed actor is not yet reachable from other nodes, and cannot be remotely respawned or stopped.
 - No authorization: [TLS](tls.md) encrypts and verifies certificates, but nothing checks what a verified peer may do, and a sender's identity inside an envelope is self-declared. Trusted networks only, as above.
 - Clustering (discovery, membership, sharding) does not exist yet; remoting is point to point, addressed by `host:port`.

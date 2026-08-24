@@ -267,11 +267,13 @@ describe("remoteStop", () => {
     });
   });
 
-  it("settles a stop of an actor another isolate owns with its refusal", async () => {
+  it("routes stop and respawn of an actor another isolate owns through the placement", async () => {
     await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
       // A placement stub standing in for a booted pool: the name
-      // resolves to a handle owned by another isolate, whose shutdown
-      // through a handle is refused.
+      // resolves to a handle owned by another isolate, and lifecycle
+      // orders land on the placement's control plane instead of a
+      // refusal.
+      const orders: string[] = [];
       const route: IsolateRoute = {
         workerId: 9,
         tell: (): Error | null => null,
@@ -291,20 +293,47 @@ describe("remoteStop", () => {
 
           return routedPid(b, newPath("placed", "beta", b.host(), b.port(), undefined, ""), route);
         },
+        respawn: (name: string): Promise<void> => {
+          orders.push(`respawn:${name}`);
+          return Promise.resolve();
+        },
+        stopActor: (name: string): Promise<void> => {
+          orders.push(`stop:${name}`);
+          return Promise.resolve();
+        },
         stop: (): Promise<void> => Promise.resolve(),
       });
 
-      const rejection: Promise<void> = a.remoteStop(b.host(), b.port(), "placed");
-      await expect(rejection).rejects.toSatisfy((err: unknown): boolean => {
-        return err instanceof Error && err.message.includes("another isolate");
+      const respawned: PID = await a.remoteReSpawn(b.host(), b.port(), "placed");
+      expect(respawned.path().name()).toBe("placed");
+
+      await expect(a.remoteStop(b.host(), b.port(), "placed")).resolves.toBeUndefined();
+      expect(orders).toEqual(["respawn:placed", "stop:placed"]);
+
+      // A placement that cannot perform the order settles the ask with
+      // its failure instead of stranding it.
+      b.attachPlacement({
+        claim: (): Promise<Error | null> => Promise.resolve(null),
+        free: (): void => {},
+        place: (): Promise<PID> => Promise.reject(ErrDead),
+        find: (name: string): PID | undefined => {
+          if (name !== "placed") {
+            return undefined;
+          }
+
+          return routedPid(b, newPath("placed", "beta", b.host(), b.port(), undefined, ""), route);
+        },
+        respawn: (): Promise<void> => Promise.reject(new Error("worker went away")),
+        stopActor: (): Promise<void> => Promise.reject(new Error("worker went away")),
+        stop: (): Promise<void> => Promise.resolve(),
       });
 
-      // A respawn meets the same honest refusal: the actor lives, but
-      // lifecycle control cannot reach its isolate yet.
-      const respawn: Promise<PID> = a.remoteReSpawn(b.host(), b.port(), "placed");
-      await expect(respawn).rejects.toSatisfy((err: unknown): boolean => {
-        return err instanceof Error && err.message.includes("another isolate");
-      });
+      await expect(a.remoteReSpawn(b.host(), b.port(), "placed")).rejects.toSatisfy(
+        (err: unknown): boolean => err instanceof Error && err.message.includes("worker went away"),
+      );
+      await expect(a.remoteStop(b.host(), b.port(), "placed")).rejects.toSatisfy(
+        (err: unknown): boolean => err instanceof Error && err.message.includes("worker went away"),
+      );
     });
   });
 });

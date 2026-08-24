@@ -60,6 +60,13 @@ export interface WorkerBootData {
   readonly workerId: number;
   readonly systemName: string;
 
+  /** The node's advertised host and port, adopted by the facade so
+   * every isolate mints and resolves the same canonical paths: on a
+   * remote-enabled system the pool boots after the endpoint bound, so
+   * the address here is the one the node's peers dial. */
+  readonly host: string;
+  readonly port: number;
+
   /** Silences the worker facade's logger; benches and tests set it. */
   readonly quiet: boolean;
 
@@ -70,37 +77,70 @@ export interface WorkerBootData {
   readonly setup: string | null;
 }
 
+/** The control-message kinds the main isolate sends a worker; the one
+ * place each discriminant is spelled, so every construction and
+ * comparison names the constant instead of the literal. */
+export const CONTROL_CONNECT: "connect" = "connect";
+export const CONTROL_DISCONNECT: "disconnect" = "disconnect";
+export const CONTROL_SPAWN: "spawn" = "spawn";
+export const CONTROL_NAME_ADDED: "name-added" = "name-added";
+export const CONTROL_NAME_FREED: "name-freed" = "name-freed";
+export const CONTROL_CLAIMED: "claimed" = "claimed";
+export const CONTROL_PLACED: "placed" = "placed";
+export const CONTROL_RESTART: "restart" = "restart";
+export const CONTROL_STOP_ACTOR: "stop-actor" = "stop-actor";
+export const CONTROL_STOP: "stop" = "stop";
+
+/** The worker-message kinds a worker sends the main isolate back. */
+export const WORKER_READY: "ready" = "ready";
+export const WORKER_SPAWNED: "spawned" = "spawned";
+export const WORKER_SPAWN_FAILED: "spawn-failed" = "spawn-failed";
+export const WORKER_CLAIM: "claim" = "claim";
+export const WORKER_PLACE: "place" = "place";
+export const WORKER_ACTOR_STOPPED: "actor-stopped" = "actor-stopped";
+export const WORKER_CONTROLLED: "controlled" = "controlled";
+export const WORKER_DEADLETTER: "deadletter" = "deadletter";
+export const WORKER_STOPPED: "stopped" = "stopped";
+
 /**
  * Control-plane traffic from the main isolate to a worker, on the
  * worker's parent port. Application messages never travel here; they
  * ride the mesh. `name-added` and `name-freed` replicate the control
  * plane's name table into every worker, which is what lets a facade's
  * `actorOf` answer synchronously; `claimed` and `placed` answer a
- * facade's own claim and place requests.
+ * facade's own claim and place requests. `restart` and `stop-actor`
+ * drive a placed actor's lifecycle on the control plane's order,
+ * answered by `controlled`.
  *
  * @internal
  */
 export type ControlMessage =
-  | { readonly kind: "connect"; readonly workerId: number; readonly port: MessagePort }
-  | { readonly kind: "disconnect"; readonly workerId: number }
+  | { readonly kind: typeof CONTROL_CONNECT; readonly workerId: number; readonly port: MessagePort }
+  | { readonly kind: typeof CONTROL_DISCONNECT; readonly workerId: number }
   | {
-      readonly kind: "spawn";
+      readonly kind: typeof CONTROL_SPAWN;
       readonly seq: number;
       readonly name: string;
       readonly recipe: ActorRecipe;
     }
-  | { readonly kind: "name-added"; readonly name: string; readonly workerId: number }
-  | { readonly kind: "name-freed"; readonly name: string }
-  | { readonly kind: "claimed"; readonly seq: number; readonly error: WireError | null }
+  | { readonly kind: typeof CONTROL_NAME_ADDED; readonly name: string; readonly workerId: number }
+  | { readonly kind: typeof CONTROL_NAME_FREED; readonly name: string }
   | {
-      readonly kind: "placed";
+      readonly kind: typeof CONTROL_CLAIMED;
+      readonly seq: number;
+      readonly error: WireError | null;
+    }
+  | {
+      readonly kind: typeof CONTROL_PLACED;
       readonly seq: number;
       readonly error: WireError | null;
       readonly workerId: number;
       readonly path: string;
       readonly uid: string;
     }
-  | { readonly kind: "stop" };
+  | { readonly kind: typeof CONTROL_RESTART; readonly seq: number; readonly name: string }
+  | { readonly kind: typeof CONTROL_STOP_ACTOR; readonly seq: number; readonly name: string }
+  | { readonly kind: typeof CONTROL_STOP };
 
 /**
  * Control-plane traffic from a worker back to the main isolate.
@@ -112,22 +152,32 @@ export type ControlMessage =
  * @internal
  */
 export type WorkerMessage =
-  | { readonly kind: "ready" }
-  | { readonly kind: "spawned"; readonly seq: number; readonly path: string; readonly uid: string }
-  | { readonly kind: "spawn-failed"; readonly seq: number; readonly error: WireError }
-  | { readonly kind: "claim"; readonly seq: number; readonly name: string }
+  | { readonly kind: typeof WORKER_READY }
   | {
-      readonly kind: "place";
+      readonly kind: typeof WORKER_SPAWNED;
+      readonly seq: number;
+      readonly path: string;
+      readonly uid: string;
+    }
+  | { readonly kind: typeof WORKER_SPAWN_FAILED; readonly seq: number; readonly error: WireError }
+  | { readonly kind: typeof WORKER_CLAIM; readonly seq: number; readonly name: string }
+  | {
+      readonly kind: typeof WORKER_PLACE;
       readonly seq: number;
       readonly name: string;
       readonly recipe: ActorRecipe;
     }
-  | { readonly kind: "actor-stopped"; readonly name: string }
+  | { readonly kind: typeof WORKER_ACTOR_STOPPED; readonly name: string }
   | {
-      readonly kind: "deadletter";
+      readonly kind: typeof WORKER_CONTROLLED;
+      readonly seq: number;
+      readonly error: WireError | null;
+    }
+  | {
+      readonly kind: typeof WORKER_DEADLETTER;
       readonly sender: string | undefined;
       readonly receiver: string;
       readonly message: WireMessage;
       readonly reason: string;
     }
-  | { readonly kind: "stopped" };
+  | { readonly kind: typeof WORKER_STOPPED };
