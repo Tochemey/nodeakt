@@ -171,8 +171,12 @@ function deliver(pipe: Pipe, result: unknown): void {
   // the target may have stopped or faulted in the meantime, so gate on
   // its liveness here rather than leaving the send path to drop the
   // result silently. In a single turn nothing runs between this check
-  // and the send, so a passing check still holds at delivery.
-  if (!to.isRunning()) {
+  // and the send, so a passing check still holds at delivery. A routed
+  // handle reports no local liveness at all: its actor lives on another
+  // isolate or node, so the result goes through its route instead, and
+  // an undeliverable delivery becomes a dead letter on the side that
+  // discovered it.
+  if (!to.isRouted() && !to.isRunning()) {
     undeliverable(pipe, result, ErrDead);
     return;
   }

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Runs the transport smoke (test/smoke/net.smoke.ts) under each
-# supported runtime, straight from source: the transport is internal
-# and not part of the published package yet, so unlike run.sh there is
-# nothing to pack.
+# Runs the transport smoke (test/smoke/net.smoke.ts) and the remoting
+# smoke (test/smoke/remoting.smoke.ts) under each supported runtime,
+# straight from source: both layers live in src/, so unlike run.sh
+# there is nothing to pack.
 #
 #   test/smoke/net.sh          # every runtime found on PATH
 #   test/smoke/net.sh node     # just one of node | bun | deno
@@ -11,6 +11,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 smoke="$here/net.smoke.ts"
+remoting="$here/remoting.smoke.ts"
 only="${1:-}"
 
 ran=0
@@ -29,7 +30,7 @@ run_one() {
   fi
 
   ran=$((ran + 1))
-  if (cd "$root" && "$@" "$smoke"); then
+  if (cd "$root" && "$@" "$smoke" && "$@" "$remoting"); then
     :
   else
     failed=$((failed + 1))

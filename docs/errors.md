@@ -35,7 +35,7 @@ if (err === ErrDead || err === ErrMailboxFull) {
 | `ErrPipeTimeout` | A [pipe](actor/pipeto.md)'s timeout expired before its task settled. The reason on the resulting dead letter; nothing is delivered. |
 | `ErrReentrancyDisabled` | [`ctx.request`](actor/reentrancy.md) without a `reentrancy` config, or with mode `off`. |
 | `ErrReentrancyInFlightLimit` | A [request](actor/reentrancy.md) past the actor's `maxInFlight` cap. |
-| `ErrRemotingDisabled` | A remote operation such as `remoteLookup` on a [system](actor-system/index.md) created without a `remote` configuration. |
+| `ErrRemotingDisabled` | A remote operation such as `remoteLookup` on a system created without a `remote` configuration. See [Remoting](remoting/index.md). |
 | `ErrRequestCanceled` | A [request](actor/reentrancy.md) completed by `cancel()`. |
 | `ErrRequestTimeout` | An [`ask`](actor/messaging.md) or [`request`](actor/reentrancy.md) unanswered within one to two timeout periods. |
 | `ErrReservedName` | A name starting with the reserved prefix `NodeAkt`. |

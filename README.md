@@ -12,7 +12,7 @@
 
 ## Overview
 
-NodeAkt is an actor runtime for Node.js, Bun, and Deno. An actor owns private state and a mailbox. The runtime delivers one message at a time, so that state needs no lock. Actors talk only by sending messages.
+NodeAkt is an actor runtime for Node.js, Bun, and Deno. An actor owns private state and a mailbox. The runtime delivers one message at a time, so that state needs no lock. Actors talk only by sending messages. The whole runtime, the multi-core layer and the network protocol included, has **zero dependencies**: installing it brings exactly one package.
 
 Requires Node.js 22+, Bun 1.3+, or Deno 2+. ESM only (`import`, not `require`). Every runtime is exercised in CI, multi-core placement included.
 
@@ -32,6 +32,7 @@ Requires Node.js 22+, Bun 1.3+, or Deno 2+. ESM only (`import`, not `require`). 
 - **Event stream.** Subscribe to what the runtime observes: dead letters and actor lifecycle events such as started, stopped, restarted, and passivated.
 - **Logging.** Structured JSON logging out of the box, or silence the runtime entirely.
 - **Multi-core.** Spawn actors across every machine core without touching workers or threads yourself. An actor's address works the same locally and across cores, on Node.js, Bun, and Deno alike.
+- **Remoting.** Look up, spawn, watch, and message actors on another machine over TCP with the same PID API: tell, ask, request, forward, pipeTo, and death watch all cross nodes, with typed messages and identical failure semantics.
 
 The full API is in [Documentation](#documentation). What is not built yet is under [Not there yet](#not-there-yet).
 
@@ -63,9 +64,9 @@ nodeakt is pre-1.0. The API is settling and minor versions may still move it.
 
 ## Not there yet
 
-nodeakt runs everything on one machine. Multi-core uses worker threads behind one logical actor system. No message ever crosses a network. The following do not exist yet:
+Remoting connects nodes point to point over plaintext TCP on trusted networks. The larger distribution features on top of it do not exist yet:
 
-- **Remoting and clustering.** No transport to another machine, no discovery, no cluster sharding. Remoting is planned as its own layer that reuses the existing envelope semantics and type registry with a wire codec of its own.
+- **Clustering.** No discovery, no membership, no cluster sharding; nodes are addressed explicitly by host and port. Also not yet: TLS and authentication on the remoting transport, and remote reach into worker-placed actors.
 - **Persistence.** Actor state is in-memory only. There is no event sourcing or durable state.
 - **Virtual actors (grains).** Actors are explicitly spawned and addressed. There is no on-demand activation model.
 - **Cron schedules.** `schedule` and `scheduleOnce` cover delayed and repeating sends; cron-expression schedules do not exist yet.

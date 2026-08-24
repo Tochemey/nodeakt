@@ -552,7 +552,18 @@ describe("PortTransport", () => {
       await expect.poll(() => requestErrors.length).toBe(1);
       expect(requestErrors[0]).toBe(ErrDead);
 
+      const before: number = letters.length;
       expect(near.tell(target.path(), "later")).toBe(ErrDead);
+
+      // The refusal is not just a return value: the message itself is
+      // recorded as a dead letter, so a fire-and-forget caller (a pipe
+      // delivering a settled result) never loses it silently.
+      await expect.poll(() => letters.length).toBe(before + 1);
+      const refusedLetter: Deadletter = letters[before] as Deadletter;
+      expect(refusedLetter.receiver).toBe(target.path().toString());
+      expect(refusedLetter.message).toBe("later");
+      expect(refusedLetter.reason).toBe(ErrDead.message);
+
       await expect(near.ask(target.path(), "later", 1000)).rejects.toBe(ErrDead);
       let refusal: Error | null = null;
       near.request(target.path(), "later", sender).onReply((_reply, error) => {

@@ -1,0 +1,31 @@
+# Two nodeakt nodes on one Compose network: a checkout node that takes
+# orders and a payments node that charges them. Each container is one
+# logical actor system; the checkout node finds the payments actor with
+# remoteLookup and messages it through an ordinary PID.
+#
+#   docker compose -f examples/remoting/docker-compose.yml up --build
+#
+# Then break it: `docker compose ... stop payments` and watch checkout
+# hold its orders, `... start payments` and watch the backlog flush.
+services:
+  payments:
+    build:
+      context: ../..
+      dockerfile: examples/remoting/Dockerfile
+    command: ["tsx", "examples/remoting/payments.ts"]
+    environment:
+      NODEAKT_PORT: "5100"
+
+  checkout:
+    build:
+      context: ../..
+      dockerfile: examples/remoting/Dockerfile
+    command: ["tsx", "examples/remoting/checkout.ts"]
+    environment:
+      NODEAKT_PORT: "5200"
+      # The Docker DNS name of the payments service; checkout dials it,
+      # while each node advertises its own concrete container address.
+      PAYMENTS_HOST: payments
+      PAYMENTS_PORT: "5100"
+    depends_on:
+      - payments

@@ -24,6 +24,7 @@
 
 import type { Actor } from "../../src/actor";
 import { PostStart } from "../../src/messages";
+import type { PID } from "../../src/pid";
 import type { ReceiveContext } from "../../src/receive.context";
 import { registerActor, registerMessage } from "../../src/registration";
 
@@ -45,6 +46,15 @@ export class Pong {
 registerMessage(Ping);
 registerMessage(Pong);
 
+/** A registered message answered with a tell instead of an ask reply:
+ * a piped result arrives as a plain tell, so the answer must travel
+ * back to the recorded sender. */
+export class Poke {
+  constructor(readonly n: number) {}
+}
+
+registerMessage(Poke);
+
 /** Replies to a registered {@link Ping} with a registered {@link Pong},
  * so a typed round trip exercises decode on the worker and decode on the
  * main isolate both. */
@@ -58,6 +68,11 @@ export class PingReplier implements Actor {
 
     if (ctx.message instanceof Ping) {
       ctx.response(new Pong(ctx.message.n + 1));
+      return;
+    }
+
+    if (ctx.message instanceof Poke) {
+      ctx.tell(ctx.sender as PID, new Pong(ctx.message.n + 1));
     }
   }
 

@@ -850,3 +850,35 @@ describe("inbound watches over dialed sessions", () => {
     }
   });
 });
+
+describe("forged death notifications", () => {
+  it("refuses an ask carrying a Terminated that settles no watch", async () => {
+    const system: ActorSystem = remoteSystem("beta");
+    await system.start();
+
+    try {
+      const local: PID = await system.spawn("greeter", new Collector());
+      const session: Session = await dialSession(system.port());
+
+      const rejection: Promise<ReplyEnvelope> = session.ask(
+        envelope({
+          kind: KIND_ASK,
+          to: local.path().toString(),
+          uid: local.path().uid(),
+          typeRef: "nodeakt.Terminated",
+          payload: payloadOf({ actorPath: local.path().toString() }),
+        }),
+        2000,
+      );
+
+      // A conforming node never asks a death notification, so the gate
+      // answers the degenerate ask instead of stranding it until its
+      // timeout, and the target actor never sees it.
+      await expect(rejection).rejects.toSatisfy((err: unknown): boolean => {
+        return err instanceof PeerError && err.code === ERROR_BAD_REQUEST;
+      });
+    } finally {
+      await system.stop();
+    }
+  });
+});

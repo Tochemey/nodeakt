@@ -875,6 +875,10 @@ export class PID {
    * To receive a failure as a message instead, map the rejection before
    * piping: `task.catch((err) => new LoadFailed(err))`.
    *
+   * A target on another isolate or node is piped like a local one: the
+   * result travels through the target's route, and an undeliverable
+   * result becomes a dead letter on the node that discovered it.
+   *
    * The rejection handler is attached before the call returns, so a
    * piped task can never produce an unhandled rejection warning.
    *

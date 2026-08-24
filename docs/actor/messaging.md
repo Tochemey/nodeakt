@@ -52,7 +52,7 @@ From `receive`, `ctx.tell(to, message)` throws that same error.
 
 A rejected user message is also published as a [dead letter](../actor-system/events.md).
 
-Cross-isolate `tell` reports transport accept, not mailbox accept. Posting the envelope returns `null`. A full or missing mailbox on the far side becomes a dead letter there. Encode or clone failures return their error immediately. See [Multi-core](../multi-core/index.md).
+Cross-isolate `tell` reports transport accept, not mailbox accept. Posting the envelope returns `null`. A full or missing mailbox on the far side becomes a dead letter there. Encode or clone failures return their error immediately. See [Multi-core](../multi-core/index.md). The same contract holds across machines: a `tell` to a remote PID reports what the network transport accepted, and an undeliverable envelope becomes a dead letter on the node that discovered it. See [Remoting](../remoting/index.md).
 
 ## Ask
 
@@ -78,6 +78,8 @@ The first `response` wins; later calls are ignored. `response` is a no-op when t
 
 `ctx.ask` forwards to `PID.ask` and rejects with the same errors.
 
+An ask to a remote PID crosses the network and settles with the same failures, sentinel identity preserved; see [Remoting](../remoting/index.md#failures).
+
 ## Request
 
 Non-parking ask. Requires the actor to be spawned with [reentrancy](reentrancy.md). Returns a `RequestCall` immediately; register `onReply`. The continuation runs on this actor's own turn.
@@ -95,6 +97,8 @@ ctx.request(peer, new Get(), { timeout: 1_000 }).onReply((reply, error) => {
 ## Forward
 
 `ctx.forward(to)` sends the current message to `to` and keeps the original sender. The next behavior sees `ctx.sender` as whoever sent the message here, not this actor.
+
+The preserved sender survives any boundary: forwarding to an actor on another isolate or [another node](../remoting/index.md) carries the origin along, so the receiver can reply straight to it, wherever it lives.
 
 ## Unhandled
 

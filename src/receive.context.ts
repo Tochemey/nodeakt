@@ -263,6 +263,9 @@ export class ReceiveContext {
    * instead, map the rejection before piping:
    * `task.catch((err) => new LoadFailed(err))`.
    *
+   * A target on another isolate or node is piped like a local one: the
+   * result travels through the target's route.
+   *
    * Stopping this actor does not cancel the task: the promise is
    * already running, and its result is still delivered when it settles.
    *

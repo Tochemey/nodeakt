@@ -1,0 +1,6 @@
+# Allowlist: the build needs the framework source and this example,
+# nothing else from the repository (BuildKit reads this file because it
+# sits next to the Dockerfile it governs).
+*
+!src
+!examples/remoting

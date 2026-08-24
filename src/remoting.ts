@@ -672,9 +672,15 @@ export class Remoting {
     // dialed connection, so without the gate a lost unwatch or a
     // redelivered watch frame would notify an actor that unwatched,
     // and a connection sweep followed by the real stop would notify
-    // the same watcher twice.
+    // the same watcher twice. A gated tell drops silently; a gated ask
+    // is degenerate (no conforming node asks a death notification) and
+    // is answered, never stranded until its timeout.
     if (message instanceof Terminated) {
       if (!this._watches.delete(watchKey(envelope.to, message.actorPath))) {
+        if (correlation !== 0) {
+          session.replyError(correlation, this.badRequest("a death notification settles no ask"));
+        }
+
         return;
       }
     }

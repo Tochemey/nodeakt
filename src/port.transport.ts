@@ -217,10 +217,16 @@ export class PortTransport {
    * not delivery: an unresolvable path or a rejecting mailbox surfaces
    * as a dead letter on the receiving side. An encode or clone failure
    * returns its error, and the {@link ErrDead} sentinel reports a
-   * closed transport or a stopped system.
+   * closed transport or a stopped system, the refused message recorded
+   * as a dead letter.
    */
   tell(to: Path, message: unknown, sender?: PID): Error | null {
     if (this.refused()) {
+      // A caller that checks the return sees the refusal, but a caller
+      // that fires and forgets (a pipe delivering a task result) must
+      // never lose a message silently, so the refusal is also a dead
+      // letter, exactly as the network route records it.
+      this._system.toDeadletter(sender?.path().toString(), to.toString(), message, ErrDead);
       return ErrDead;
     }
 
