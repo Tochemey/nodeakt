@@ -117,6 +117,15 @@ export async function systemPlacement(
       return routedPid(system, path, route);
     },
 
+    routeOf(name) {
+      const workerId = pool.ownerOf(name);
+      if (workerId === undefined || workerId === mainWorkerId) {
+        return undefined;
+      }
+
+      return pool.mesh().route(workerId) as IsolateRoute;
+    },
+
     respawn: (name) => pool.restartPlaced(name),
 
     stopActor: (name) => pool.stopPlaced(name),

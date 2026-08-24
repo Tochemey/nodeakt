@@ -34,6 +34,7 @@ import type { EventStream } from "../src/eventstream";
 import type { Logger } from "../src/logger";
 import { Mesh } from "../src/mesh";
 import { MessageRegistry } from "../src/message.registry";
+import { Deadletter } from "../src/messages";
 import { parsePath } from "../src/path";
 import type { PID } from "../src/pid";
 import { Props } from "../src/props";
@@ -242,6 +243,20 @@ describe("WorkerRuntime", () => {
     }
   });
 
+  it("answers placed routes from the facade's replicated table", async () => {
+    // The seam exists on every isolate; only ownership elsewhere in
+    // the pool resolves to a route, mirroring findName.
+    expect(facade.placedRouteOf("nowhere")).toBeUndefined();
+
+    post({ kind: "name-added", name: "afar", workerId: 2 });
+    await expect.poll(() => facade.placedRouteOf("afar") !== undefined).toBe(true);
+
+    post({ kind: "name-added", name: "mine", workerId: 1 });
+    post({ kind: "name-added", name: "sentinel", workerId: 2 });
+    await expect.poll(() => facade.placedRouteOf("sentinel") !== undefined).toBe(true);
+    expect(facade.placedRouteOf("mine")).toBeUndefined();
+  });
+
   it("refuses placed lifecycle orders through the facade's own placement", async () => {
     // Lifecycle control of placed actors enters through the main
     // isolate alone; a facade ordering it is a programming error.
@@ -260,6 +275,69 @@ describe("WorkerRuntime", () => {
     await expect(mainSystem.stopPlaced("anything")).resolves.toBeUndefined();
   });
 
+  it("routes an envelope naming another node's path onward to the main isolate", async () => {
+    const channel = new MessageChannel();
+    mainMesh.connect(1, channel.port1);
+    post({ kind: "connect", workerId: 0, port: channel.port2 }, [channel.port2]);
+
+    const letters: Deadletter[] = [];
+    mainSystem.subscribe((event) => {
+      if (event instanceof Deadletter) {
+        letters.push(event);
+      }
+    });
+
+    // The facade holds nothing at a foreign node's path and is not the
+    // node's network edge: it hands the envelope to the main isolate,
+    // whose remoting-less system records the dead letter, which is the
+    // proof the hop crossed back instead of dying on the facade.
+    const foreign = parsePath("nodeakt://other@10.9.9.9:7/replyTo");
+    expect(mainMesh.tell(1, foreign, "wandering")).toBeNull();
+
+    // A path differing from this node's only by port is still another
+    // node's, and takes the same hop.
+    const samePortless = parsePath(`nodeakt://sys@${facade.host()}:9/replyToo`);
+    expect(mainMesh.tell(1, samePortless, "drifting")).toBeNull();
+
+    await expect
+      .poll(() =>
+        letters.some(
+          (letter) => letter.receiver.includes("replyTo") && letter.message === "wandering",
+        ),
+      )
+      .toBe(true);
+    await expect
+      .poll(() => letters.some((letter) => letter.receiver.includes("replyToo")))
+      .toBe(true);
+    expect(received.some((m) => m.kind === "deadletter")).toBe(false);
+
+    // A path of this very node is not the resolver's to route: an
+    // unknown local name dead-letters on the facade, forwarded to the
+    // control port like every facade loss.
+    const ghost = parsePath(`nodeakt://sys@${facade.host()}:${facade.port()}/ghostly`);
+    expect(mainMesh.tell(1, ghost, "homeless")).toBeNull();
+    await receivedWhere((m) => m.kind === "deadletter" && m.receiver.includes("ghostly"));
+  });
+
+  it("dead-letters a foreign path while the main route is not wired", async () => {
+    // The facade is connected only to a sibling worker: with no route
+    // to main yet, a foreign path has nowhere to go and dead-letters
+    // here, forwarded to the control port like every facade loss.
+    const sibling = new Mesh(mainSystem, new MessageRegistry(), 2);
+    const channel = new MessageChannel();
+    sibling.connect(1, channel.port1);
+    post({ kind: "connect", workerId: 2, port: channel.port2 }, [channel.port2]);
+
+    try {
+      const foreign = parsePath("nodeakt://other@10.9.9.9:7/replyTo");
+      expect(sibling.tell(1, foreign, "stranded")).toBeNull();
+
+      await receivedWhere((m) => m.kind === "deadletter" && m.receiver.includes("replyTo"));
+    } finally {
+      sibling.close();
+    }
+  });
+
   it("adopts the node's advertised address before starting", async () => {
     const adopted = new ActorSystem("sys", { logger: discardLogger });
     adopted.adoptAddress("10.1.2.3", 4567);
@@ -273,6 +351,9 @@ describe("WorkerRuntime", () => {
       } as Actor);
       expect(pid.path().host()).toBe("10.1.2.3");
       expect(pid.path().port()).toBe(4567);
+
+      // Adoption after start would split the path space; it refuses.
+      expect(() => adopted.adoptAddress("10.9.9.9", 1)).toThrow("running system");
     } finally {
       await adopted.stop();
     }

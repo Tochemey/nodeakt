@@ -29,7 +29,7 @@ import type { Actor } from "../../src/actor";
 import { ActorSystem } from "../../src/actor.system";
 import { discardLogger } from "../../src/discard.logger";
 import { ErrRequestTimeout } from "../../src/errors";
-import { PostStart, Terminated } from "../../src/messages";
+import { Deadletter, PostStart, Terminated } from "../../src/messages";
 import type { PID } from "../../src/pid";
 import { Props } from "../../src/props";
 import type { ReceiveContext } from "../../src/receive.context";
@@ -53,6 +53,7 @@ const registeredModule = new URL("../fixtures/registered.actor.mjs", import.meta
 const stoppingModule = new URL("../fixtures/stopping.actor.mjs", import.meta.url).href;
 const quittingModule = new URL("../fixtures/quitting.actor.mjs", import.meta.url).href;
 const countingModule = new URL("../fixtures/counting.actor.mjs", import.meta.url).href;
+const deepModule = new URL("../fixtures/deep.family.actor.mjs", import.meta.url).href;
 
 // The classes only need to exist as registration targets; the workers
 // construct their own from the fixture modules.
@@ -86,6 +87,29 @@ class Counting implements Actor {
   preStart(): void {}
 
   receive(): void {}
+
+  postStop(): void {}
+}
+
+class DeepParent implements Actor {
+  preStart(): void {}
+
+  receive(): void {}
+
+  postStop(): void {}
+}
+
+/** Records every plain delivery with its sender. */
+class SenderRecorder implements Actor {
+  readonly senders: PID[] = [];
+
+  preStart(): void {}
+
+  receive(ctx: ReceiveContext): void {
+    if (ctx.message === "hi-from-junior") {
+      this.senders.push(ctx.sender as PID);
+    }
+  }
 
   postStop(): void {}
 }
@@ -135,6 +159,7 @@ beforeAll(async () => {
   registerActor(Stopper, stoppingModule);
   registerActor(Quitter, quittingModule);
   registerActor(Counting, countingModule);
+  registerActor(DeepParent, deepModule);
 }, 120_000);
 
 afterAll(() => {
@@ -279,6 +304,51 @@ describe("remote reach into worker-placed actors", () => {
     }
   }, 60_000);
 
+  it("reaches a child of a placed actor: replies, asks, and death watch compose", async () => {
+    vi.stubEnv("NODEAKT_PARALLELISM", "2");
+    const a: ActorSystem = remoteSystem("alpha");
+    const b: ActorSystem = remoteSystem("beta");
+    await a.start();
+    await b.start();
+
+    try {
+      await b.spawn("deep", Props.create(DeepParent));
+      const parent: PID = (await a.remoteLookup(b.host(), b.port(), "deep")) as PID;
+
+      // The parent's child introduces itself to the requester, so A
+      // ends up holding the child's own handle: a sub-path of a placed
+      // actor, minted from the reply that crossed both hops back.
+      const greeter: SenderRecorder = new SenderRecorder();
+      const gpid: PID = await a.spawn("greeter", greeter);
+      gpid.tell(parent, "delegate");
+      await until("the child's introduction", (): boolean => greeter.senders.length >= 1);
+
+      const junior: PID = greeter.senders[0] as PID;
+      expect(junior.path().name()).toBe("junior");
+      expect(junior.path().parent()).toBeDefined();
+
+      // The child answers an ask addressed at its own sub-path, and a
+      // watch on it settles when the parent's remote stop takes the
+      // subtree down.
+      await expect(a.noSender().ask(junior, "who", 10_000)).resolves.toBe("junior-here");
+
+      const watching: Watcher = new Watcher();
+      const wpid: PID = await a.spawn("watcher", watching);
+      wpid.watch(junior);
+      await new Promise<void>((settle): void => {
+        setTimeout(settle, 200);
+      });
+
+      await a.remoteStop(b.host(), b.port(), "deep");
+      await until("the child's Terminated", (): boolean =>
+        watching.terminated.includes(junior.path().toString()),
+      );
+    } finally {
+      await a.stop();
+      await b.stop();
+    }
+  }, 60_000);
+
   it("delivers Terminated across both hops when the placed actor stops itself", async () => {
     vi.stubEnv("NODEAKT_PARALLELISM", "2");
     const a: ActorSystem = remoteSystem("alpha");
@@ -352,12 +422,27 @@ describe("remote reach into worker-placed actors", () => {
     try {
       await b.spawn("target", Props.create(Registered, "x"));
       expect((b.actorOf("target") as PID).isRouted()).toBe(true);
+      const stale: PID = (await a.remoteLookup(b.host(), b.port(), "target")) as PID;
 
       await a.remoteStop(b.host(), b.port(), "target");
       await until("the name to free", (): boolean => b.actorOf("target") === undefined);
 
       // Already stopped: the second order succeeds without an actor.
       await expect(a.remoteStop(b.host(), b.port(), "target")).resolves.toBeUndefined();
+
+      // A tell through the stale handle finds no placement any more
+      // and dead-letters on B, exactly as a stale main-tree handle
+      // would.
+      const letters: string[] = [];
+      b.subscribe((event: unknown): void => {
+        if (event instanceof Deadletter) {
+          letters.push(event.receiver);
+        }
+      });
+      expect(a.noSender().tell(stale, "late")).toBeNull();
+      await until("the stale tell to dead-letter", (): boolean =>
+        letters.some((receiver: string): boolean => receiver.includes("target")),
+      );
     } finally {
       await a.stop();
       await b.stop();
@@ -389,7 +474,6 @@ describe("remote reach into worker-placed actors", () => {
       await expect(a.noSender().ask(pid, "count", 10_000)).resolves.toBe(0);
 
       a.noSender().tell(pid, "bump");
-      await until("the fresh tally", (): boolean => true);
       await expect(a.noSender().ask(pid, "count", 10_000)).resolves.toBe(1);
 
       // A name nothing holds anywhere answers the not-found failure,

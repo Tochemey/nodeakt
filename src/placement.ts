@@ -22,6 +22,7 @@
  * SOFTWARE.
  */
 
+import type { IsolateRoute } from "./actor.ref";
 import type { PID } from "./pid";
 import type { Props } from "./props";
 import type { SpawnOptions } from "./spawn.options";
@@ -61,6 +62,12 @@ export interface Placement {
   /** Resolves a top-level name this isolate's own tree does not hold,
    * or undefined when no isolate holds it. */
   find(name: string): PID | undefined;
+
+  /** The route to the isolate owning the placed top-level name, or
+   * undefined when no other isolate holds it: what {@link find}'s
+   * handle would carry, without minting one, for callers that address
+   * a path of their own. */
+  routeOf(name: string): IsolateRoute | undefined;
 
   /**
    * Restarts the placed top-level actor in place on its owning

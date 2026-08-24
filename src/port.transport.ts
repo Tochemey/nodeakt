@@ -792,8 +792,8 @@ export class PortTransport {
    * death notification to a remote sender leaves the machine, worker
    * to main isolate here, main isolate to the far node on the wire. */
   private target(envelope: Envelope): PID | null {
-    const path = parsePath(envelope.to, envelope.uid);
-    const pid = this._system.resolvePath(path) ?? this._system.remoteHandle(path);
+    const path: Path = parsePath(envelope.to, envelope.uid);
+    const pid: PID | undefined = this._system.resolvePath(path) ?? this._system.remoteHandle(path);
     if (pid === undefined) {
       return null;
     }

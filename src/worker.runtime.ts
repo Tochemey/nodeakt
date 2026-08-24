@@ -27,12 +27,13 @@ import type { Actor } from "./actor";
 import type { IsolateRoute } from "./actor.ref";
 import type { ActorSystem } from "./actor.system";
 import { Codec, decodeError, encodeError } from "./codec";
+import { mainWorkerId } from "./control.plane";
 import type { WireMessage } from "./envelope";
 import { ActorNotFoundError, ErrDead } from "./errors";
 import { Mesh } from "./mesh";
 import type { MessageRegistry } from "./message.registry";
 import { Deadletter } from "./messages";
-import { addressOf, newPathAt, parsePath } from "./path";
+import { addressOf, newPathAt, type Path, parsePath } from "./path";
 import type { PID } from "./pid";
 import type { Props } from "./props";
 import {
@@ -208,6 +209,27 @@ export class WorkerRuntime {
     // The facade takes part in the pool through the control plane:
     // instance spawns claim their top-level names, Props spawns place
     // through it, and lookups consult the replicated name table.
+    // An envelope arriving here can name another node's path (a placed
+    // actor answering a remote sender through a second worker): the
+    // facade routes it to the main isolate, whose own fallback carries
+    // it over the wire; before main is wired, the mesh records the
+    // dead letter itself. Minted per use: this is a cold path, and an
+    // unbounded facade-side cache would trade a rare allocation for a
+    // growth vector.
+    system.attachForeignResolver((path: Path): PID | undefined => {
+      const local: boolean =
+        path.system() === system.name() &&
+        path.host() === system.host() &&
+        path.port() === system.port();
+      if (local) {
+        return undefined;
+      }
+
+      // route() is null only for this runtime's own worker id, which
+      // the main isolate's id never is.
+      return routedPid(system, path, this._mesh.route(mainWorkerId) as IsolateRoute);
+    });
+
     system.attachPlacement({
       claim: (name) => this.claimName(name),
       free: (name) => {
@@ -215,6 +237,16 @@ export class WorkerRuntime {
       },
       place: (name, props, options) => this.placeProps(name, props, options),
       find: (name) => this.findName(name),
+      routeOf: (name) => {
+        const owner = this._names.get(name);
+        if (owner === undefined || owner === this._workerId) {
+          return undefined;
+        }
+
+        // route() is null only for this runtime's own worker id, which
+        // the guard above already excluded.
+        return this._mesh.route(owner) as IsolateRoute;
+      },
       // Lifecycle control of placed actors enters through the main
       // isolate alone (remoting lives there); a facade cannot order it.
       respawn: (name) => Promise.reject(new ActorNotFoundError(name)),
@@ -319,7 +351,7 @@ export class WorkerRuntime {
    * name, or undefined: lifecycle orders act on the owned actor, never
    * on a routed handle the replicated name table could resolve. */
   private ownActor(name: string): PID | undefined {
-    const pid = this._system.actorOf(name);
+    const pid: PID | undefined = this._system.actorOf(name);
     if (pid === undefined || pid.isRouted()) {
       return undefined;
     }
@@ -332,7 +364,7 @@ export class WorkerRuntime {
    * hooks. A name this isolate does not own answers the not-found
    * failure, sentinel identity preserved on the far side. */
   private async restartActor(seq: number, name: string): Promise<void> {
-    const pid = this.ownActor(name);
+    const pid: PID | undefined = this.ownActor(name);
     if (pid === undefined) {
       this.post({ kind: WORKER_CONTROLLED, seq, error: encodeError(new ActorNotFoundError(name)) });
       return;
@@ -351,14 +383,22 @@ export class WorkerRuntime {
    * succeeds idempotently. The stop frees the name through the same
    * announcement every placed stop makes. */
   private async stopActor(seq: number, name: string): Promise<void> {
-    const pid = this.ownActor(name);
+    const pid: PID | undefined = this.ownActor(name);
     if (pid === undefined) {
       this.post({ kind: WORKER_CONTROLLED, seq, error: null });
       return;
     }
 
-    await pid.shutdown();
-    this.post({ kind: WORKER_CONTROLLED, seq, error: null });
+    try {
+      await pid.shutdown();
+      this.post({ kind: WORKER_CONTROLLED, seq, error: null });
+      /* v8 ignore start -- a graceful stop of an owned local actor does
+         not reject; the arm exists so a future refusal still answers
+         the order instead of stranding it. */
+    } catch (err) {
+      this.post({ kind: WORKER_CONTROLLED, seq, error: encodeError(err as Error) });
+    }
+    /* v8 ignore stop */
   }
 
   /** Claims a top-level name with the control plane; a name this

@@ -101,31 +101,35 @@ const deps = computed(() => frontmatter.value.deps as Item | undefined);
   padding-bottom: 8px;
 }
 
-.nk-wrap {
-  margin: 0 auto;
-  max-width: 1152px;
-  padding: 0 24px;
+/* Gutters live on the band, not the wrap — same pattern as VitePress
+   VPHero / VPFeatures, so cards share the hero's 1152px content edge. */
+.nk-band {
+  padding: 16px 24px 0;
 }
 
 @media (min-width: 640px) {
-  .nk-wrap {
-    padding: 0 48px;
+  .nk-band {
+    padding-left: 48px;
+    padding-right: 48px;
   }
 }
 
 @media (min-width: 960px) {
-  .nk-wrap {
-    padding: 0 64px;
+  .nk-band {
+    padding-left: 64px;
+    padding-right: 64px;
   }
 }
 
-.nk-band {
-  padding-top: 16px;
+.nk-wrap {
+  margin: 0 auto;
+  max-width: 1152px;
 }
 
 .nk-band--net {
   margin-top: 64px;
-  padding: 56px 0 8px;
+  padding-top: 56px;
+  padding-bottom: 8px;
   background: var(--vp-c-bg-alt);
 }
 

@@ -24,7 +24,7 @@
 
 import { availableParallelism } from "node:os";
 import type { Actor } from "./actor";
-import { ActorRef } from "./actor.ref";
+import { ActorRef, type IsolateRoute } from "./actor.ref";
 import type { ActorSystemOptions } from "./actor.system.options";
 import {
   DeadletterActor,
@@ -175,6 +175,10 @@ export class ActorSystem {
   /** The remoting layer once started, or null while remoting is disabled
    * or the system is stopped. */
   private _remoting: Remoting | null = null;
+
+  /** A worker facade's route for paths of other nodes; null on the
+   * main isolate, whose remoting seam serves them instead. */
+  private _foreignResolver: ((path: Path) => PID | undefined) | null = null;
 
   /**
    * Creates an actor system with the given name.
@@ -1093,21 +1097,54 @@ export class ActorSystem {
    * @internal
    */
   adoptAddress(host: string, port: number): void {
+    // Adoption after start would split the path space between paths
+    // already minted and paths to come; misuse must be loud.
+    if (this.isRunning()) {
+      throw new Error("an address cannot be adopted on a running system");
+    }
+
     this._address = { system: this._name, host, port };
   }
 
   /**
-   * The wire-backed handle of an actor on another node, or undefined
-   * when the path belongs to this node or the system has no remoting.
-   * Runtime plumbing for the isolate transport: an envelope arriving
-   * from a worker isolate can name a foreign path (a placed actor
-   * answering a remote sender), and this is the seam that carries it
-   * onward over the network.
+   * The handle that carries an envelope naming another node's path
+   * onward, or undefined when the path belongs to this node or nothing
+   * here can route it. Runtime plumbing for the isolate transport: an
+   * envelope arriving from a worker isolate can name a foreign path (a
+   * placed actor answering a remote sender). On the main isolate the
+   * remoting seam serves it; on a worker facade the attached resolver
+   * routes it to the main isolate, whose own fallback carries it over
+   * the wire, so the hop count is placement's concern and never the
+   * sender's.
    *
    * @internal
    */
   remoteHandle(path: Path): PID | undefined {
-    return this._remoting?.handleFor(path);
+    return this._remoting?.handleFor(path) ?? this._foreignResolver?.(path);
+  }
+
+  /**
+   * Hands a worker facade its foreign-path resolver: the worker
+   * runtime attaches one that routes another node's paths to the main
+   * isolate. Runtime plumbing; the main isolate resolves through its
+   * remoting seam instead and never attaches one.
+   *
+   * @internal
+   */
+  attachForeignResolver(resolver: (path: Path) => PID | undefined): void {
+    this._foreignResolver = resolver;
+  }
+
+  /**
+   * The route to the worker isolate owning a placed top-level name, or
+   * undefined when no placement holds it away from this isolate.
+   * Runtime plumbing for the remoting seam, which mints delivery
+   * handles around inbound paths itself and needs only the route.
+   *
+   * @internal
+   */
+  placedRouteOf(name: string): IsolateRoute | undefined {
+    return this._placement?.routeOf(name);
   }
 
   /**
@@ -1119,7 +1156,7 @@ export class ActorSystem {
    * @internal
    */
   respawnPlaced(name: string): Promise<void> {
-    const placement = this._placement;
+    const placement: Placement | null = this._placement;
     if (placement === null) {
       return Promise.reject(new ActorNotFoundError(name));
     }
@@ -1135,7 +1172,7 @@ export class ActorSystem {
    * @internal
    */
   stopPlaced(name: string): Promise<void> {
-    const placement = this._placement;
+    const placement: Placement | null = this._placement;
     if (placement === null) {
       return Promise.resolve();
     }

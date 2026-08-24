@@ -445,7 +445,7 @@ export class WorkerPool {
       | { kind: typeof CONTROL_RESTART; seq: number; name: string }
       | { kind: typeof CONTROL_STOP_ACTOR; seq: number; name: string },
   ): Promise<void> {
-    const reply = new Promise<void>((resolve, reject) => {
+    const reply: Promise<void> = new Promise<void>((resolve, reject) => {
       this._controls.set(order.seq, { workerId, resolve, reject });
     });
     this.send(workerId, order);
@@ -460,7 +460,7 @@ export class WorkerPool {
    * never reaches here), and with the restart failure otherwise.
    */
   restartPlaced(name: string): Promise<void> {
-    const workerId = this.ownerOf(name);
+    const workerId: number | undefined = this.ownerOf(name);
     if (workerId === undefined || workerId === mainWorkerId || !this._workers.has(workerId)) {
       return Promise.reject(new ActorNotFoundError(name));
     }
@@ -475,7 +475,7 @@ export class WorkerPool {
    * announcement.
    */
   stopPlaced(name: string): Promise<void> {
-    const workerId = this.ownerOf(name);
+    const workerId: number | undefined = this.ownerOf(name);
     if (workerId === undefined || workerId === mainWorkerId || !this._workers.has(workerId)) {
       return Promise.resolve();
     }
@@ -526,7 +526,9 @@ export class WorkerPool {
     }
 
     if (message.kind === WORKER_CONTROLLED) {
-      const pending = this._controls.get(message.seq);
+      const pending:
+        | { workerId: number; resolve: () => void; reject: (error: Error) => void }
+        | undefined = this._controls.get(message.seq);
       if (pending === undefined || pending.workerId !== workerId) {
         return;
       }

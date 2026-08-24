@@ -293,6 +293,8 @@ describe("remoteStop", () => {
 
           return routedPid(b, newPath("placed", "beta", b.host(), b.port(), undefined, ""), route);
         },
+        routeOf: (name: string): IsolateRoute | undefined =>
+          name === "placed" ? route : undefined,
         respawn: (name: string): Promise<void> => {
           orders.push(`respawn:${name}`);
           return Promise.resolve();
@@ -323,6 +325,8 @@ describe("remoteStop", () => {
 
           return routedPid(b, newPath("placed", "beta", b.host(), b.port(), undefined, ""), route);
         },
+        routeOf: (name: string): IsolateRoute | undefined =>
+          name === "placed" ? route : undefined,
         respawn: (): Promise<void> => Promise.reject(new Error("worker went away")),
         stopActor: (): Promise<void> => Promise.reject(new Error("worker went away")),
         stop: (): Promise<void> => Promise.resolve(),

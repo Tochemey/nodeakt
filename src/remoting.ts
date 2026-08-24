@@ -1808,33 +1808,40 @@ export class Remoting {
   }
 
   /**
-   * The placement fallback of {@link targetOf}: a top-level path of
-   * this very node that the main tree does not hold may name an actor
+   * The placement fallback of {@link targetOf}: a path of this very
+   * node that the main tree does not hold may live under an actor
    * placed on a worker isolate, which the same registry `actorOf`
-   * consults resolves to its routed handle. Delivery through it rides
-   * the isolate route, so the network and the port transports compose.
-   * Only a routed answer counts: a live local actor would have
-   * resolved on the tree already.
+   * consults resolves to its routed handle; the owning worker holds
+   * the whole subtree, so a child of a placed actor resolves there
+   * too. Delivery through it rides the isolate route, so the network
+   * and the port transports compose. Only a routed answer counts: a
+   * live local actor would have resolved on the tree already.
    */
   private placedTargetOf(path: Path): PID | undefined {
-    if (!this.isLocalNode(path) || path.parent() !== undefined) {
+    if (!this.isLocalNode(path)) {
       return undefined;
     }
 
-    const pid: PID | undefined = this._system.actorOf(path.name());
-    if (pid === undefined || !pid.isRouted()) {
+    // The placement registry is keyed by top-level names, so the
+    // path's head segment is what names the owning isolate.
+    let head: Path = path;
+    for (
+      let parent: Path | undefined = head.parent();
+      parent !== undefined;
+      parent = head.parent()
+    ) {
+      head = parent;
+    }
+
+    const route: IsolateRoute | undefined = this._system.placedRouteOf(head.name());
+    if (route === undefined) {
       return undefined;
     }
 
-    // An envelope pinned to an incarnation re-mints the handle around
-    // its own path, so the pin rides the isolate route and the owning
-    // worker enforces it; an unpinned envelope reuses the registry's
-    // handle as is.
-    if (path.uid() === pid.path().uid()) {
-      return pid;
-    }
-
-    return routedPid(this._system, path, pid.route() as IsolateRoute);
+    // The handle is minted around the envelope's own path, exactly one
+    // per delivery, so the owning worker resolves the exact actor and
+    // enforces whatever incarnation pin the envelope carries.
+    return routedPid(this._system, path, route);
   }
 
   /** Resolves the envelope's sender. A sender on this very node
@@ -1856,12 +1863,7 @@ export class Remoting {
     const key: string = senderKey(envelope.sender, envelope.senderUid);
     const cached: SenderEntry | undefined = this._senders.get(key);
     if (cached !== undefined) {
-      if (this._senders.size >= SENDER_CACHE_SIZE) {
-        this._senders.delete(key);
-        this._senders.set(key, cached);
-      }
-
-      return cached.handle;
+      return this.touchForeignHandle(key, cached);
     }
 
     let path: Path;
@@ -1875,12 +1877,13 @@ export class Remoting {
       return this._system.resolvePath(path) ?? this._system.noSender();
     }
 
-    return this.mintSender(key, path);
+    return this.mintForeignHandle(key, path);
   }
 
-  /** Mints and caches the routed handle of one foreign sender; the
-   * shared tail of {@link senderOf} and {@link handleFor}. */
-  private mintSender(key: string, path: Path): PID {
+  /** Mints and caches the routed handle of one foreign actor, sender
+   * or reply target alike; the shared tail of {@link senderOf} and
+   * {@link handleFor}. */
+  private mintForeignHandle(key: string, path: Path): PID {
     const handle: PID = routedPid(this._system, path, this.routeTo(path.host(), path.port()));
     this._senders.set(key, { handle, pins: new Set<string>() });
     this.evictSenders(key);
@@ -1906,15 +1909,22 @@ export class Remoting {
     const key: string = senderKey(path.toString(), path.uid());
     const cached: SenderEntry | undefined = this._senders.get(key);
     if (cached !== undefined) {
-      if (this._senders.size >= SENDER_CACHE_SIZE) {
-        this._senders.delete(key);
-        this._senders.set(key, cached);
-      }
-
-      return cached.handle;
+      return this.touchForeignHandle(key, cached);
     }
 
-    return this.mintSender(key, path);
+    return this.mintForeignHandle(key, path);
+  }
+
+  /** Refreshes a cache hit's recency once the cache sits at its cap;
+   * below it, iteration order is meaningless and the reinsert would be
+   * waste. The shared tail of every cache-first lookup. */
+  private touchForeignHandle(key: string, entry: SenderEntry): PID {
+    if (this._senders.size >= SENDER_CACHE_SIZE) {
+      this._senders.delete(key);
+      this._senders.set(key, entry);
+    }
+
+    return entry.handle;
   }
 
   /**
