@@ -246,6 +246,15 @@ export class FramedConn {
 
     this._queue.push(entry);
     this._queuedBytes += FRAME_HEADER_SIZE + entry.length;
+    // A full socket batch is ready: write it now instead of at the
+    // microtask boundary, so a long synchronous burst streams to the
+    // peer while it is still being produced and the receiver works in
+    // parallel with the sender. Anything under a full batch keeps the
+    // microtask cadence, so small sends coalesce exactly as before.
+    while (!this._blocked && this._queuedBytes >= BATCH_BYTES) {
+      this.flushBatch();
+    }
+
     this.scheduleFlush();
     return null;
   }
@@ -305,55 +314,60 @@ export class FramedConn {
 
   private flush(): void {
     while (!this._blocked && !this._closed && this._queue.length > 0) {
-      this._batch.reset();
-      let frames: number = 0;
-      let batched: number = 0;
-      let largeBody: Uint8Array | null = null;
-      let largeWrote: unknown = null;
-      let wrote: unknown[] | null = null;
-      while (frames < this._batchFrames && this._batch.length < BATCH_BYTES) {
-        const next: QueuedFrame | undefined = this._queue.peek();
-        if (next === undefined) {
-          break;
-        }
-
-        const isLarge: boolean = next.body !== null && next.body.length > COPY_THRESHOLD;
-        if (isLarge && this._batch.length > 0) {
-          break;
-        }
-
-        this._queue.shift();
-        encodeFrameHeader(this._batch, next);
-        batched += FRAME_HEADER_SIZE + next.length;
-        frames += 1;
-        if (isLarge) {
-          largeBody = next.body;
-          largeWrote = next.wrote;
-          break;
-        }
-
-        if (next.wrote !== null) {
-          wrote = wrote ?? [];
-          wrote.push(next.wrote);
-        }
-
-        if (next.body !== null) {
-          this._batch.writeBytes(next.body);
-        }
-      }
-
-      this._queuedBytes -= batched;
-      if (largeBody === null) {
-        this.writeOut(this._batch.bytes().slice(), batched, wrote);
-        continue;
-      }
-
-      // The large frame confirms on its body write, its second half.
-      this.writeOut(this._batch.bytes().slice(), batched - largeBody.length, wrote);
-      this.writeOut(largeBody, largeBody.length, largeWrote === null ? null : [largeWrote]);
+      this.flushBatch();
     }
 
     this.maybeFinishEnd();
+  }
+
+  /** Drains up to one socket write's worth of queued frames. */
+  private flushBatch(): void {
+    this._batch.reset();
+    let frames: number = 0;
+    let batched: number = 0;
+    let largeBody: Uint8Array | null = null;
+    let largeWrote: unknown = null;
+    let wrote: unknown[] | null = null;
+    while (frames < this._batchFrames && this._batch.length < BATCH_BYTES) {
+      const next: QueuedFrame | undefined = this._queue.peek();
+      if (next === undefined) {
+        break;
+      }
+
+      const isLarge: boolean = next.body !== null && next.body.length > COPY_THRESHOLD;
+      if (isLarge && this._batch.length > 0) {
+        break;
+      }
+
+      this._queue.shift();
+      encodeFrameHeader(this._batch, next);
+      batched += FRAME_HEADER_SIZE + next.length;
+      frames += 1;
+      if (isLarge) {
+        largeBody = next.body;
+        largeWrote = next.wrote;
+        break;
+      }
+
+      if (next.wrote !== null) {
+        wrote = wrote ?? [];
+        wrote.push(next.wrote);
+      }
+
+      if (next.body !== null) {
+        this._batch.writeBytes(next.body);
+      }
+    }
+
+    this._queuedBytes -= batched;
+    if (largeBody === null) {
+      this.writeOut(this._batch.bytes().slice(), batched, wrote);
+      return;
+    }
+
+    // The large frame confirms on its body write, its second half.
+    this.writeOut(this._batch.bytes().slice(), batched - largeBody.length, wrote);
+    this.writeOut(largeBody, largeBody.length, largeWrote === null ? null : [largeWrote]);
   }
 
   private writeOut(bytes: Uint8Array, accounted: number, wrote: unknown[] | null): void {

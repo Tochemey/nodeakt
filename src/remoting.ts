@@ -26,6 +26,7 @@ import { readFile } from "node:fs/promises";
 import type { IsolateRoute } from "./actor.ref";
 import type { ActorSystem } from "./actor.system";
 import { Codec } from "./codec";
+import type { WireMessage } from "./envelope";
 import { ActorNotFoundError, ActorNotRegisteredError, ErrDead, ErrRequestTimeout } from "./errors";
 import { Terminated } from "./messages";
 import {
@@ -153,6 +154,25 @@ const SHUTDOWN_NOW: number = -1;
  */
 export const SENDER_CACHE_SIZE: number = 4096;
 
+/** The wire type of a coalesced tell batch: one DATA envelope whose
+ * payload carries every tell one sender aimed at one receiver within a
+ * single turn. An internal ref in the control namespace (a class name
+ * can never contain a dot), routed by the inbound dispatcher before
+ * payload decoding, so no registration can collide with it. Exported
+ * only so the wire-level tests can recognize and build batches.
+ *
+ * @internal
+ */
+export const BATCH_TYPE_REF: string = "nodeakt.remote.batch";
+
+/** The coalescing caps, internal sizing facts like the cache cap: a
+ * batch flushes early past either bound, and both sit far below the
+ * large-lane threshold so a batch always rides the same ordinary lane
+ * as the singles it replaces, which is what keeps per-receiver order.
+ * A single message at or past the byte cap is sent unbatched. */
+const BATCH_MAX_ENTRIES: number = 256;
+const BATCH_MAX_BYTES: number = 64 * 1024;
+
 /** What a control lookup answers with: where the actor lives and which
  * incarnation holds the name, or null when no running top-level actor
  * does. */
@@ -204,6 +224,42 @@ interface SenderEntry {
   readonly pins: Set<string>;
 }
 
+/** The single connection a node's routed traffic rides. Exactly one
+ * field is set: a dialed {@link Peer} when this node reaches out, or an
+ * accepted {@link Session} used as a back-channel when no peer reaches
+ * the node (its advertised endpoint is not dialable back). One carrier
+ * per node keeps a single actor's messages on one connection, so they
+ * never reorder across a peer-versus-session split. */
+interface Carrier {
+  readonly peer: Peer | null;
+  readonly session: Session | null;
+}
+
+/** One turn's worth of coalesced tells from one sender to one receiver,
+ * accumulated between the synchronous sends that fill it and the
+ * microtask flush that emits it as a single envelope. Entries stream
+ * straight into the body writer as they arrive (type index, payload
+ * length, payload bytes), with type refs deduplicated through a local
+ * table, so a burst of one message class pays its type name once and
+ * no intermediate objects at all. */
+interface PendingBatch {
+  /** The pair's own map key, so removal never rebuilds the template. */
+  readonly key: string;
+  readonly host: string;
+  readonly port: number;
+  readonly to: string;
+  readonly uid: string;
+  readonly sender: string;
+  readonly senderUid: string;
+  readonly types: string[];
+  readonly typeIndex: Map<string, number>;
+  readonly body: ByteWriter;
+  entries: number;
+  /** Set once emitted or dead-lettered, so the hot-pair memo can never
+   * resurrect a batch that already left. */
+  flushed: boolean;
+}
+
 /** The peer-map key of one remote node. */
 function nodeKey(host: string, port: number): string {
   return `${host}:${port}`;
@@ -217,6 +273,17 @@ function watchKey(watcher: string, target: string): string {
 /** The cache key of one foreign sender: its path and incarnation. */
 function senderKey(sender: string, uid: string): string {
   return `${sender}#${uid}`;
+}
+
+/** The coalescer key of one sender-receiver pair: the node, the
+ * receiver with its incarnation, and the sender with its incarnation,
+ * so a respawned sender never shares a dying incarnation's batch. The
+ * one place this template lives; a divergence between builders would
+ * silently break the pair lookup the ordering fences rely on. */
+function pairKey(host: string, port: number, to: Path, sender?: PID): string {
+  const from: string = sender?.path().toString() ?? "";
+  const fromUid: string = sender?.path().uid() ?? "";
+  return `${host}:${port}|${to.toString()}#${to.uid()}|${from}#${fromUid}`;
 }
 
 /** Resolves one TLS option to the material `node:tls` consumes: PEM
@@ -304,9 +371,42 @@ export class Remoting {
    * paths meet a bound instead of growing the cache forever. */
   private readonly _senders = new Map<string, SenderEntry>();
 
+  /** Accepted sessions still live, grouped by the node identity their
+   * HELLO declared. A foreign sender's reply rides one of these when
+   * the node dialed us but its own endpoint is not dialable back, so
+   * the connection is the only path home. A node's set is deleted with
+   * its last session, so a present set is never empty. */
+  private readonly _inboundSessions = new Map<string, Set<Session>>();
+
+  /** The carrier elected for each node: a dialed peer when one exists,
+   * an accepted session otherwise, chosen on first outbound use and
+   * kept until it closes. Stickiness is the ordering rule: a node pair
+   * never splits one actor's traffic between a peer and a session and
+   * reorders it. Cleared when the elected carrier's connection goes,
+   * so a present entry always names a usable carrier. */
+  private readonly _carriers = new Map<string, Carrier>();
+
   /** Whether the all-pinned overflow has been logged; once is enough,
    * since the condition persists until watches unwind. */
   private _senderOverflowLogged: boolean = false;
+
+  /** Tells accumulated for coalescing, one entry per sender-receiver
+   * pair, emitted at the microtask boundary or early at a cap. Keyed
+   * by node, receiver, and sender together, so a batch is always one
+   * sender's ordered stream to one receiver. */
+  private readonly _pendingTells = new Map<string, PendingBatch>();
+
+  /** Whether the coalescer's microtask flush is already scheduled. */
+  private _tellFlushScheduled: boolean = false;
+
+  /** The previous tell's pair, memoized by handle identity: a burst
+   * between one sender and one receiver resolves its batch without
+   * rebuilding the pair key per message. */
+  private _lastTell: {
+    to: Path;
+    sender: PID | undefined;
+    batch: PendingBatch;
+  } | null = null;
 
   /** Watch registrations that arrived over the wire, per delivering
    * session. The watching node treats that session's loss as the death
@@ -357,11 +457,14 @@ export class Remoting {
       local,
     };
     const server: NetServer = await NetServer.listen(tls === undefined ? bind : { ...bind, tls }, {
+      onSession: (session: Session): void => {
+        (seam as Remoting).onSession(session);
+      },
       onData: (session: Session, envelope: DataEnvelope, correlation: number): void => {
         (seam as Remoting).onData(session, envelope, correlation);
       },
       onSessionClose: (session: Session): void => {
-        (seam as Remoting).sweepInbound(session);
+        (seam as Remoting).onInboundClose(session);
       },
       // A rejected connection is refused for the right reason (a peer
       // whose TLS handshake fails never becomes a session), but the
@@ -406,11 +509,29 @@ export class Remoting {
    */
   async stop(): Promise<void> {
     this._closed = true;
+    // Whatever the coalescer still holds can no longer travel: each
+    // buffered tell becomes its own dead letter, message restored.
+    for (const batch of this._pendingTells.values()) {
+      batch.flushed = true;
+      this.deadLetterBatch(
+        batch.sender,
+        batch.to,
+        batch.types,
+        new ByteReader(batch.body.bytes()),
+        batch.entries,
+        ErrDead,
+      );
+    }
+
+    this._pendingTells.clear();
+    this._lastTell = null;
     for (const peer of this._peers.values()) {
       peer.close();
     }
 
     this._peers.clear();
+    this._carriers.clear();
+    this._inboundSessions.clear();
     await this._server.shutdown(SHUTDOWN_NOW);
   }
 
@@ -546,7 +667,7 @@ export class Remoting {
       target,
       node: nodeKey(host, port),
     });
-    this.peerFor(host, port).tell(this.watchEnvelope(KIND_WATCH, to, watcher));
+    this.carrierTell(host, port, this.watchEnvelope(KIND_WATCH, to, watcher));
   }
 
   /** Cancels a {@link watch} registration on both sides; unknown
@@ -557,7 +678,7 @@ export class Remoting {
     }
 
     this._watches.delete(watchKey(watcher.path().toString(), to.toString()));
-    this.peerFor(host, port).tell(this.watchEnvelope(KIND_UNWATCH, to, watcher));
+    this.carrierTell(host, port, this.watchEnvelope(KIND_UNWATCH, to, watcher));
   }
 
   /** Builds one watch or unwatch envelope: an empty body, the watcher
@@ -596,18 +717,40 @@ export class Remoting {
       }
     }
 
-    if (lane === LANE_CONTROL && this._system.isRunning()) {
-      for (const [key, entry] of this._watches) {
-        if (entry.node !== node) {
-          continue;
-        }
-
-        this._watches.delete(key);
-        this._system.noSender().tell(entry.watcher, new Terminated(entry.target));
-      }
+    // Settlement belongs to the node's elected carrier: when an
+    // accepted session carries the node, its close settles (see
+    // onInboundClose), and a peer's control-lane loss must not settle
+    // watches that never rode it. Today a non-carrier peer cannot even
+    // open a control lane (only watch envelopes ride one), but the
+    // gate states the invariant instead of leaning on that accident.
+    const carrier: Carrier | undefined = this._carriers.get(node);
+    if (lane === LANE_CONTROL && (carrier === undefined || carrier.session === null)) {
+      this.settleNodeWatches(node);
     }
 
     this.reclaimPeer(node);
+  }
+
+  /**
+   * Settles every outbound watch this node holds on `node`: each
+   * watcher receives one {@link Terminated} for its target, because
+   * remote death is indistinguishable from the loss of the carrier that
+   * delivered the watch. A stopping system skips it, since its watchers
+   * are shutting down with it.
+   */
+  private settleNodeWatches(node: string): void {
+    if (!this._system.isRunning()) {
+      return;
+    }
+
+    for (const [key, entry] of this._watches) {
+      if (entry.node !== node) {
+        continue;
+      }
+
+      this._watches.delete(key);
+      this._system.noSender().tell(entry.watcher, new Terminated(entry.target));
+    }
   }
 
   /**
@@ -631,6 +774,11 @@ export class Remoting {
     }
 
     this._peers.delete(node);
+    const carrier: Carrier | undefined = this._carriers.get(node);
+    if (carrier?.peer === peer) {
+      this._carriers.delete(node);
+    }
+
     peer.close();
   }
 
@@ -653,17 +801,203 @@ export class Remoting {
       this.releaseSender(senderKey(to.toString(), to.uid()), message.actorPath);
     }
 
-    let wire: WirePayload;
+    let typeRef: string;
     try {
-      wire = encodePayload(this._codec, this._writer, message);
+      typeRef = this.encodeScratch(message);
     } catch (err) {
       const error: Error = err as Error;
       this._system.toDeadletter(sender?.path().toString(), to.toString(), message, error);
       return error;
     }
 
-    this.peerFor(host, port).tell(this.dataEnvelope(KIND_TELL, to, wire, sender));
+    this.bufferTell(host, port, to, typeRef, sender);
     return null;
+  }
+
+  /** Encodes one message into the retained scratch writer, where it
+   * stays until the caller copies it onward: the same contract as the
+   * shared payload encoder, minus the copy the coalescer avoids.
+   *
+   * @throws Exactly what the shared payload encoder throws.
+   */
+  private encodeScratch(message: unknown): string {
+    const wire: WireMessage = this._codec.encodeMessage(message);
+    this._writer.reset();
+    encodeValue(this._writer, wire.data);
+    return wire.type;
+  }
+
+  /**
+   * Admits one tell, its encoded payload still in the scratch writer,
+   * to the coalescer. Tells piling up within one turn for the same
+   * sender-receiver pair travel as a single batch envelope, emitted at
+   * the microtask boundary the connection itself writes at, so
+   * coalescing adds no latency a caller can observe; a message at the
+   * byte cap skips the batch and goes out alone, after whatever the
+   * pair already buffered, so per-receiver send order holds.
+   * Acceptance semantics are the tell's own: admission here is
+   * transport accept, and every later failure surfaces as a dead
+   * letter. The pair lookup is memoized on the handle identities of
+   * the previous tell, so a burst between one pair skips the key
+   * build entirely.
+   */
+  private bufferTell(host: string, port: number, to: Path, typeRef: string, sender?: PID): void {
+    if (this._writer.length >= BATCH_MAX_BYTES) {
+      const key: string = pairKey(host, port, to, sender);
+      const pending: PendingBatch | undefined = this._pendingTells.get(key);
+      if (pending !== undefined) {
+        this._pendingTells.delete(key);
+        this.sendBatch(pending);
+      }
+
+      const wire: WirePayload = {
+        typeRef,
+        payload: this._writer.bytes().slice(),
+      };
+      this.carrierTell(host, port, this.dataEnvelope(KIND_TELL, to, wire, sender));
+      return;
+    }
+
+    let batch: PendingBatch;
+    const memo: {
+      to: Path;
+      sender: PID | undefined;
+      batch: PendingBatch;
+    } | null = this._lastTell;
+    if (memo !== null && memo.to === to && memo.sender === sender && !memo.batch.flushed) {
+      batch = memo.batch;
+    } else {
+      batch = this.pendingFor(host, port, to, sender);
+      this._lastTell = { to, sender, batch };
+    }
+
+    let index: number | undefined = batch.typeIndex.get(typeRef);
+    if (index === undefined) {
+      index = batch.types.length;
+      batch.types.push(typeRef);
+      batch.typeIndex.set(typeRef, index);
+    }
+
+    batch.body.writeUvarint(index);
+    batch.body.writeUvarint(this._writer.length);
+    batch.body.writeBytes(this._writer.bytes());
+    batch.entries += 1;
+    if (batch.entries >= BATCH_MAX_ENTRIES || batch.body.length >= BATCH_MAX_BYTES) {
+      this._pendingTells.delete(batch.key);
+      this.sendBatch(batch);
+      return;
+    }
+
+    this.scheduleTellFlush();
+  }
+
+  /** The coalescer entry of one sender-receiver pair, created on first
+   * use within the turn. */
+  private pendingFor(host: string, port: number, to: Path, sender?: PID): PendingBatch {
+    const key: string = pairKey(host, port, to, sender);
+    let batch: PendingBatch | undefined = this._pendingTells.get(key);
+    if (batch === undefined) {
+      batch = {
+        key,
+        host,
+        port,
+        to: to.toString(),
+        uid: to.uid(),
+        sender: sender?.path().toString() ?? "",
+        senderUid: sender?.path().uid() ?? "",
+        types: [],
+        typeIndex: new Map<string, number>(),
+        body: new ByteWriter(1024),
+        entries: 0,
+        flushed: false,
+      };
+      this._pendingTells.set(key, batch);
+    }
+
+    return batch;
+  }
+
+  /** Arms the coalescer's one microtask flush per turn. */
+  private scheduleTellFlush(): void {
+    if (this._tellFlushScheduled) {
+      return;
+    }
+
+    this._tellFlushScheduled = true;
+    queueMicrotask((): void => {
+      this._tellFlushScheduled = false;
+      this.flushTells();
+    });
+  }
+
+  /**
+   * Emits every pending batch, or only those bound for the node at
+   * `host:port`. The ask and request paths flush their node before
+   * sending, because an ask rides the same per-receiver lane as the
+   * tells before it and must not overtake what the coalescer still
+   * holds. The empty check keeps the common ask (nothing pending) free
+   * of the snapshot; the snapshot itself keeps a dead-letter
+   * subscriber's own sends out of this pass.
+   */
+  private flushTells(host?: string, port?: number): void {
+    if (this._pendingTells.size === 0) {
+      return;
+    }
+
+    for (const [key, batch] of [...this._pendingTells]) {
+      if (host !== undefined && (batch.host !== host || batch.port !== port)) {
+        continue;
+      }
+
+      this._pendingTells.delete(key);
+      this.sendBatch(batch);
+    }
+  }
+
+  /** Emits one batch: a lone entry travels as the plain envelope it
+   * would have been without coalescing, anything more as one batch
+   * envelope carrying the type table and the entry stream. The payload
+   * views hand ownership of the batch's own buffers to the envelope,
+   * so nothing is copied on the way out. */
+  private sendBatch(batch: PendingBatch): void {
+    batch.flushed = true;
+    if (batch.entries === 1) {
+      const reader: ByteReader = new ByteReader(batch.body.bytes());
+      const index: number = reader.readUvarint();
+      const length: number = reader.readUvarint();
+      this.carrierTell(batch.host, batch.port, {
+        kind: KIND_TELL,
+        to: batch.to,
+        uid: batch.uid,
+        sender: batch.sender,
+        senderUid: batch.senderUid,
+        timeout: 0,
+        serializerId: SERIALIZER_BINARY,
+        typeRef: batch.types[index] as string,
+        payload: reader.readBytes(length),
+      });
+      return;
+    }
+
+    const head: ByteWriter = new ByteWriter(64 + batch.body.length);
+    head.writeUvarint(batch.types.length);
+    for (const type of batch.types) {
+      head.writeString(type);
+    }
+
+    head.writeUvarint(batch.entries);
+    head.writeBytes(batch.body.bytes());
+    this.carrierTell(batch.host, batch.port, {
+      kind: KIND_TELL,
+      to: batch.to,
+      uid: batch.uid,
+      sender: batch.sender,
+      senderUid: batch.senderUid,
+      timeout: 0,
+      serializerId: SERIALIZER_BINARY,
+      typeRef: BATCH_TYPE_REF,
+      payload: head.bytes(),
+    });
   }
 
   /** Sends one ask over the wire; the transport owns the pending entry
@@ -697,14 +1031,15 @@ export class Remoting {
     }
 
     const envelope: DataEnvelope = this.dataEnvelope(KIND_ASK, to, wire, sender);
-    return this.peerFor(host, port)
-      .ask(envelope, deadline)
-      .then(
-        (reply: ReplyEnvelope): unknown => decodePayload(this._codec, reply.typeRef, reply.payload),
-        (err: Error): never => {
-          throw this.liftError(err);
-        },
-      );
+    // The ask rides the same per-receiver lane as the tells before it,
+    // so the coalescer's holdings for the node go first.
+    this.flushTells(host, port);
+    return this.carrierAsk(host, port, envelope, deadline).then(
+      (reply: ReplyEnvelope): unknown => decodePayload(this._codec, reply.typeRef, reply.payload),
+      (err: Error): never => {
+        throw this.liftError(err);
+      },
+    );
   }
 
   /** Issues a non-parking request over the wire on behalf of `sender`:
@@ -746,24 +1081,25 @@ export class Remoting {
     const timeout: number = rawTimeout > 0 ? rawTimeout : this._system.askTimeout();
     const envelope: DataEnvelope = this.dataEnvelope(KIND_ASK, to, wire, sender);
 
-    this.peerFor(host, port)
-      .ask(envelope, timeout)
-      .then(
-        (reply: ReplyEnvelope): void => {
-          let value: unknown;
-          try {
-            value = decodePayload(this._codec, reply.typeRef, reply.payload);
-          } catch (err) {
-            sender.deliverRequestReply(handle, undefined, err as Error);
-            return;
-          }
+    // Same fence as the ask path: the request must not overtake the
+    // tells the coalescer still holds for its node.
+    this.flushTells(host, port);
+    this.carrierAsk(host, port, envelope, timeout).then(
+      (reply: ReplyEnvelope): void => {
+        let value: unknown;
+        try {
+          value = decodePayload(this._codec, reply.typeRef, reply.payload);
+        } catch (err) {
+          sender.deliverRequestReply(handle, undefined, err as Error);
+          return;
+        }
 
-          sender.deliverRequestReply(handle, value, null);
-        },
-        (err: Error): void => {
-          sender.deliverRequestReply(handle, undefined, this.liftError(err));
-        },
-      );
+        sender.deliverRequestReply(handle, value, null);
+      },
+      (err: Error): void => {
+        sender.deliverRequestReply(handle, undefined, this.liftError(err));
+      },
+    );
 
     sender.admitRequest(handle);
     return handle;
@@ -785,6 +1121,11 @@ export class Remoting {
 
     if (envelope.kind === KIND_UNWATCH) {
       this.handleUnwatch(envelope);
+      return;
+    }
+
+    if (envelope.typeRef === BATCH_TYPE_REF) {
+      this.handleBatch(session, envelope, correlation);
       return;
     }
 
@@ -816,7 +1157,7 @@ export class Remoting {
       }
     }
 
-    const target: PID | undefined = this.targetOf(envelope);
+    const target: PID | undefined = this.targetFor(session, envelope);
     if (target === undefined) {
       this.undeliverable(session, envelope, correlation, message, ErrDead);
       return;
@@ -860,6 +1201,121 @@ export class Remoting {
     }
 
     session.replyError(correlation, encodeFailure(reason));
+  }
+
+  /**
+   * Delivers one arrived tell batch: the target and sender resolve
+   * once, then every entry decodes and delivers in order through the
+   * same send path a single tell uses. An entry whose message does not
+   * decode dead-letters alone and the rest of the batch delivers, but
+   * a structural violation (the stream itself does not parse) cannot
+   * be resynchronized and dead-letters the remainder whole. A batch
+   * settles no ask, and a death notification inside one meets the same
+   * settlement gate a single delivery does, so batching opens no path
+   * around it.
+   */
+  private handleBatch(session: Session, envelope: DataEnvelope, correlation: number): void {
+    if (correlation !== 0) {
+      session.replyError(correlation, this.badRequest("a tell batch settles no ask"));
+      return;
+    }
+
+    const from: string | undefined = this.senderPathOf(envelope);
+    const payload: Uint8Array = envelope.payload;
+    // Where the batch's unprocessed remainder starts; entries behind it
+    // were delivered, so a structural failure dead-letters only what
+    // is left. Zero until the head parses, so a malformed head fails
+    // the payload whole.
+    let rest: number = 0;
+    try {
+      const reader: ByteReader = new ByteReader(payload);
+      const typeCount: number = reader.readUvarint();
+      if (typeCount > BATCH_MAX_ENTRIES) {
+        throw new Error(`batch declares ${typeCount} types, over the ${BATCH_MAX_ENTRIES} cap`);
+      }
+
+      const types: string[] = new Array<string>(typeCount);
+      for (let i: number = 0; i < typeCount; i++) {
+        types[i] = reader.readString();
+      }
+
+      // A conforming sender flushes at the entry cap, so a count past
+      // it is a violation, refused before it can amplify one frame
+      // into an unbounded synchronous delivery loop.
+      const entries: number = reader.readUvarint();
+      if (entries > BATCH_MAX_ENTRIES) {
+        throw new Error(`batch declares ${entries} entries, over the ${BATCH_MAX_ENTRIES} cap`);
+      }
+
+      // The head parsed, so the frame is shaped like a batch: only now
+      // is the self-declared sender worth resolving and caching.
+      const target: PID | undefined = this.targetFor(session, envelope);
+      const sender: PID = this.senderOf(envelope);
+      for (let i: number = 0; i < entries; i++) {
+        rest = payload.length - reader.remaining;
+        const index: number = reader.readUvarint();
+        if (index >= typeCount) {
+          throw new Error(`batch entry names type ${index} of ${typeCount}`);
+        }
+
+        const bytes: Uint8Array = reader.readBytes(reader.readUvarint());
+        let message: unknown;
+        try {
+          message = decodePayload(this._codec, types[index] as string, bytes);
+        } catch (err) {
+          this._system.toDeadletter(from, envelope.to, bytes.slice(), err as Error);
+          continue;
+        }
+
+        if (message instanceof Terminated) {
+          if (!this._watches.delete(watchKey(envelope.to, message.actorPath))) {
+            continue;
+          }
+        }
+
+        if (target === undefined) {
+          this._system.toDeadletter(from, envelope.to, message, ErrDead);
+          continue;
+        }
+
+        sender.tell(target, message);
+      }
+    } catch (err) {
+      // The payload may alias the receive buffer, and the dead letter
+      // retains it, so hand over a copy of the remainder.
+      this._system.toDeadletter(from, envelope.to, payload.slice(rest), err as Error);
+    }
+  }
+
+  /** Records one dead letter per batch entry, message restored: a
+   * batch that could not travel fails as the individual tells it
+   * carried, exactly as unbatched sends would have. The stream was
+   * encoded on this side, so it always parses back. */
+  private deadLetterBatch(
+    sender: string,
+    to: string,
+    types: readonly string[],
+    reader: ByteReader,
+    entries: number,
+    reason: Error,
+  ): void {
+    const from: string | undefined = sender === "" ? undefined : sender;
+    for (let i: number = 0; i < entries; i++) {
+      const index: number = reader.readUvarint();
+      const bytes: Uint8Array = reader.readBytes(reader.readUvarint());
+      let message: unknown;
+      /* v8 ignore start -- this side encoded the entry, so the decode
+         can only fail if the registry lost the type between the send
+         and the dead letter, which no test can arrange. */
+      try {
+        message = decodePayload(this._codec, types[index] as string, bytes);
+      } catch {
+        message = bytes;
+      }
+      /* v8 ignore stop */
+
+      this._system.toDeadletter(from, to, message, reason);
+    }
   }
 
   /**
@@ -909,6 +1365,51 @@ export class Remoting {
       watcher,
       watcherKey: senderKey(envelope.sender, envelope.senderUid),
     });
+  }
+
+  /**
+   * Records one accepted session under the node its HELLO declared, so
+   * a foreign sender that dialed us but whose own endpoint is not
+   * dialable back can still be answered over the connection it opened.
+   * The session has finished its handshake by the time this fires, so
+   * its remote parameters are always present.
+   */
+  private onSession(session: Session): void {
+    const remote: Hello = session.remote as Hello;
+    const key: string = nodeKey(remote.host, remote.port);
+    let set: Set<Session> | undefined = this._inboundSessions.get(key);
+    if (set === undefined) {
+      set = new Set<Session>();
+      this._inboundSessions.set(key, set);
+    }
+
+    set.add(session);
+  }
+
+  /**
+   * An accepted session closed: release the watchers it delivered, drop
+   * it from its node's set, and, when it was that node's elected
+   * carrier, settle the node's outbound watches and clear the election
+   * so the next send re-elects. A carrier session's loss is the same
+   * signal a control-lane peer close is: the path to the node is gone.
+   */
+  private onInboundClose(session: Session): void {
+    this.sweepInbound(session);
+    const remote: Hello = session.remote as Hello;
+    const key: string = nodeKey(remote.host, remote.port);
+    const set: Set<Session> | undefined = this._inboundSessions.get(key);
+    if (set !== undefined) {
+      set.delete(session);
+      if (set.size === 0) {
+        this._inboundSessions.delete(key);
+      }
+    }
+
+    const carrier: Carrier | undefined = this._carriers.get(key);
+    if (carrier?.session === session) {
+      this._carriers.delete(key);
+      this.settleNodeWatches(key);
+    }
   }
 
   /** Releases every watcher a closed session registered: the watching
@@ -1191,6 +1692,38 @@ export class Remoting {
     }
   }
 
+  /**
+   * Resolves the envelope's target, caching the resolution on the
+   * delivering session's interned path so a stream of sends to one
+   * actor pays the parse and the tree walk once, not per message. The
+   * cache lives on the connection's inbound string table (the same
+   * interning the wire already does), so it warms only for a path the
+   * peer sends often, and a handle is reused only while it still
+   * designates the actor the envelope addresses. A connection with no
+   * tables (below the interning revision) never caches and resolves
+   * every time, exactly as before.
+   */
+  private targetFor(session: Session, envelope: DataEnvelope): PID | undefined {
+    const cached: PID | undefined = session.pathHandle(envelope.to) as PID | undefined;
+    if (cached !== undefined && this.targetValid(cached, envelope)) {
+      return cached;
+    }
+
+    const pid: PID | undefined = this.targetOf(envelope);
+    if (pid !== undefined) {
+      session.cachePathHandle(envelope.to, pid);
+    }
+
+    return pid;
+  }
+
+  /** Whether a cached target handle still designates the actor the
+   * envelope addresses: it is running, and its incarnation matches the
+   * pin the envelope carries (an unpinned envelope accepts any). */
+  private targetValid(pid: PID, envelope: DataEnvelope): boolean {
+    return pid.isRunning() && (envelope.uid === "" || envelope.uid === pid.path().uid());
+  }
+
   /** Resolves the envelope's target to the live local PID it addresses,
    * or undefined when the path is malformed, nothing lives at it, or
    * the living actor is a different incarnation than the envelope was
@@ -1376,6 +1909,95 @@ export class Remoting {
     return peer;
   }
 
+  /**
+   * The carrier a send to the node at `host:port` rides. A dialed peer
+   * is preferred, an accepted back-channel session is next, and a fresh
+   * dial is the fallback; the choice is recorded and reused until the
+   * carrier closes, so a node pair keeps one actor's traffic on one
+   * connection and cannot reorder it across a peer-versus-session split.
+   * The recorded carrier is always usable: the close paths that retire a
+   * peer or a session clear the entry that named it.
+   */
+  private carrierFor(host: string, port: number): Carrier {
+    const key: string = nodeKey(host, port);
+    const cached: Carrier | undefined = this._carriers.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    return this.electCarrier(key, host, port);
+  }
+
+  /** Elects the node's carrier: an existing dialed peer, else a live
+   * accepted session, else a freshly dialed peer. */
+  private electCarrier(key: string, host: string, port: number): Carrier {
+    const existing: Peer | undefined = this._peers.get(key);
+    if (existing !== undefined) {
+      return this.setCarrier(key, { peer: existing, session: null });
+    }
+
+    const session: Session | undefined = this.liveInboundSession(key);
+    if (session !== undefined) {
+      return this.setCarrier(key, { peer: null, session });
+    }
+
+    return this.setCarrier(key, {
+      peer: this.peerFor(host, port),
+      session: null,
+    });
+  }
+
+  /** Records and returns one election. */
+  private setCarrier(key: string, carrier: Carrier): Carrier {
+    this._carriers.set(key, carrier);
+    return carrier;
+  }
+
+  /** One accepted session for the node, or undefined when none is held.
+   * A present set is never empty, so its first entry is the oldest
+   * session still up. */
+  private liveInboundSession(key: string): Session | undefined {
+    const set: Set<Session> | undefined = this._inboundSessions.get(key);
+    if (set === undefined) {
+      return undefined;
+    }
+
+    return set.values().next().value as Session;
+  }
+
+  /** Sends one fire-and-forget envelope over the node's carrier. A peer
+   * dead-letters its own failures; a back-channel session reports a
+   * refusal here, routed to the same dead-letter path so the two
+   * carriers fail alike. */
+  private carrierTell(host: string, port: number, envelope: DataEnvelope): void {
+    const carrier: Carrier = this.carrierFor(host, port);
+    if (carrier.peer !== null) {
+      carrier.peer.tell(envelope);
+      return;
+    }
+
+    const refused: Error | null = (carrier.session as Session).tell(envelope);
+    if (refused !== null) {
+      this.deadLetterOut(envelope, refused);
+    }
+  }
+
+  /** Sends one ask over the node's carrier and settles with the peer's
+   * answer; a back-channel session answers the same shape a peer does. */
+  private carrierAsk(
+    host: string,
+    port: number,
+    envelope: DataEnvelope,
+    timeout: number,
+  ): Promise<ReplyEnvelope> {
+    const carrier: Carrier = this.carrierFor(host, port);
+    if (carrier.peer !== null) {
+      return carrier.peer.ask(envelope, timeout);
+    }
+
+    return (carrier.session as Session).ask(envelope, timeout);
+  }
+
   /** Records one outbound envelope the peer could not deliver. A watch
    * that could not reach its node settles as the death it can no longer
    * observe, an unwatch has nothing left to cancel, and everything else
@@ -1395,6 +2017,20 @@ export class Remoting {
     }
 
     if (envelope.kind === KIND_UNWATCH) {
+      return;
+    }
+
+    if (envelope.typeRef === BATCH_TYPE_REF) {
+      // This side encoded the batch, so the stream always parses back.
+      const reader: ByteReader = new ByteReader(envelope.payload);
+      const typeCount: number = reader.readUvarint();
+      const types: string[] = new Array<string>(typeCount);
+      for (let i: number = 0; i < typeCount; i++) {
+        types[i] = reader.readString();
+      }
+
+      const entries: number = reader.readUvarint();
+      this.deadLetterBatch(envelope.sender, envelope.to, types, reader, entries, reason);
       return;
     }
 
