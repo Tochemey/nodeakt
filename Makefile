@@ -6,7 +6,7 @@
 TSX := node_modules/.bin/tsx
 
 .DEFAULT_GOAL := help
-.PHONY: help helloworld behaviors chat supervision reentrancy pipeto scheduling watch stash props multicore remoting bench bench-baseline
+.PHONY: help helloworld behaviors chat supervision iot reentrancy pipeto scheduling watch stash props multicore remoting bench bench-baseline
 
 help: ## list the available example targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -23,6 +23,9 @@ chat: ## many actors, no shared memory; death-watch cleanup
 
 supervision: ## let it crash; restart with backoff and fresh state
 	@$(TSX) examples/supervision/main.ts
+
+iot: ## a device hierarchy; every query is a short-lived actor
+	@$(TSX) examples/iot/main.ts
 
 reentrancy: ## ask without freezing (request + onReply)
 	@$(TSX) examples/reentrancy/main.ts

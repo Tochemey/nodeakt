@@ -37,6 +37,7 @@ pnpm example examples/helloworld/main.ts
 | [pipeto](pipeto/main.ts) | `ctx.pipeTo`: deliver an async result as a message |
 | [scheduling](scheduling/main.ts) | `schedule` / `scheduleOnce`: send a message later or on a repeat |
 | [supervision](supervision/main.ts) | Restart with backoff; let it crash |
+| [iot](iot/main.ts) | A device hierarchy; every query is a short-lived actor |
 | [props](props/main.ts) | Construction as data with `Props` |
 | [multicore](multicore/main.ts) | One CPU-bound actor per core |
 | [remoting](remoting/README.md) | Checkout and payments on two nodes: remoting over TCP with Docker Compose |

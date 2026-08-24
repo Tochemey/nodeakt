@@ -111,6 +111,35 @@ worker started with fresh state
 
 Job 13 throws. The counter resetting to 1 is the restart, not a patch.
 
+## A small IoT system: `iot`
+
+Everything so far, composed, in the shape of the classic Akka IoT tutorial. A device manager routes by group id and builds the hierarchy on demand: one group per home, one actor per sensor, each `watch`ed by its group. Reading the whole home is a short-lived actor per query: it fans `ReadTemperature` out with `tell`, watches every device so a death becomes an answer, and settles whatever is left when a deadline it `scheduleOnce`d to itself fires.
+
+[iot/main.ts](https://github.com/Tochemey/nodeakt/blob/main/examples/iot/main.ts), `make iot`
+
+```text
+registered nodeakt://iot@…/device-manager/group-home/device-kitchen
+…
+group home tracks: kitchen, bedroom, garage, attic
+
+-- query 1: every sensor answers --
+query #1 answered:
+  kitchen  22.5°C
+  bedroom  no reading yet
+  garage   18.0°C
+  attic    no reading yet
+
+-- query 2: a jammed sensor and a dying one --
+group home dropped garage (3 still tracked)
+query #2 answered:
+  kitchen  22.5°C
+  bedroom  19.2°C
+  garage   device stopped
+  attic    no answer before the deadline
+```
+
+The second answer is the point: a reading, a sensor with nothing recorded, a death observed mid-query, and a deadline all come back as one uniform reply.
+
 ## Construction is data: `props`
 
 `spawn` takes a live instance (always this core) or a `Props`, which captures the class and its constructor arguments as data. From that data the runtime can build the actor wherever it places it. The arguments are checked by the compiler against the constructor.
