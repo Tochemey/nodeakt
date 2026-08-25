@@ -28,15 +28,16 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * The transport and membership boundaries, enforced: modules inside either
- * package import only platform modules and their own package. Only each
- * package's flat seam modules may import it from outside. A violation here
- * is a circular-dependency risk by definition.
+ * The transport, membership, and key/value boundaries, enforced: modules
+ * inside each package import only platform modules and their own package.
+ * Only each package's flat seam modules may import it from outside. A
+ * violation here is a circular-dependency risk by definition.
  */
 
 const srcDir: string = fileURLToPath(new URL("../../src", import.meta.url));
 const netDir: string = join(srcDir, "net");
 const membershipDir: string = join(srcDir, "membership");
+const kvDir: string = join(srcDir, "kv");
 
 /** Collects every static import specifier in a source file. */
 function importsOf(filePath: string): string[] {
@@ -105,6 +106,30 @@ describe("the membership boundary", () => {
         expect(/(^|\/)membership\//.test(specifier), `${filePath} imports "${specifier}"`).toBe(
           false,
         );
+      }
+    }
+  });
+});
+
+describe("the kv boundary", () => {
+  it("keeps kv modules free of runtime, net, and membership imports", () => {
+    for (const filePath of sourceFiles(kvDir)) {
+      for (const specifier of importsOf(filePath)) {
+        const allowed: boolean = specifier.startsWith("node:") || /^\.\/[^.]/.test(specifier);
+        expect(allowed, `${filePath} imports "${specifier}"`).toBe(true);
+      }
+    }
+  });
+
+  it("lets only the clustering seam import from kv", () => {
+    for (const filePath of sourceFiles(srcDir)) {
+      const base: string = basename(filePath);
+      if (base === "clustering.ts" || base.startsWith("clustering.")) {
+        continue;
+      }
+
+      for (const specifier of importsOf(filePath)) {
+        expect(/(^|\/)kv\//.test(specifier), `${filePath} imports "${specifier}"`).toBe(false);
       }
     }
   });
