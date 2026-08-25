@@ -151,4 +151,9 @@ describe("partition ring", () => {
     expect(Math.max(...loads)).toBeLessThanOrEqual(Math.ceil((4 / 2) * LOAD_FACTOR));
     expect(loads.reduce((sum: number, load: number): number => sum + load, 0)).toBe(4);
   });
+
+  it("reports its deduplicated member set in caller order", () => {
+    const ring: PartitionRing = new PartitionRing(["c", "a", "b"], 8);
+    expect(ring.members()).toEqual(["c", "a", "b"]);
+  });
 });

@@ -47,9 +47,11 @@ import {
   MAX_WIRE_PARTITIONS,
   PROTOCOL_VERSION,
 } from "./constants";
+import { PutCondition, RejectionReason, WriteKind } from "./discriminants";
 import { KvProtocolError } from "./errors";
 import type {
   CompareAndSetOp,
+  ConditionFailure,
   Entry,
   HybridTime,
   IncrementOp,
@@ -98,13 +100,17 @@ function fail(message: string): never {
  * Condition byte for a put: none, only-if-absent, or only-if-present.
  */
 const CONDITION_TO_BYTE: Readonly<Record<PutOp["condition"], number>> = {
-  none: 0,
-  nx: 1,
-  xx: 2,
+  [PutCondition.none]: 0,
+  [PutCondition.ifAbsent]: 1,
+  [PutCondition.ifPresent]: 2,
 };
 
 /** Inverse of {@link CONDITION_TO_BYTE}, indexed by wire byte. */
-const BYTE_TO_CONDITION: readonly PutOp["condition"][] = ["none", "nx", "xx"];
+const BYTE_TO_CONDITION: readonly PutOp["condition"][] = [
+  PutCondition.none,
+  PutCondition.ifAbsent,
+  PutCondition.ifPresent,
+];
 
 /** Opcode byte for each write kind. */
 const OP_PUT: number = 1;
@@ -113,14 +119,18 @@ const OP_INCR: number = 3;
 const OP_CAS: number = 4;
 
 /** Condition-failure byte for a rejected conditional write, indexed from zero. */
-const REASON_TO_BYTE: Readonly<Record<"nx" | "xx" | "cas", number>> = {
-  nx: 0,
-  xx: 1,
-  cas: 2,
+const REASON_TO_BYTE: Readonly<Record<ConditionFailure, number>> = {
+  [RejectionReason.ifAbsent]: 0,
+  [RejectionReason.ifPresent]: 1,
+  [RejectionReason.compareAndSet]: 2,
 };
 
 /** Inverse of {@link REASON_TO_BYTE}, indexed by wire byte. */
-const BYTE_TO_REASON: readonly ("nx" | "xx" | "cas")[] = ["nx", "xx", "cas"];
+const BYTE_TO_REASON: readonly ConditionFailure[] = [
+  RejectionReason.ifAbsent,
+  RejectionReason.ifPresent,
+  RejectionReason.compareAndSet,
+];
 
 /**
  * Growable big-endian byte sink.
@@ -517,18 +527,18 @@ function readSafeU64(reader: ByteReader, field: string): number {
 
 /** Writes a mutation, dispatching on its discriminant. */
 function writeWriteOp(writer: ByteWriter, op: WriteOp): void {
-  if (op.kind === "put") {
+  if (op.kind === WriteKind.put) {
     writePut(writer, op);
     return;
   }
 
-  if (op.kind === "delete") {
+  if (op.kind === WriteKind.delete) {
     writer.u8(OP_DELETE);
     writeKey(writer, op.key);
     return;
   }
 
-  if (op.kind === "incr") {
+  if (op.kind === WriteKind.increment) {
     writeIncrement(writer, op);
     return;
   }
@@ -577,11 +587,11 @@ function readWriteOp(reader: ByteReader): WriteOp {
   }
 
   if (opcode === OP_DELETE) {
-    return { kind: "delete", key: readKey(reader) };
+    return { kind: WriteKind.delete, key: readKey(reader) };
   }
 
   if (opcode === OP_INCR) {
-    return { kind: "incr", key: readKey(reader), delta: reader.i64() };
+    return { kind: WriteKind.increment, key: readKey(reader), delta: reader.i64() };
   }
 
   if (opcode === OP_CAS) {
@@ -607,10 +617,10 @@ function readPut(reader: ByteReader): PutOp {
   const key: string = readKey(reader);
   const value: Uint8Array = readBlob(reader, MAX_VALUE_BYTES, "value");
   if (ttlByte === 0) {
-    return { kind: "put", key, value, condition };
+    return { kind: WriteKind.put, key, value, condition };
   }
 
-  return { kind: "put", key, value, condition, ttlMs: readSafeU64(reader, "ttl") };
+  return { kind: WriteKind.put, key, value, condition, ttlMs: readSafeU64(reader, "ttl") };
 }
 
 /** Reads a compare-and-set. */
@@ -618,7 +628,7 @@ function readCompareAndSet(reader: ByteReader): CompareAndSetOp {
   const key: string = readKey(reader);
   const expected: Uint8Array = readBlob(reader, MAX_VALUE_BYTES, "expected");
   const value: Uint8Array = readBlob(reader, MAX_VALUE_BYTES, "value");
-  return { kind: "cas", key, expected, value };
+  return { kind: WriteKind.compareAndSet, key, expected, value };
 }
 
 /** Byte marking an applied write result. */
@@ -650,7 +660,7 @@ function readWriteResult(reader: ByteReader): WriteResult {
     fail("write result marker is invalid");
   }
 
-  const reason: ("nx" | "xx" | "cas") | undefined = BYTE_TO_REASON[reader.u8()];
+  const reason: ConditionFailure | undefined = BYTE_TO_REASON[reader.u8()];
   if (reason === undefined) {
     fail("unknown write rejection reason");
   }

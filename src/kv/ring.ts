@@ -402,4 +402,17 @@ export class PartitionRing {
   primaries(): readonly string[] {
     return this.#primaries;
   }
+
+  /**
+   * The distinct member names this ring was built from, in caller order.
+   *
+   * The returned array is the ring's own storage and must not be mutated. The
+   * routing table reads it to prune owners that are no longer live members: a
+   * member absent from this set has left or died and cannot remain an owner.
+   *
+   * @returns The validated, deduplicated member names.
+   */
+  members(): readonly string[] {
+    return this.#members;
+  }
 }

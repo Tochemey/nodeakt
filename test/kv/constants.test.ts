@@ -32,6 +32,7 @@ import {
   DEFAULT_WRITE_QUORUM,
   FRAGMENT_CHUNK_BYTES,
   JANITOR_INTERVAL_MS,
+  JANITOR_PARTITIONS_PER_SWEEP,
   LEAVE_DRAIN_TIMEOUT_MS,
   LOAD_FACTOR,
   MAX_KEY_BYTES,
@@ -69,6 +70,7 @@ describe("kv constants", () => {
     expect(SCAN_PAGE_SIZE).toBe(256);
     expect(SCAN_YIELD_EVERY).toBe(1_024);
     expect(JANITOR_INTERVAL_MS).toBe(30_000);
+    expect(JANITOR_PARTITIONS_PER_SWEEP).toBe(64);
     expect(MAX_KEY_BYTES).toBe(1_024);
     expect(MAX_VALUE_BYTES).toBe(1_048_576);
   });

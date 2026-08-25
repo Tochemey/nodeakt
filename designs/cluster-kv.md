@@ -104,11 +104,12 @@ src/kv/
   hlc.ts            hybrid logical clock
   hash.ts           partition hashing
   ring.ts           consistent hashing with bounded loads
+  discriminants.ts  named values for the write-operation kinds, conditions, and reasons
   wire.ts           binary codec for every message and record
   entry.ts          the stored value, tombstones, last-write-wins comparison
   partition.ts      one fragment: its map, its rolling digest, its TTL
   store.ts          all fragments on one node, the janitor, chunked iteration
-  table.ts          the versioned routing table
+  routingtable.ts   the versioned routing table
   engine.ts         single-node operations through the per-partition pipeline
   coordinator.ts    election, table computation, push, ownership reports
   replication.ts    the ReplicationGroup implementation, quorum acknowledgment

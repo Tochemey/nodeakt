@@ -125,6 +125,16 @@ export const SCAN_YIELD_EVERY: number = 1_024;
 /** Interval, in milliseconds, between lazy TTL janitor sweeps. @internal */
 export const JANITOR_INTERVAL_MS: number = 30_000;
 
+/**
+ * Partitions reaped per janitor sweep, sampled round-robin so a sweep costs the
+ * same regardless of how many partitions the node holds. Reaping late only
+ * delays memory reclaim: lazy expiry already hides an expired entry from reads,
+ * and the tombstone age check refuses to reap before `TOMBSTONE_TTL_MS`.
+ *
+ * @internal
+ */
+export const JANITOR_PARTITIONS_PER_SWEEP: number = 64;
+
 /** Maximum UTF-8 byte length of a key. @internal */
 export const MAX_KEY_BYTES: number = 1_024;
 
