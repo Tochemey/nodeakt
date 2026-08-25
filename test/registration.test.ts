@@ -22,6 +22,8 @@
  * SOFTWARE.
  */
 
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { MessageChannel } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
 import type { Actor } from "../src/actor";
@@ -119,8 +121,10 @@ describe("call-site helpers", () => {
   });
 
   it("normalizes script names to module URLs", () => {
+    const absoluteScript = resolve("app", "greeter.actor.js");
+
     expect(scriptUrlOf("file:///app/greeter.actor.js")).toBe("file:///app/greeter.actor.js");
-    expect(scriptUrlOf("/app/greeter.actor.js")).toBe("file:///app/greeter.actor.js");
+    expect(scriptUrlOf(absoluteScript)).toBe(pathToFileURL(absoluteScript).href);
     expect(scriptUrlOf("")).toBeUndefined();
     expect(scriptUrlOf("[eval]")).toBeUndefined();
     expect(scriptUrlOf("evalmachine.<anonymous>")).toBeUndefined();

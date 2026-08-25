@@ -113,6 +113,17 @@ jobs:
       - name: Test with coverage
         run: pnpm coverage
 
+      - name: Run in-process membership smoke
+        if: matrix.node == 24
+        run: pnpm exec tsx test/smoke/membership.smoke.ts
+
+      # One matrix leg pays the real-time suspicion window. This exercises
+      # process death and same-address restart over actual TCP without tripling
+      # the roughly 25-second failure-detection cost.
+      - name: Run multi-process membership smoke
+        if: matrix.node == 24
+        run: pnpm exec tsx test/smoke/membership.multiprocess.smoke.ts
+
       - name: Upload coverage to Codecov
         if: matrix.node == 24
         uses: codecov/codecov-action@v7
@@ -184,10 +195,9 @@ jobs:
             test/smoke/run.sh deno run -A
           fi
 
-      # The transport smoke runs straight from source: the wire layer is
-      # internal and not part of the published package yet. Node covers
-      # it through the full test suite in the test job.
-      - name: Run transport smoke test
+      # Transport, remoting, and membership run straight from source because
+      # these internal layers are not all part of the published surface yet.
+      - name: Run source network and membership smoke tests
         run: test/smoke/net.sh ${{ matrix.runtime }}
 
   nightly:

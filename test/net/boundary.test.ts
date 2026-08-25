@@ -22,21 +22,21 @@
  * SOFTWARE.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * The transport boundary, enforced: `src/net/` modules import only
- * platform modules and each other, and the only modules outside the
- * folder allowed to import from it are the remoting seam modules,
- * `remoting.ts` and its `remoting.*` companions. A violation here is a
- * circular-dependency risk by definition.
+ * The transport and membership boundaries, enforced: modules inside either
+ * package import only platform modules and their own package. Only each
+ * package's flat seam modules may import it from outside. A violation here
+ * is a circular-dependency risk by definition.
  */
 
 const srcDir: string = fileURLToPath(new URL("../../src", import.meta.url));
 const netDir: string = join(srcDir, "net");
+const membershipDir: string = join(srcDir, "membership");
 
 /** Collects every static import specifier in a source file. */
 function importsOf(filePath: string): string[] {
@@ -51,6 +51,10 @@ function importsOf(filePath: string): string[] {
 }
 
 function sourceFiles(directory: string): string[] {
+  if (!existsSync(directory)) {
+    return [];
+  }
+
   return readdirSync(directory)
     .filter((name: string): boolean => name.endsWith(".ts"))
     .map((name: string): string => join(directory, name));
@@ -68,13 +72,39 @@ describe("the net boundary", () => {
 
   it("lets only the remoting seam import from net", () => {
     for (const filePath of sourceFiles(srcDir)) {
-      const base: string = filePath.slice(filePath.lastIndexOf("/") + 1);
+      const base: string = basename(filePath);
       if (base === "remoting.ts" || base.startsWith("remoting.")) {
         continue;
       }
 
       for (const specifier of importsOf(filePath)) {
         expect(/(^|\/)net\//.test(specifier), `${filePath} imports "${specifier}"`).toBe(false);
+      }
+    }
+  });
+});
+
+describe("the membership boundary", () => {
+  it("keeps membership modules free of runtime and net imports", () => {
+    for (const filePath of sourceFiles(membershipDir)) {
+      for (const specifier of importsOf(filePath)) {
+        const allowed: boolean = specifier.startsWith("node:") || /^\.\/[^.]/.test(specifier);
+        expect(allowed, `${filePath} imports "${specifier}"`).toBe(true);
+      }
+    }
+  });
+
+  it("lets only the clustering seam import from membership", () => {
+    for (const filePath of sourceFiles(srcDir)) {
+      const base: string = basename(filePath);
+      if (base === "clustering.ts" || base.startsWith("clustering.")) {
+        continue;
+      }
+
+      for (const specifier of importsOf(filePath)) {
+        expect(/(^|\/)membership\//.test(specifier), `${filePath} imports "${specifier}"`).toBe(
+          false,
+        );
       }
     }
   });

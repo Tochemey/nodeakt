@@ -20,22 +20,22 @@ The protocol is SWIM as a decade of production deployment has hardened it, not t
 
 ## Where it lives
 
-The package is `src/cluster/`, the second folder in an otherwise flat `src`. It follows the same isolation rule as `net/`: modules in `cluster/` import platform modules and each other, and nothing else. It does not import `net/` either; the framing it needs is a few dozen lines, and independence keeps both packages free to evolve their internals without a shared-primitive negotiation. The runtime will reach `cluster/` only through a seam module (`clustering.ts`, a later slice) in flat `src`. The existing import-guard test extends to enforce both directions for the new folder.
+The package is `src/membership/`, the second folder in an otherwise flat `src`. It follows the same isolation rule as `net/`: modules in `membership/` import platform modules and each other, and nothing else. It does not import `net/` either; the framing it needs is a few dozen lines, and independence keeps both packages free to evolve their internals without a shared-primitive negotiation. The runtime will reach `membership/` only through a seam module (`clustering.ts`, a later slice) in flat `src`. The existing import-guard test extends to enforce both directions for the new folder.
 
 | Module                 | Holds                                                                                                     |
 |------------------------|-----------------------------------------------------------------------------------------------------------|
-| `cluster/wire.ts`      | Message codecs and validation: header, update records, ping family, sync bodies                            |
-| `cluster/view.ts`      | The member table state machine: states, incarnation precedence, revival, suspicion bookkeeping, events     |
-| `cluster/broadcast.ts` | The transmit-limited queue: retransmit counting, supersession, byte-budgeted packing                        |
-| `cluster/probe.ts`     | The failure detector: probe schedule, indirect probes and nacks, awareness, the gossip tick                 |
-| `cluster/suspicion.ts` | Suspicion timers: confirmation-driven timeout decay                                                          |
-| `cluster/sync.ts`      | Join and anti-entropy: full state exchange, merge, rejoin refutation                                        |
-| `cluster/transport.ts` | The packet-and-stream transport contract and its TCP implementation                                          |
-| `cluster/clock.ts`     | Injected time: now, schedule, cancel                                                                        |
-| `cluster/random.ts`    | Injected randomness: seeded generator, shuffle, pick                                                        |
-| `cluster/swim.ts`      | The engine composing the above; the package's public surface                                                 |
+| `membership/wire.ts`      | Message codecs and validation: header, update records, ping family, sync bodies                            |
+| `membership/view.ts`      | The member table state machine: states, incarnation precedence, revival, suspicion bookkeeping, events     |
+| `membership/broadcast.ts` | The transmit-limited queue: retransmit counting, supersession, byte-budgeted packing                        |
+| `membership/probe.ts`     | The failure detector: probe schedule, indirect probes and nacks, awareness, the gossip tick                 |
+| `membership/suspicion.ts` | Suspicion timers: confirmation-driven timeout decay                                                          |
+| `membership/sync.ts`      | Join and anti-entropy: full state exchange, merge, rejoin refutation                                        |
+| `membership/transport.ts` | The packet-and-stream transport contract and its TCP implementation                                          |
+| `membership/clock.ts`     | Injected time: now, schedule, cancel                                                                        |
+| `membership/random.ts`    | Injected randomness: seeded generator, shuffle, pick                                                        |
+| `membership/swim.ts`      | The engine composing the above; the package's public surface                                                 |
 
-Tests mirror the modules in `test/cluster/`, one file per module, plus the simulation harness (`test/cluster/sim.ts`) and scenario suites built on it.
+Tests mirror the modules in `test/membership/`, one file per module, plus the simulation harness (`test/membership/sim.ts`) and scenario suites built on it.
 
 ## Identity and the member record
 
@@ -45,15 +45,15 @@ A member record carries: name, incarnation (starts at 0, raised only by the memb
 
 ## States and precedence
 
-Four states: `alive`, `suspect`, `dead`, `left`. None is terminal. `left` is the graceful departure a member announces about itself, kept distinct from `dead` so consumers can skip the alarm paths failure triggers (rebalance urgency, warning logs). A dead or left member is retained in the table (and gossiped about) long enough for the verdict to disseminate, then reaped after a retention window.
+Four states: `alive`, `suspect`, `dead`, `left`. `dead` and `left` are terminal within one incarnation, but neither prevents a higher-incarnation revival. `left` is the graceful departure a member announces about itself, kept distinct from `dead` so consumers can skip the alarm paths failure triggers (rebalance urgency, warning logs). A dead or left member is retained in the table (and gossiped about) long enough for the verdict to disseminate, then reaped after a retention window.
 
-Updates apply by precedence, where `i` is the incoming incarnation and `j` the stored one:
+Updates apply through one total order. Incarnation is compared first: an update at a higher incarnation always supersedes a lower-incarnation record, and a lower incarnation never supersedes a higher one. At equal incarnation, state precedence is:
 
-- `alive(i)` supersedes `alive(j)` iff `i > j`, supersedes `suspect(j)` iff `i > j`, and supersedes `dead(j)` or `left(j)` iff `i > j` (revival: this is how a restarted member re-enters past its own obituary).
-- `suspect(i)` supersedes `alive(j)` iff `i >= j`, and supersedes `suspect(j)` iff `i > j`. A `suspect` about a dead or left member is ignored.
-- `dead(i)` and `left(i)` supersede `alive(j)` and `suspect(j)` iff `i >= j`.
+`alive < suspect < dead < left`
 
-An update that does not supersede is dropped without side effects. The table lives in `view.ts` as pure code with an exhaustive test over every (stored state, incoming state, incarnation ordering) combination.
+Thus `suspect(i)` supersedes `alive(i)`, `dead(i)` supersedes both, and `left(i)` supersedes `dead(i)`. The last rule resolves a graceful leave racing with failure detection: every node eventually keeps `left(i)`, because the member's direct declaration is stronger than another node's inferred failure. An `alive(i + 1)` supersedes every state at incarnation `i`, including `left`, which is how a restarted member re-enters past its own obituary. An equal-incarnation `alive` never refutes a higher-precedence state; the member must raise its incarnation first.
+
+An update that does not supersede is dropped without side effects. The table lives in `view.ts` as pure code with an exhaustive test over every (stored state, incoming state, incarnation ordering) combination, including both arrival orders of concurrent `dead` and `left` records.
 
 Only the member itself raises its incarnation, and it does so exactly when defending itself: on seeing itself suspected, or on discovering (usually during a rejoin's state exchange) that the cluster holds it as `dead` or `left` while it is running. The defense is an `alive(self)` broadcast at the raised incarnation.
 
@@ -106,7 +106,7 @@ The contract in `transport.ts` has the packet-and-stream duality that SWIM imple
 
 Plus a listener the engine starts with callbacks for inbound packets and inbound streams. Protocol logic sees only this contract; the simulation harness implements it in memory, and a UDP packet implementation can arrive later without touching a line above the contract.
 
-The first implementation carries both roles over TCP: a small pool of persistent connections for packets, capped and evicted least-recently-used, and short-lived connections for streams. Frames are length-prefixed with a version byte and type; every decode validates before it allocates, and garbage or an oversized frame closes the connection. TLS is optional and reuses the same `TlsOptions` shape and all-or-nothing rule remoting already defines. The gossip listener binds its own port, separate from remoting, so either subsystem can be enabled, drained, or torn down without the other noticing.
+The first implementation carries both roles over TCP: a small pool of persistent connections for packets, capped and evicted least-recently-used, and short-lived connections for streams. Every connection starts with the `NAKT` preface, protocol version, fixed role, and the dialer's length-prefixed advertised gossip address. That logical identity—not the TCP source address and ephemeral port—is supplied as `from` to packet and stream handlers. Frames are length-prefixed with a version byte and type; every decode validates before it allocates, and garbage, an invalid identity, or an oversized frame closes the connection. TLS is optional and reuses the same `TlsOptions` shape and all-or-nothing rule remoting already defines. The gossip listener binds its own port, separate from remoting, so either subsystem can be enabled, drained, or torn down without the other noticing.
 
 ## Public surface of the package
 
@@ -117,34 +117,17 @@ The engine (`swim.ts`) exposes, to the seam only:
 - `self()`: this node's record.
 - an event callback carrying `joined`, `left`, `dead`, and `updated` (metadata change) transitions, in the order the local view applied them.
 
-Every tunable is an internal constant fixed to the values production SWIM deployments have converged on for single-network clusters, exported `@internal` for tests, never an option: protocol period 1s, probe timeout 500ms, 3 indirect probers, gossip tick every 200ms to 3 members, push-pull every 30s, retransmit multiplier 4, suspicion multiplier 4, suspicion max-timeout multiplier 6, gossip-to-the-dead and dead-retention windows 30s, awareness ceiling 8, metadata cap 512 bytes, packet budget 1400 bytes. Public configuration at the seam, when it arrives, is limited to bind host and port, seeds or a discovery provider, and TLS.
+Every protocol tunable is an internal constant fixed to the values production SWIM deployments have converged on for single-network clusters, exported `@internal` for tests, never an option: protocol period 1s, probe timeout 500ms, 3 indirect probers, gossip tick every 200ms to 3 members, push-pull every 30s, retransmit multiplier 4, suspicion multiplier 4, suspicion max-timeout multiplier 6, gossip-to-the-dead and dead-retention windows 30s, awareness ceiling 8, metadata cap 512 bytes, packet budget 1400 bytes, and sync exchange budget 1 MiB. The TCP carrier defaults to a 32-connection packet pool, 256 KiB queued-byte cap, 1s connect timeout, and 5s I/O timeout. Public configuration at the seam, when it arrives, is limited to bind and advertised host and port, seeds or a discovery provider, and TLS; carrier defaults remain internal operational controls.
 
 ## Determinism and the simulation harness
 
-`clock.ts` and `random.ts` are the only modules that touch `Date.now`, timers, or entropy, and the engine takes both as constructor inputs alongside the transport. The harness in `test/cluster/sim.ts` provides a scripted clock (time advances only when the test says so), an in-memory transport with programmable loss, latency, duplication, and partitions per link, and a seeded random source. Scenario tests assert protocol-level bounds: a join is known cluster-wide within a stated number of periods, a killed member is declared dead within the suspicion budget, a partition heal re-converges both sides, a paused-then-resumed member refutes and survives, a restarted member rejoins past its own obituary, a lone accuser cannot condemn faster than the maximum suspicion timeout, and no member is ever declared dead when loss and pauses stay inside the stated tolerance. Every scenario failure prints its seed.
+`clock.ts` and `random.ts` are the only modules that touch `Date.now`, timers, or entropy, and the engine takes both as constructor inputs alongside the transport. The harness in `test/membership/sim.ts` provides a scripted clock (time advances only when the test says so), an in-memory transport with programmable loss, latency, duplication, and partitions per link, and a seeded random source. Scenario tests assert protocol-level bounds: a join is known cluster-wide within a stated number of periods, a killed member is declared dead within the suspicion budget, a partition heal re-converges both sides, a paused-then-resumed member refutes and survives, a restarted member rejoins past its own obituary, a lone accuser cannot condemn faster than the maximum suspicion timeout, and no member is ever declared dead when loss and pauses stay inside the stated tolerance. Every scenario failure prints its seed.
 
 ## Verification
 
 - **Unit.** Codec round-trips plus malformed-input rejection on every decode path; the precedence and revival table exhaustively; broadcast packing, supersession, and budget edge cases; suspicion decay arithmetic; awareness transitions; clock and random contracts.
-- **Simulation.** The scenario suites above, run across a spread of seeds in CI.
+- **Simulation.** The scenario suites above, including a deterministic 32-seed join/failure/restart/leave campaign in CI. Every failure reports its seed.
 - **Real sockets.** Transport tests on port 0: connect, pool eviction, half-open detection, garbage bytes, slow reader, TLS pair, mixed TLS rejection, stream alongside packets.
-- **Multi-process.** A smoke-style script boots several processes, kills one with SIGKILL, and asserts the survivors converge on `dead` within the bound; further runs exercise graceful leave and kill-then-restart rejoin. Extends the existing cross-runtime smoke harness.
+- **Multi-process.** A smoke-style script boots three processes over real TCP, kills one with SIGKILL, asserts the survivors converge on `dead` within the bound, restarts it at the same advertised address above its obituary, and exercises graceful leave. CI runs the real-time campaign once rather than on every Node matrix leg.
+- **Cross-runtime.** The existing source smoke harness runs real-TCP membership join and graceful leave under Node, Bun, and Deno.
 - **Coverage and benches.** Touched files hold 100% coverage. Membership runs entirely off the message send path; when the seam lands, the tell-throughput bench runs with membership active to prove the probe and gossip timers cost nothing measurable.
-
-## Delivery plan
-
-Each slice lands green on its own: code, mirrored tests, coverage held, no dead ends.
-
-1. **Spec.** `.spec/cluster-membership.md`: exact frame layouts, update record encoding, the precedence and revival table, awareness rules, and every timing formula with its constants.
-2. **Wire.** `wire.ts`: codecs and validation.
-3. **View.** `view.ts`: member table, precedence, revival, retention, events. Pure state machine, exhaustively tested.
-4. **Broadcast.** `broadcast.ts`: transmit-limited queue and packing.
-5. **Clock, random, sim.** `clock.ts`, `random.ts`, and the simulation harness; the harness is a dependency of every slice after it.
-6. **Suspicion.** `suspicion.ts`: confirmation-driven decay timers, under simulation.
-7. **Probe.** `probe.ts`: the detector with indirect probes, nacks, awareness, the buddy system, and the gossip tick, under simulation.
-8. **Sync.** `sync.ts`: push-pull, join, rejoin refutation, anti-entropy, leave drain, under simulation.
-9. **Engine.** `swim.ts`: composition, lifecycle, public surface; full scenario suites.
-10. **TCP transport.** `transport.ts`: real sockets, pool, streams, TLS, fault injection; multi-process smoke.
-11. **Hardening.** Seed-spread simulation campaign in CI, cross-runtime smoke, constants documented in the spec.
-
-The seam (`clustering.ts`, system options, eventstream integration, discovery providers) is deliberately outside this plan; it starts the next design alongside the registry, so the membership package proves itself in isolation first, exactly as `net/` did before remoting.
