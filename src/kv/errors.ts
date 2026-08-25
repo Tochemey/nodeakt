@@ -35,9 +35,9 @@
 /**
  * A conditional write was refused because its partition has more than one owner.
  *
- * The clustering seam retries this error with backoff inside the caller's
- * timeout budget. Unconditional reads and writes are still served from the
- * owners list while the partition is fragmented.
+ * `clustering.ts` retries this error with backoff inside the caller's timeout
+ * budget. Unconditional reads and writes are still served from the owners list
+ * while the partition is fragmented.
  *
  * @internal
  */

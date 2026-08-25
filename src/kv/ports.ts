@@ -27,7 +27,7 @@
  *
  * The package is actor-blind, membership-blind, and transport-blind. It reaches
  * the outside world only through {@link ClusterView} and {@link KvTransport}.
- * {@link ReplicationGroup} is the durability seam: the v1 implementation is
+ * {@link ReplicationGroup} is the durability interface: the v1 implementation is
  * primary/backup with quorum acknowledgment and reconcile; a consensus
  * implementation can replace it without changing anything above it.
  *
@@ -102,14 +102,16 @@ export interface DeleteOp {
 
 /**
  * Atomic integer increment of the current value interpreted as a signed 64-bit
- * counter. Missing keys start at zero before applying `delta`.
+ * counter. Missing keys start at zero before applying `delta`. `delta` is a
+ * `bigint` so the full signed 64-bit range stays exact, matching the counter it
+ * mutates; a `number` would lose precision past 2^53.
  *
  * @internal
  */
 export interface IncrementOp {
   readonly kind: "incr";
   readonly key: string;
-  readonly delta: number;
+  readonly delta: bigint;
 }
 
 /**

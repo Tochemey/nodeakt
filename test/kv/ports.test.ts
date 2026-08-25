@@ -77,7 +77,7 @@ describe("kv ports", () => {
     view.onChange((): void => undefined)();
 
     const put: PutOp = { kind: "put", key: "a", value: new Uint8Array([1]), condition: "nx" };
-    const increment: IncrementOp = { kind: "incr", key: "a", delta: 1 };
+    const increment: IncrementOp = { kind: "incr", key: "a", delta: 1n };
     const compareAndSet: CompareAndSetOp = {
       kind: "cas",
       key: "a",

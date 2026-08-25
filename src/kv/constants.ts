@@ -130,3 +130,18 @@ export const MAX_KEY_BYTES: number = 1_024;
 
 /** Maximum byte length of a value. @internal */
 export const MAX_VALUE_BYTES: number = 1_048_576;
+
+/** Only protocol version the store's codec emits and accepts. @internal */
+export const PROTOCOL_VERSION: number = 1;
+
+/** Maximum UTF-8 byte length of a canonical member identity on the wire. @internal */
+export const MAX_NAME_BYTES: number = 255;
+
+/** Maximum owners recorded for one partition; a wire-safety bound on the list. @internal */
+export const MAX_OWNERS_PER_PARTITION: number = 16;
+
+/** Maximum partitions a single routing-table message may describe. @internal */
+export const MAX_WIRE_PARTITIONS: number = 1_048_576;
+
+/** Maximum entries a single fragment chunk may carry. @internal */
+export const MAX_CHUNK_ENTRIES: number = 1_048_576;
