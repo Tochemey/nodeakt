@@ -24,12 +24,15 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  type ApplyResult,
   compareMembershipUpdates,
   IncarnationExhaustedError,
   MAX_INCARNATION,
+  type MemberRecord,
   MembershipCapacityError,
   type MembershipEvent,
   MembershipView,
+  type ReapOperation,
   TERMINAL_RETENTION_MS,
 } from "../../src/membership/view";
 import {
@@ -42,14 +45,19 @@ import {
   STATE_SUSPECT,
 } from "../../src/membership/wire";
 
-const states = [STATE_ALIVE, STATE_SUSPECT, STATE_DEAD, STATE_LEFT] as const;
+const states: readonly MemberState[] = [
+  STATE_ALIVE,
+  STATE_SUSPECT,
+  STATE_DEAD,
+  STATE_LEFT,
+] as const;
 
 function update(
   state: MemberState,
-  incarnation = 7,
-  member = "member",
+  incarnation: number = 7,
+  member: string = "member",
   metadata: Uint8Array = Uint8Array.of(incarnation),
-  reporter = "reporter",
+  reporter: string = "reporter",
 ): MembershipUpdate {
   return {
     state,
@@ -67,16 +75,17 @@ describe("membership precedence", () => {
     for (const storedState of states) {
       for (const incomingState of states) {
         for (const delta of [-1, 0, 1]) {
-          const view = new MembershipView("self");
+          const view: MembershipView = new MembershipView("self");
+          view.apply(update(STATE_ALIVE, 6), 5);
           view.apply(update(storedState, 7), 10);
-          const incoming = update(incomingState, 7 + delta);
-          const result = view.apply(incoming, 20);
-          const replaces = delta > 0 || (delta === 0 && incomingState > storedState);
+          const incoming: MembershipUpdate = update(incomingState, 7 + delta);
+          const result: ApplyResult = view.apply(incoming, 20);
+          const replaces: boolean = delta > 0 || (delta === 0 && incomingState > storedState);
 
           expect(result.kind, `${storedState}/${incomingState}/${delta}`).toBe(
             replaces ? "applied" : "ignored",
           );
-          const stored = view.get("member");
+          const stored: MemberRecord | undefined = view.get("member");
           expect(stored?.state).toBe(replaces ? incomingState : storedState);
           expect(stored?.incarnation).toBe(replaces ? 7 + delta : 7);
           expect(stored?.appliedAt).toBe(replaces ? 20 : 10);
@@ -90,7 +99,8 @@ describe("membership precedence", () => {
       [STATE_DEAD, STATE_LEFT],
       [STATE_LEFT, STATE_DEAD],
     ] as const) {
-      const view = new MembershipView("self");
+      const view: MembershipView = new MembershipView("self");
+      view.apply(update(STATE_ALIVE, 6), 0);
       for (const state of order) {
         view.apply(update(state), 1);
       }
@@ -105,7 +115,7 @@ describe("membership precedence", () => {
   });
 
   it("keeps accepted appliedAt locally monotonic", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
     view.apply(update(STATE_ALIVE, 1), 20);
     view.apply(update(STATE_SUSPECT, 1), 10);
     view.apply(update(STATE_ALIVE, 2), 30);
@@ -119,7 +129,7 @@ describe("membership precedence", () => {
 describe("membership events", () => {
   it("emits public events synchronously in local apply order", () => {
     const events: MembershipEvent[] = [];
-    const view = new MembershipView("self", (event: MembershipEvent): void => {
+    const view: MembershipView = new MembershipView("self", (event: MembershipEvent): void => {
       events.push(event);
     });
 
@@ -130,25 +140,41 @@ describe("membership events", () => {
     view.apply(update(STATE_LEFT, 2, "a"), 5);
     view.apply(update(STATE_ALIVE, 3, "a", Uint8Array.of(3)), 6);
 
+    // The left record still replaces the dead one, but a terminal record
+    // superseding already-terminal truth is not observable a second time.
+    expect(view.get("a")?.state).toBe(STATE_ALIVE);
     expect(events.map((event: MembershipEvent): string => event.type)).toEqual([
       "joined",
       "updated",
       "dead",
-      "left",
       "joined",
     ]);
     expect(events.map((event: MembershipEvent): number => event.member.appliedAt)).toEqual([
-      1, 2, 4, 5, 6,
+      1, 2, 4, 6,
     ]);
+  });
+
+  it("silently replaces terminal truth with higher-incarnation terminal truth", () => {
+    const events: MembershipEvent[] = [];
+    const view: MembershipView = new MembershipView("self", (event: MembershipEvent): void => {
+      events.push(event);
+    });
+    view.apply(update(STATE_ALIVE, 1, "a"), 1);
+    view.apply(update(STATE_DEAD, 1, "a"), 2);
+    const replaced: ApplyResult = view.apply(update(STATE_DEAD, 2, "a"), 3);
+
+    expect(replaced.kind).toBe("applied");
+    expect(view.get("a")?.incarnation).toBe(2);
+    expect(events.map((event: MembershipEvent): string => event.type)).toEqual(["joined", "dead"]);
   });
 
   it("does not emit updated when alive metadata is unchanged", () => {
     const events: MembershipEvent[] = [];
-    const view = new MembershipView("self", (event: MembershipEvent): void => {
+    const view: MembershipView = new MembershipView("self", (event: MembershipEvent): void => {
       events.push(event);
     });
     view.apply(update(STATE_ALIVE, 1, "a", Uint8Array.of(1)), 1);
-    const result = view.apply(update(STATE_ALIVE, 2, "a", Uint8Array.of(1)), 2);
+    const result: ApplyResult = view.apply(update(STATE_ALIVE, 2, "a", Uint8Array.of(1)), 2);
 
     expect(result.kind).toBe("applied");
     expect(events.map((event: MembershipEvent): string => event.type)).toEqual(["joined"]);
@@ -156,7 +182,7 @@ describe("membership events", () => {
 
   it("emits updated when alive metadata length changes", () => {
     const events: MembershipEvent[] = [];
-    const view = new MembershipView("self", (event: MembershipEvent): void => {
+    const view: MembershipView = new MembershipView("self", (event: MembershipEvent): void => {
       events.push(event);
     });
     view.apply(update(STATE_ALIVE, 1, "a", Uint8Array.of(1)), 1);
@@ -170,11 +196,11 @@ describe("membership events", () => {
 
   it("isolates callback and returned event metadata from stored truth", () => {
     let callbackEvent: MembershipEvent | undefined;
-    const view = new MembershipView("self", (event: MembershipEvent): void => {
+    const view: MembershipView = new MembershipView("self", (event: MembershipEvent): void => {
       callbackEvent = event;
       event.member.metadata[0] = 91;
     });
-    const result = view.apply(update(STATE_ALIVE, 1, "a", Uint8Array.of(4)), 1);
+    const result: ApplyResult = view.apply(update(STATE_ALIVE, 1, "a", Uint8Array.of(4)), 1);
     if (result.kind !== "applied") {
       throw new Error("expected apply");
     }
@@ -188,10 +214,13 @@ describe("membership events", () => {
 
 describe("suspicion confirmations", () => {
   it("returns confirmations once per distinct reporter without replacing truth", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
     view.apply(update(STATE_SUSPECT, 4, "a", undefined, "first"), 10);
 
-    const confirmation = view.apply(update(STATE_SUSPECT, 4, "a", undefined, "second"), 20);
+    const confirmation: ApplyResult = view.apply(
+      update(STATE_SUSPECT, 4, "a", undefined, "second"),
+      20,
+    );
     expect(confirmation).toEqual({
       kind: "confirmed",
       member: "a",
@@ -212,7 +241,7 @@ describe("suspicion confirmations", () => {
   });
 
   it("resets reporters when a higher-incarnation suspicion starts", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
     view.apply(update(STATE_SUSPECT, 4, "a", undefined, "first"), 1);
     view.apply(update(STATE_SUSPECT, 4, "a", undefined, "second"), 2);
     view.apply(update(STATE_SUSPECT, 5, "a", undefined, "third"), 3);
@@ -221,7 +250,7 @@ describe("suspicion confirmations", () => {
   });
 
   it("returns no confirmation reporters for absent and non-suspect records", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
     expect(view.confirmationReporters("missing")).toEqual([]);
     view.apply(update(STATE_ALIVE, 1, "a"), 1);
     expect(view.confirmationReporters("a")).toEqual([]);
@@ -230,8 +259,8 @@ describe("suspicion confirmations", () => {
 
 describe("self-refutation", () => {
   it("refutes an accusation before self has joined", () => {
-    const view = new MembershipView("self");
-    const result = view.apply(update(STATE_SUSPECT, 3, "self"), 10, 20n);
+    const view: MembershipView = new MembershipView("self");
+    const result: ApplyResult = view.apply(update(STATE_SUSPECT, 3, "self"), 10, 20n);
 
     expect(result.kind).toBe("refuted");
     expect(view.self()).toMatchObject({
@@ -242,7 +271,7 @@ describe("self-refutation", () => {
   });
 
   it("does not preserve metadata from a non-alive self record", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
     view.applyLocal(update(STATE_SUSPECT, 3, "self"), 1);
     view.apply(update(STATE_DEAD, 3, "self"), 2);
 
@@ -255,10 +284,10 @@ describe("self-refutation", () => {
 
   it("refutes equal and higher accusations above the greatest incarnation", () => {
     for (const accusation of [STATE_SUSPECT, STATE_DEAD, STATE_LEFT] as const) {
-      const view = new MembershipView("self");
+      const view: MembershipView = new MembershipView("self");
       view.apply(update(STATE_ALIVE, 4, "self", Uint8Array.of(8)), 1);
 
-      const equal = view.apply(update(accusation, 4, "self"), 2, 200n);
+      const equal: ApplyResult = view.apply(update(accusation, 4, "self"), 2, 200n);
       expect(equal.kind).toBe("refuted");
       expect(view.self()).toMatchObject({
         state: STATE_ALIVE,
@@ -267,30 +296,77 @@ describe("self-refutation", () => {
         metadata: Uint8Array.of(8),
       });
 
-      const higher = view.apply(update(accusation, 8, "self"), 3, 300n);
+      const higher: ApplyResult = view.apply(update(accusation, 8, "self"), 3, 300n);
       expect(higher.kind).toBe("refuted");
       expect(view.self()).toMatchObject({ state: STATE_ALIVE, incarnation: 9 });
     }
   });
 
   it("ignores a lower-incarnation self accusation", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
     view.apply(update(STATE_ALIVE, 4, "self"), 1);
     expect(view.apply(update(STATE_DEAD, 3, "self"), 2)).toEqual({ kind: "ignored" });
     expect(view.self()?.incarnation).toBe(4);
   });
 
-  it("allows a locally originated graceful leave without refuting it", () => {
-    const view = new MembershipView("self");
+  it("refutes a remote alive claim about self instead of adopting it", () => {
+    const view: MembershipView = new MembershipView("self");
+    view.applyLocal(update(STATE_ALIVE, 0, "self", Uint8Array.of(1)), 1);
+
+    // A stale instance's higher-incarnation alive record must not replace
+    // local truth: the defense outbids it and keeps local metadata.
+    const higher: ApplyResult = view.apply(update(STATE_ALIVE, 5, "self", Uint8Array.of(9)), 2);
+    expect(higher.kind).toBe("refuted");
+    expect(view.self()).toMatchObject({
+      state: STATE_ALIVE,
+      incarnation: 6,
+      metadata: Uint8Array.of(1),
+    });
+
+    const differing: ApplyResult = view.apply(update(STATE_ALIVE, 6, "self", Uint8Array.of(9)), 3);
+    expect(differing.kind).toBe("refuted");
+    expect(view.self()).toMatchObject({
+      state: STATE_ALIVE,
+      incarnation: 7,
+      metadata: Uint8Array.of(1),
+    });
+  });
+
+  it("ignores an echo of the current alive self record", () => {
+    const view: MembershipView = new MembershipView("self");
+    view.applyLocal(update(STATE_ALIVE, 3, "self", Uint8Array.of(1)), 1);
+
+    expect(view.apply(update(STATE_ALIVE, 3, "self", Uint8Array.of(1)), 2)).toEqual({
+      kind: "ignored",
+    });
+    expect(view.apply(update(STATE_ALIVE, 2, "self", Uint8Array.of(9)), 3)).toEqual({
+      kind: "ignored",
+    });
+    expect(view.self()?.incarnation).toBe(3);
+  });
+
+  it("does not treat an alive claim about a non-alive self record as an accusation", () => {
+    const view: MembershipView = new MembershipView("self");
     view.applyLocal(update(STATE_ALIVE, 4, "self"), 1);
-    const result = view.applyLocal(update(STATE_LEFT, 4, "self"), 2);
+    view.applyLocal(update(STATE_LEFT, 4, "self"), 2);
+
+    expect(view.apply(update(STATE_ALIVE, 4, "self", Uint8Array.of(1)), 3)).toEqual({
+      kind: "ignored",
+    });
+    expect(view.self()?.state).toBe(STATE_LEFT);
+  });
+
+  it("allows a locally originated graceful leave without refuting it", () => {
+    const view: MembershipView = new MembershipView("self");
+    view.applyLocal(update(STATE_ALIVE, 4, "self"), 1);
+    const result: ApplyResult = view.applyLocal(update(STATE_LEFT, 4, "self"), 2);
 
     expect(result.kind).toBe("applied");
     expect(view.self()).toMatchObject({ state: STATE_LEFT, incarnation: 4 });
   });
 
   it("throws a typed overflow without changing truth", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
     view.apply(update(STATE_ALIVE, MAX_INCARNATION, "self"), 1);
 
     expect(() => view.apply(update(STATE_DEAD, MAX_INCARNATION, "self"), 2)).toThrow(
@@ -302,7 +378,7 @@ describe("self-refutation", () => {
 
 describe("retention and snapshots", () => {
   it("exposes empty-view diagnostics and counts only probe-eligible records", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
     expect(view.size).toBe(0);
     expect(view.selfName).toBe("self");
     expect(view.get("missing")).toBeUndefined();
@@ -311,21 +387,55 @@ describe("retention and snapshots", () => {
 
     view.apply(update(STATE_ALIVE, 1, "alive"), 1);
     view.apply(update(STATE_SUSPECT, 1, "suspect"), 1);
+    view.apply(update(STATE_ALIVE, 0, "dead"), 1);
     view.apply(update(STATE_DEAD, 1, "dead"), 1);
     expect(view.aliveOrSuspectCount()).toBe(2);
     expect(view.reapOperation("alive")).toBeUndefined();
     expect(view.dueReaps(TERMINAL_RETENTION_MS + 1)).toHaveLength(1);
   });
 
+  it("ignores terminal truth about an identity with no retained record", () => {
+    const events: MembershipEvent[] = [];
+    const view: MembershipView = new MembershipView("self", (event: MembershipEvent): void => {
+      events.push(event);
+    });
+
+    expect(view.apply(update(STATE_DEAD, 3, "a"), 1)).toEqual({ kind: "ignored" });
+    expect(view.apply(update(STATE_LEFT, 3, "a"), 2)).toEqual({ kind: "ignored" });
+    expect(view.size).toBe(0);
+    expect(events).toEqual([]);
+  });
+
+  it("does not resurrect a reaped terminal record from a late redelivery", () => {
+    const events: MembershipEvent[] = [];
+    const view: MembershipView = new MembershipView("self", (event: MembershipEvent): void => {
+      events.push(event);
+    });
+    view.apply(update(STATE_ALIVE, 0, "a"), 1);
+    view.apply(update(STATE_DEAD, 1, "a"), 100);
+    const operation: ReapOperation | undefined = view.dueReaps(100 + TERMINAL_RETENTION_MS)[0];
+    if (operation === undefined) {
+      throw new Error("expected due reap");
+    }
+
+    expect(view.reap(operation)).toBe(true);
+    expect(view.apply(update(STATE_DEAD, 1, "a"), 100 + TERMINAL_RETENTION_MS + 1)).toEqual({
+      kind: "ignored",
+    });
+    expect(view.get("a")).toBeUndefined();
+    expect(events.map((event: MembershipEvent): string => event.type)).toEqual(["joined", "dead"]);
+  });
+
   it("routes stale local truth through the duplicate guard", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
     view.applyLocal(update(STATE_ALIVE, 2, "a"), 1);
 
     expect(view.applyLocal(update(STATE_ALIVE, 1, "a"), 2)).toEqual({ kind: "ignored" });
   });
 
   it("uses an inclusive transition and exclusive terminal expiry for gossip", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
+    view.apply(update(STATE_ALIVE, 0, "a"), 50);
     view.apply(update(STATE_DEAD, 1, "a"), 100);
 
     expect(view.isGossipEligible("a", 100)).toBe(true);
@@ -349,9 +459,10 @@ describe("retention and snapshots", () => {
   });
 
   it("rejects stale reap operations after truth changes", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
+    view.apply(update(STATE_ALIVE, 0, "a"), 50);
     view.apply(update(STATE_DEAD, 1, "a"), 100);
-    const stale = view.dueReaps(100 + TERMINAL_RETENTION_MS)[0];
+    const stale: ReapOperation | undefined = view.dueReaps(100 + TERMINAL_RETENTION_MS)[0];
     if (stale === undefined) {
       throw new Error("expected due reap");
     }
@@ -363,22 +474,24 @@ describe("retention and snapshots", () => {
 
   it("reaps only the matching terminal record and emits no event", () => {
     const events: MembershipEvent[] = [];
-    const view = new MembershipView("self", (event: MembershipEvent): void => {
+    const view: MembershipView = new MembershipView("self", (event: MembershipEvent): void => {
       events.push(event);
     });
+    view.apply(update(STATE_ALIVE, 0, "a"), 50);
     view.apply(update(STATE_LEFT, 1, "a"), 100);
-    const operation = view.dueReaps(100 + TERMINAL_RETENTION_MS)[0];
+    const operation: ReapOperation | undefined = view.dueReaps(100 + TERMINAL_RETENTION_MS)[0];
 
     expect(operation === undefined ? false : view.reap(operation)).toBe(true);
     expect(view.get("a")).toBeUndefined();
-    expect(events.map((event: MembershipEvent): string => event.type)).toEqual(["left"]);
+    expect(events.map((event: MembershipEvent): string => event.type)).toEqual(["joined", "left"]);
     expect(operation === undefined ? false : view.reap(operation)).toBe(false);
   });
 
   it("rejects reap operations whose incarnation or deadline changed", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
+    view.apply(update(STATE_ALIVE, 0, "a"), 50);
     view.apply(update(STATE_DEAD, 2, "a"), 100);
-    const operation = view.reapOperation("a");
+    const operation: ReapOperation | undefined = view.reapOperation("a");
     if (operation === undefined) {
       throw new Error("expected reap operation");
     }
@@ -389,15 +502,15 @@ describe("retention and snapshots", () => {
   });
 
   it("copies incoming metadata and every exposed record", () => {
-    const metadata = Uint8Array.of(1, 2);
-    const incoming = update(STATE_ALIVE, 1, "a", metadata);
-    const view = new MembershipView("self");
+    const metadata: Uint8Array = Uint8Array.of(1, 2);
+    const incoming: MembershipUpdate = update(STATE_ALIVE, 1, "a", metadata);
+    const view: MembershipView = new MembershipView("self");
     view.apply(incoming, 1);
     metadata[0] = 9;
 
-    const getRecord = view.get("a");
-    const membersRecord = view.members()[0];
-    const updateRecord = view.updates()[0];
+    const getRecord: MemberRecord | undefined = view.get("a");
+    const membersRecord: MemberRecord | undefined = view.members()[0];
+    const updateRecord: MembershipUpdate | undefined = view.updates()[0];
     if (getRecord === undefined || membersRecord === undefined || updateRecord === undefined) {
       throw new Error("expected snapshots");
     }
@@ -409,7 +522,7 @@ describe("retention and snapshots", () => {
   });
 
   it("enforces the retained membership capacity", () => {
-    const view = new MembershipView("self");
+    const view: MembershipView = new MembershipView("self");
     for (let index = 0; index < MAX_MEMBERS; index += 1) {
       view.apply(update(STATE_ALIVE, 1, `member-${index}`), index);
     }

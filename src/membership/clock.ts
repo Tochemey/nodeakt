@@ -107,7 +107,7 @@ interface WallTimer extends ClockTimer {
  * Longest delay Node honors in one `setTimeout`; larger values are clamped by
  * the host to 1 ms, so they must be chained instead.
  */
-const MAX_HOST_TIMER_DELAY_MS = 2 ** 31 - 1;
+const MAX_HOST_TIMER_DELAY_MS: number = 2 ** 31 - 1;
 
 /**
  * Enforces the delay domain accepted by {@link WallClock.schedule}.
@@ -188,13 +188,13 @@ export class WallClock implements Clock {
 
   /** Arms one host timer slice, chaining any remainder beyond the host ceiling. */
   #arm(timer: WallTimer, remainingMs: number, callback: () => void): void {
-    const slice = Math.min(remainingMs, MAX_HOST_TIMER_DELAY_MS);
+    const slice: number = Math.min(remainingMs, MAX_HOST_TIMER_DELAY_MS);
     timer.handle = setTimeout((): void => {
       if (timer.cancelled) {
         return;
       }
 
-      const remainder = remainingMs - slice;
+      const remainder: number = remainingMs - slice;
       if (remainder > 0) {
         this.#arm(timer, remainder, callback);
         return;
@@ -216,7 +216,7 @@ export class WallClock implements Clock {
    * @param timer Handle returned by a compatible `WallClock`.
    */
   cancel(timer: ClockTimer): void {
-    const wallTimer = timer as WallTimer;
+    const wallTimer: WallTimer = timer as WallTimer;
     if (wallTimer.cancelled) {
       return;
     }
@@ -258,19 +258,38 @@ export interface Deadline {
  * Creates a one-shot abort deadline for a positive millisecond duration.
  *
  * This module owns the ambient host timer so protocol code stays free of
- * direct `setTimeout` use.
+ * direct `setTimeout` use. Durations beyond the host's 32-bit signed
+ * millisecond ceiling are chained across successive host timers, matching
+ * {@link WallClock.schedule}, instead of being silently clamped to 1 ms.
  *
  * @internal Unlike `AbortSignal.timeout`, the underlying timer is cleared on
  * {@link Deadline.dispose}, so fast operations do not leave it pending.
  */
 export function timedSignal(milliseconds: number): Deadline {
-  const controller = new AbortController();
-  const handle = setTimeout((): void => controller.abort(), milliseconds);
-  unref(handle);
+  const controller: AbortController = new AbortController();
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const arm: (remainingMs: number) => void = (remainingMs: number): void => {
+    const slice: number = Math.min(remainingMs, MAX_HOST_TIMER_DELAY_MS);
+    handle = setTimeout((): void => {
+      const remainder: number = remainingMs - slice;
+      if (remainder > 0) {
+        arm(remainder);
+        return;
+      }
+
+      controller.abort();
+    }, slice);
+    unref(handle);
+  };
+
+  arm(milliseconds);
   return {
     signal: controller.signal,
     dispose(): void {
-      clearTimeout(handle);
+      if (handle !== undefined) {
+        clearTimeout(handle);
+        handle = undefined;
+      }
     },
   };
 }

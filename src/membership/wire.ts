@@ -23,7 +23,7 @@
  */
 
 /** Unsigned byte identifying the only wire format emitted and accepted here. @internal */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION: number = 1;
 
 /** Unsigned byte selecting a direct-probe packet body. @internal */
 export const MESSAGE_PING = 0x01;
@@ -65,34 +65,34 @@ export const ROLE_PACKET = 1;
 export const ROLE_STREAM = 2;
 
 /** Byte width of the version, type, and unsigned 16-bit body-length envelope. @internal */
-export const MESSAGE_HEADER_BYTES = 4;
+export const MESSAGE_HEADER_BYTES: number = 4;
 
 /** Byte width of a membership record before its variable UTF-8 and metadata fields. @internal */
-export const UPDATE_HEADER_BYTES = 20;
+export const UPDATE_HEADER_BYTES: number = 20;
 
 /** Byte width of a sync body header before its membership records. @internal */
-export const SYNC_HEADER_BYTES = 14;
+export const SYNC_HEADER_BYTES: number = 14;
 
 /** Maximum complete packet size, including the common envelope, in bytes. @internal */
-export const MAX_PACKET_BYTES = 1_400;
+export const MAX_PACKET_BYTES: number = 1_400;
 
 /** Maximum complete sync chunk accepted inside one stream frame, in bytes. @internal */
-export const MAX_SYNC_MESSAGE_BYTES = 65_539;
+export const MAX_SYNC_MESSAGE_BYTES: number = 65_539;
 
 /** Maximum aggregate sync exchange size, including each 4-byte stream prefix, in bytes. @internal */
-export const MAX_SYNC_EXCHANGE_BYTES = 1_048_576;
+export const MAX_SYNC_EXCHANGE_BYTES: number = 1_048_576;
 
 /** Maximum distinct advertised member identities in one complete sync table. @internal */
-export const MAX_MEMBERS = 1_024;
+export const MAX_MEMBERS: number = 1_024;
 
 /** Maximum encoded UTF-8 bytes in any protocol identity/address field. @internal */
-export const MAX_NAME_BYTES = 255;
+export const MAX_NAME_BYTES: number = 255;
 
 /** Maximum membership records in one counted packet update list. @internal */
-export const UPDATE_LIST_MAX_RECORDS = 255;
+export const UPDATE_LIST_MAX_RECORDS: number = 255;
 
 /** Maximum opaque metadata payload on an alive membership record, in bytes. @internal */
-export const MAX_METADATA_BYTES = 512;
+export const MAX_METADATA_BYTES: number = 512;
 
 /**
  * Membership states represented as unsigned bytes on the wire.
@@ -171,6 +171,25 @@ export function copyMembershipUpdate(update: MembershipUpdate): MembershipUpdate
     reporter: update.reporter,
     metadata: Uint8Array.from(update.metadata),
   };
+}
+
+/**
+ * Compares two byte sequences by value without assuming shared backing storage.
+ *
+ * @internal
+ */
+export function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /** Fields shared by probe packets and their positive or negative responses. */
@@ -279,13 +298,13 @@ export class ProtocolError extends Error {
 }
 
 /** Shared stateless UTF-8 encoder used for length validation and serialization. */
-const encoder = new TextEncoder();
+const encoder: TextEncoder = new TextEncoder();
 
 /** Shared fatal UTF-8 decoder; malformed byte sequences are protocol errors. */
-const decoder = new TextDecoder("utf-8", { fatal: true });
+const decoder: TextDecoder = new TextDecoder("utf-8", { fatal: true });
 
 /** Shared zero-length metadata value returned where no mutable bytes exist. */
-const EMPTY_BYTES = new Uint8Array(0);
+const EMPTY_BYTES: Uint8Array = new Uint8Array(0);
 
 /** Raises a typed protocol error and marks the calling path as non-returning. */
 function fail(message: string): never {
@@ -293,31 +312,31 @@ function fail(message: string): never {
 }
 
 /** Shared encode/decode failure text for an unrecognized membership state byte. */
-const UNKNOWN_STATE_MESSAGE = "unknown membership state";
+const UNKNOWN_STATE_MESSAGE: string = "unknown membership state";
 
 /** Shared encode/decode failure text for metadata beyond its unsigned 16-bit budget. */
-const METADATA_LENGTH_MESSAGE = "metadata length is out of range";
+const METADATA_LENGTH_MESSAGE: string = "metadata length is out of range";
 
 /** Shared encode/decode failure text for a reporter violating its state rule. */
-const REPORTER_STATE_MESSAGE = "reporter is inconsistent with state";
+const REPORTER_STATE_MESSAGE: string = "reporter is inconsistent with state";
 
 /** Shared encode/decode failure text for metadata on a non-alive record. */
-const METADATA_STATE_MESSAGE = "metadata is only legal on alive updates";
+const METADATA_STATE_MESSAGE: string = "metadata is only legal on alive updates";
 
 /** Shared encode/decode failure text for a provenance flag violating its state rule. */
-const SELF_ORIGINATED_MESSAGE = "self-originated flag is inconsistent with state";
+const SELF_ORIGINATED_MESSAGE: string = "self-originated flag is inconsistent with state";
 
 /** Shared encode/decode failure text for an illegal sync chunk index/count pair. */
-const SYNC_CHUNK_POSITION_MESSAGE = "sync chunk position is invalid";
+const SYNC_CHUNK_POSITION_MESSAGE: string = "sync chunk position is invalid";
 
 /** Shared encode/decode failure text for one chunk naming too many members. */
-const SYNC_MEMBER_COUNT_MESSAGE = `sync member count exceeds ${MAX_MEMBERS}`;
+const SYNC_MEMBER_COUNT_MESSAGE: string = `sync member count exceeds ${MAX_MEMBERS}`;
 
 /** Shared encode/decode failure text for a complete table naming too many members. */
-const SYNC_TABLE_MESSAGE = `sync table exceeds ${MAX_MEMBERS} members`;
+const SYNC_TABLE_MESSAGE: string = `sync table exceeds ${MAX_MEMBERS} members`;
 
 /** Shared encode/decode failure text for a complete packet beyond its byte cap. */
-const PACKET_SIZE_MESSAGE = `packet message exceeds ${MAX_PACKET_BYTES} bytes`;
+const PACKET_SIZE_MESSAGE: string = `packet message exceeds ${MAX_PACKET_BYTES} bytes`;
 
 /** Adds one member identity to `names`, rejecting a duplicate advertised member. */
 function addDistinctMember(names: Set<string>, member: string): void {
@@ -336,7 +355,7 @@ function assertUint(value: number, maximum: number, field: string): void {
 }
 
 /** Validates an unsigned 64-bit bigint, optionally excluding zero. */
-function assertU64(value: bigint, field: string, nonzero = false): void {
+function assertU64(value: bigint, field: string, nonzero: boolean = false): void {
   if (value < 0n || value > 0xffffffffffffffffn || (nonzero && value === 0n)) {
     fail(`${field} is out of range`);
   }
@@ -346,14 +365,18 @@ function assertU64(value: bigint, field: string, nonzero = false): void {
  * Encodes and validates a protocol identity/address.
  *
  * Empty values are accepted only for explicitly optional fields. NUL, malformed Unicode,
- * and values exceeding the one-byte UTF-8 length field raise `ProtocolError`.
+ * and values exceeding the one-byte UTF-8 length field raise `ProtocolError`. This is
+ * the single home of the identity rules; the transport handshake reuses it so a name
+ * cannot pass one layer and fail the other.
+ *
+ * @internal
  */
-function encodeName(name: string, field: string, allowEmpty = false): Uint8Array {
+export function encodeName(name: string, field: string, allowEmpty: boolean = false): Uint8Array {
   if (name.includes("\0")) {
     fail(`${field} contains NUL`);
   }
 
-  const bytes = encoder.encode(name);
+  const bytes: Uint8Array = encoder.encode(name);
   if ((!allowEmpty && bytes.length === 0) || bytes.length > MAX_NAME_BYTES) {
     fail(`${field} length is out of range`);
   }
@@ -369,14 +392,16 @@ function encodeName(name: string, field: string, allowEmpty = false): Uint8Array
  * Decodes a validated UTF-8 identity/address from an already bounds-checked byte range.
  *
  * The returned string is newly decoded. Invalid UTF-8, NUL, and illegal lengths raise
- * `ProtocolError`.
+ * `ProtocolError`. Shared with the transport handshake as the single identity decoder.
+ *
+ * @internal
  */
-function decodeName(
+export function decodeName(
   bytes: Uint8Array,
   offset: number,
   length: number,
   field: string,
-  allowEmpty = false,
+  allowEmpty: boolean = false,
 ): string {
   if ((!allowEmpty && length === 0) || length > MAX_NAME_BYTES) {
     fail(`${field} length is out of range`);
@@ -430,8 +455,8 @@ function prepareUpdate(update: MembershipUpdate): PreparedUpdate {
 
   assertUint(update.incarnation, 0xffffffff, "incarnation");
   assertU64(update.stateChangeTime, "state-change time");
-  const member = encodeName(update.member, "member");
-  const reporter = encodeName(update.reporter, "reporter", true);
+  const member: Uint8Array = encodeName(update.member, "member");
+  const reporter: Uint8Array = encodeName(update.reporter, "reporter", true);
   if (update.metadata.length > MAX_METADATA_BYTES) {
     fail(METADATA_LENGTH_MESSAGE);
   }
@@ -444,7 +469,7 @@ function prepareUpdate(update: MembershipUpdate): PreparedUpdate {
     fail(METADATA_STATE_MESSAGE);
   }
 
-  const selfRequired = update.state === STATE_ALIVE || update.state === STATE_LEFT;
+  const selfRequired: boolean = update.state === STATE_ALIVE || update.state === STATE_LEFT;
   if (update.selfOriginated !== selfRequired) {
     fail(SELF_ORIGINATED_MESSAGE);
   }
@@ -468,7 +493,7 @@ function writePreparedUpdate(
   offset: number,
   prepared: PreparedUpdate,
 ): number {
-  const update = prepared.update;
+  const update: MembershipUpdate = prepared.update;
   view.setUint16(offset, prepared.length - 2);
   view.setUint8(offset + 2, update.state);
   view.setUint8(offset + 3, update.selfOriginated ? 1 : 0);
@@ -477,7 +502,7 @@ function writePreparedUpdate(
   view.setUint8(offset + 16, prepared.member.length);
   view.setUint8(offset + 17, prepared.reporter.length);
   view.setUint16(offset + 18, update.metadata.length);
-  let position = offset + UPDATE_HEADER_BYTES;
+  let position: number = offset + UPDATE_HEADER_BYTES;
   bytes.set(prepared.member, position);
   position += prepared.member.length;
   bytes.set(prepared.reporter, position);
@@ -505,8 +530,8 @@ export function membershipUpdateSize(update: MembershipUpdate): number {
  * @internal
  */
 export function encodeMembershipUpdate(update: MembershipUpdate): Uint8Array {
-  const prepared = prepareUpdate(update);
-  const bytes = new Uint8Array(prepared.length);
+  const prepared: PreparedUpdate = prepareUpdate(update);
+  const bytes: Uint8Array = new Uint8Array(prepared.length);
   writePreparedUpdate(bytes, new DataView(bytes.buffer), 0, prepared);
   return bytes;
 }
@@ -536,18 +561,18 @@ function decodeMembershipUpdateAt(
     fail("membership update is truncated");
   }
 
-  const recordLength = view.getUint16(offset);
-  const totalLength = recordLength + 2;
+  const recordLength: number = view.getUint16(offset);
+  const totalLength: number = recordLength + 2;
   if (totalLength < UPDATE_HEADER_BYTES || totalLength > limit - offset) {
     fail("membership record length is inconsistent");
   }
 
-  const end = offset + totalLength;
-  const state = view.getUint8(offset + 2);
-  const flags = view.getUint8(offset + 3);
-  const memberLength = view.getUint8(offset + 16);
-  const reporterLength = view.getUint8(offset + 17);
-  const metadataLength = view.getUint16(offset + 18);
+  const end: number = offset + totalLength;
+  const state: number = view.getUint8(offset + 2);
+  const flags: number = view.getUint8(offset + 3);
+  const memberLength: number = view.getUint8(offset + 16);
+  const reporterLength: number = view.getUint8(offset + 17);
+  const metadataLength: number = view.getUint16(offset + 18);
   if (state > STATE_LEFT) {
     fail(UNKNOWN_STATE_MESSAGE);
   }
@@ -564,13 +589,13 @@ function decodeMembershipUpdateAt(
     fail(METADATA_LENGTH_MESSAGE);
   }
 
-  const expected = UPDATE_HEADER_BYTES + memberLength + reporterLength + metadataLength;
+  const expected: number = UPDATE_HEADER_BYTES + memberLength + reporterLength + metadataLength;
   if (totalLength !== expected) {
     fail("membership record fields do not match its length");
   }
 
-  const selfOriginated = flags === 1;
-  const selfRequired = state === STATE_ALIVE || state === STATE_LEFT;
+  const selfOriginated: boolean = flags === 1;
+  const selfRequired: boolean = state === STATE_ALIVE || state === STATE_LEFT;
 
   if (selfOriginated !== selfRequired) {
     fail(SELF_ORIGINATED_MESSAGE);
@@ -584,12 +609,12 @@ function decodeMembershipUpdateAt(
     fail(METADATA_STATE_MESSAGE);
   }
 
-  const memberOffset = offset + UPDATE_HEADER_BYTES;
-  const reporterOffset = memberOffset + memberLength;
-  const metadataOffset = reporterOffset + reporterLength;
-  const member = decodeName(bytes, memberOffset, memberLength, "member");
-  const reporter = decodeName(bytes, reporterOffset, reporterLength, "reporter", true);
-  const metadata =
+  const memberOffset: number = offset + UPDATE_HEADER_BYTES;
+  const reporterOffset: number = memberOffset + memberLength;
+  const metadataOffset: number = reporterOffset + reporterLength;
+  const member: string = decodeName(bytes, memberOffset, memberLength, "member");
+  const reporter: string = decodeName(bytes, reporterOffset, reporterLength, "reporter", true);
+  const metadata: Uint8Array =
     metadataLength === 0
       ? EMPTY_BYTES
       : bytes.slice(metadataOffset, metadataOffset + metadataLength);
@@ -616,8 +641,8 @@ function decodeMembershipUpdateAt(
  * @internal
  */
 export function decodeMembershipUpdate(bytes: Uint8Array): MembershipUpdate {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const decoded = decodeMembershipUpdateAt(bytes, view, 0, bytes.length);
+  const view: DataView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoded: DecodedUpdate = decodeMembershipUpdateAt(bytes, view, 0, bytes.length);
   if (decoded.end !== bytes.length) {
     fail("trailing bytes after membership update");
   }
@@ -657,7 +682,7 @@ function preparePacketNames(message: PacketMessage): PreparedPacketNames {
       break;
   }
 
-  let baseLength = message.type === MESSAGE_GOSSIP ? 1 : 5;
+  let baseLength: number = message.type === MESSAGE_GOSSIP ? 1 : 5;
   for (const name of names) {
     baseLength += 1 + name.length;
   }
@@ -690,15 +715,15 @@ interface PreparedPacketBody extends PreparedPacketNames {
 
 /** Validates names, update count, and every update exactly once for one packet encode. */
 function preparePacketBody(message: PacketMessage): PreparedPacketBody {
-  const base = preparePacketNames(message);
+  const base: PreparedPacketNames = preparePacketNames(message);
   if (message.updates.length > UPDATE_LIST_MAX_RECORDS) {
     fail(`packet update count exceeds ${UPDATE_LIST_MAX_RECORDS}`);
   }
 
   const updates: PreparedUpdate[] = [];
-  let bodyLength = base.baseLength;
+  let bodyLength: number = base.baseLength;
   for (const update of message.updates) {
-    const prepared = prepareUpdate(update);
+    const prepared: PreparedUpdate = prepareUpdate(update);
     updates.push(prepared);
     bodyLength += prepared.length;
   }
@@ -713,7 +738,7 @@ function writePacketBody(
   bytes: Uint8Array,
   view: DataView,
 ): void {
-  let offset = MESSAGE_HEADER_BYTES;
+  let offset: number = MESSAGE_HEADER_BYTES;
   if (message.type !== MESSAGE_GOSSIP) {
     assertUint(message.sequence, 0xffffffff, "probe sequence");
     view.setUint32(offset, message.sequence);
@@ -755,12 +780,12 @@ function prepareSyncBody(message: SyncMessage): PreparedSyncBody {
     fail(SYNC_MEMBER_COUNT_MESSAGE);
   }
 
-  const names = new Set<string>();
+  const names: Set<string> = new Set<string>();
   const updates: PreparedUpdate[] = [];
-  let bodyLength = SYNC_HEADER_BYTES;
+  let bodyLength: number = SYNC_HEADER_BYTES;
   for (const update of message.updates) {
     addDistinctMember(names, update.member);
-    const prepared = prepareUpdate(update);
+    const prepared: PreparedUpdate = prepareUpdate(update);
     updates.push(prepared);
     bodyLength += prepared.length;
   }
@@ -789,13 +814,13 @@ function allocateMessage(
     fail("message body exceeds the envelope limit");
   }
 
-  const totalLength = MESSAGE_HEADER_BYTES + bodyLength;
+  const totalLength: number = MESSAGE_HEADER_BYTES + bodyLength;
   if (packet && totalLength > MAX_PACKET_BYTES) {
     fail(PACKET_SIZE_MESSAGE);
   }
 
-  const bytes = new Uint8Array(totalLength);
-  const view = new DataView(bytes.buffer);
+  const bytes: Uint8Array = new Uint8Array(totalLength);
+  const view: DataView = new DataView(bytes.buffer);
   view.setUint8(0, PROTOCOL_VERSION);
   view.setUint8(1, type);
   view.setUint16(2, bodyLength);
@@ -813,13 +838,13 @@ function allocateMessage(
  */
 export function encodeMessage(message: MembershipMessage): Uint8Array {
   if (isSyncMessage(message)) {
-    const body = prepareSyncBody(message);
+    const body: PreparedSyncBody = prepareSyncBody(message);
     const { bytes, view } = allocateMessage(message.type, body.bodyLength, false);
     view.setBigUint64(4, message.exchangeId);
     view.setUint16(12, message.chunkIndex);
     view.setUint16(14, message.chunkCount);
     view.setUint16(16, body.updates.length);
-    let offset = SYNC_HEADER_BYTES + MESSAGE_HEADER_BYTES;
+    let offset: number = SYNC_HEADER_BYTES + MESSAGE_HEADER_BYTES;
     for (const update of body.updates) {
       offset = writePreparedUpdate(bytes, view, offset, update);
     }
@@ -827,7 +852,7 @@ export function encodeMessage(message: MembershipMessage): Uint8Array {
     return bytes;
   }
 
-  const body = preparePacketBody(message);
+  const body: PreparedPacketBody = preparePacketBody(message);
   const { bytes, view } = allocateMessage(message.type, body.bodyLength, true);
   writePacketBody(message, body, bytes, view);
   return bytes;
@@ -839,7 +864,7 @@ function readName(
   offset: number,
   limit: number,
   field: string,
-  empty = false,
+  empty: boolean = false,
 ): {
   /** Decoded protocol identity/address. */
   readonly value: string;
@@ -851,8 +876,8 @@ function readName(
     fail(`${field} length is truncated`);
   }
 
-  const length = bytes[offset] as number;
-  const end = offset + 1 + length;
+  const length: number = bytes[offset] as number;
+  const end: number = offset + 1 + length;
   if (end > limit) {
     fail(`${field} is truncated`);
   }
@@ -874,7 +899,7 @@ function decodeUpdateList(
 ): readonly MembershipUpdate[] {
   const updates: MembershipUpdate[] = [];
   for (let index = 0; index < count; index += 1) {
-    const decoded = decodeMembershipUpdateAt(bytes, view, offset, limit);
+    const decoded: DecodedUpdate = decodeMembershipUpdateAt(bytes, view, offset, limit);
     updates.push(decoded.update);
     offset = decoded.end;
   }
@@ -909,8 +934,8 @@ function decodeProbeHeader(
     fail("probe sequence is truncated");
   }
 
-  const sequence = view.getUint32(bodyOffset);
-  const owner = readName(bytes, bodyOffset + 4, limit, "probe owner");
+  const sequence: number = view.getUint32(bodyOffset);
+  const owner: ReturnType<typeof readName> = readName(bytes, bodyOffset + 4, limit, "probe owner");
 
   return { sequence, owner: owner.value, end: owner.end };
 }
@@ -936,14 +961,9 @@ function decodeGossipMessage(
   bodyOffset: number,
   limit: number,
 ): GossipMessage {
-  if (bodyOffset >= limit) {
-    fail("gossip update count is truncated");
-  }
-
-  const count = bytes[bodyOffset] as number;
   return {
     type: MESSAGE_GOSSIP,
-    updates: decodeUpdateList(bytes, view, bodyOffset + 1, limit, count),
+    updates: decodeCountedPacketUpdates(bytes, view, bodyOffset, limit),
   };
 }
 
@@ -954,8 +974,8 @@ function decodePingMessage(
   bodyOffset: number,
   limit: number,
 ): PingMessage {
-  const probe = decodeProbeHeader(bytes, view, bodyOffset, limit);
-  const relay = readName(bytes, probe.end, limit, "relay", true);
+  const probe: DecodedProbeHeader = decodeProbeHeader(bytes, view, bodyOffset, limit);
+  const relay: ReturnType<typeof readName> = readName(bytes, probe.end, limit, "relay", true);
 
   return {
     type: MESSAGE_PING,
@@ -974,8 +994,8 @@ function decodeTargetMessage(
   bodyOffset: number,
   limit: number,
 ): PingReqMessage | AckMessage {
-  const probe = decodeProbeHeader(bytes, view, bodyOffset, limit);
-  const target = readName(bytes, probe.end, limit, "target");
+  const probe: DecodedProbeHeader = decodeProbeHeader(bytes, view, bodyOffset, limit);
+  const target: ReturnType<typeof readName> = readName(bytes, probe.end, limit, "target");
 
   return {
     type,
@@ -993,9 +1013,9 @@ function decodeNackMessage(
   bodyOffset: number,
   limit: number,
 ): NackMessage {
-  const probe = decodeProbeHeader(bytes, view, bodyOffset, limit);
-  const target = readName(bytes, probe.end, limit, "target");
-  const helper = readName(bytes, target.end, limit, "helper");
+  const probe: DecodedProbeHeader = decodeProbeHeader(bytes, view, bodyOffset, limit);
+  const target: ReturnType<typeof readName> = readName(bytes, probe.end, limit, "target");
+  const helper: ReturnType<typeof readName> = readName(bytes, target.end, limit, "helper");
 
   return {
     type: MESSAGE_NACK,
@@ -1050,18 +1070,138 @@ function decodeEnvelope(
     fail("message envelope is truncated");
   }
 
-  const version = view.getUint8(0);
+  const version: number = view.getUint8(0);
   if (version !== PROTOCOL_VERSION) {
     fail(`unsupported protocol version ${version}`);
   }
 
-  const type = view.getUint8(1);
-  const bodyLength = view.getUint16(2);
+  const type: number = view.getUint8(1);
+  const bodyLength: number = view.getUint16(2);
   if (bodyLength + MESSAGE_HEADER_BYTES !== bytes.length) {
     fail("message body length is inconsistent");
   }
 
   return { type, bodyOffset: MESSAGE_HEADER_BYTES, limit: bytes.length };
+}
+
+/**
+ * Validates the shared message envelope and the type's legality for a
+ * connection role without decoding the body.
+ *
+ * This is the single home of the role-legality rule: the TCP carrier consults
+ * it for every observed frame, and the full decoders in this module enforce
+ * the same partition when a body is decoded. Adding a message type therefore
+ * requires no carrier change.
+ *
+ * @throws {ProtocolError} For a truncated envelope, unsupported version,
+ * inconsistent body length, or a message type illegal for `role`.
+ * @internal
+ */
+export function assertEnvelopeForRole(
+  bytes: Uint8Array,
+  role: typeof ROLE_PACKET | typeof ROLE_STREAM,
+): void {
+  const view: DataView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const envelope: ReturnType<typeof decodeEnvelope> = decodeEnvelope(bytes, view);
+  const legalForPacket: boolean =
+    envelope.type === MESSAGE_PING ||
+    envelope.type === MESSAGE_PING_REQ ||
+    envelope.type === MESSAGE_ACK ||
+    envelope.type === MESSAGE_NACK ||
+    envelope.type === MESSAGE_GOSSIP;
+  const legalForStream: boolean =
+    envelope.type === MESSAGE_SYNC_REQUEST || envelope.type === MESSAGE_SYNC_RESPONSE;
+  if (role === ROLE_PACKET ? !legalForPacket : !legalForStream) {
+    fail("message type is illegal for connection role");
+  }
+}
+
+/**
+ * Incremental splitter for the u32-length-prefixed synchronization stream
+ * framing. This is the single owner of that format: the TCP carrier validates
+ * inbound and outbound stream bytes through it, and synchronization protocol
+ * code reassembles messages from the frames it yields, so the framing rule
+ * cannot drift between two parsers.
+ *
+ * Each input byte is copied exactly once, into the frame under construction,
+ * regardless of how the carrier splits or coalesces chunks.
+ *
+ * @internal
+ */
+export class SyncFrameAssembler {
+  /** Four-byte big-endian frame-length prefix under construction. */
+  readonly #prefix: Uint8Array = new Uint8Array(4);
+
+  /** Number of prefix bytes currently accumulated. */
+  #prefixBytes: number = 0;
+
+  /** Frame buffer under construction, absent between frames. */
+  #frame: Uint8Array | undefined;
+
+  /** Number of bytes copied into the current frame. */
+  #frameBytes: number = 0;
+
+  /**
+   * Whether all pushed bytes end exactly on a frame boundary.
+   *
+   * @internal `true` also describes the initial state; it does not mean any
+   * frame has been observed.
+   */
+  get complete(): boolean {
+    return this.#prefixBytes === 0 && this.#frame === undefined;
+  }
+
+  /** Whether the next expected byte belongs to a length prefix, not a frame body. */
+  get awaitingPrefix(): boolean {
+    return this.#frame === undefined;
+  }
+
+  /**
+   * Incorporates carrier bytes and returns the frames they completed, in order.
+   *
+   * One call may complete zero, one, or many frames. Returned frames are owned
+   * by the caller and never reused by the assembler.
+   *
+   * @throws {ProtocolError} For an out-of-range frame length; state after an
+   * exception must be treated as unusable.
+   */
+  push(bytes: Uint8Array): readonly Uint8Array[] {
+    const frames: Uint8Array[] = [];
+    let offset: number = 0;
+    while (offset < bytes.length) {
+      if (this.#frame === undefined) {
+        const count: number = Math.min(4 - this.#prefixBytes, bytes.length - offset);
+        this.#prefix.set(bytes.subarray(offset, offset + count), this.#prefixBytes);
+        this.#prefixBytes += count;
+        offset += count;
+        if (this.#prefixBytes < 4) {
+          return frames;
+        }
+
+        const length: number = new DataView(this.#prefix.buffer).getUint32(0);
+        if (length < 4 || length > MAX_SYNC_MESSAGE_BYTES) {
+          fail("sync frame length is out of range");
+        }
+
+        this.#frame = new Uint8Array(length);
+        this.#frameBytes = 0;
+      }
+
+      const frame: Uint8Array = this.#frame;
+      const count: number = Math.min(frame.length - this.#frameBytes, bytes.length - offset);
+      frame.set(bytes.subarray(offset, offset + count), this.#frameBytes);
+      this.#frameBytes += count;
+      offset += count;
+      if (this.#frameBytes === frame.length) {
+        frames.push(frame);
+        this.#prefixBytes = 0;
+        this.#frame = undefined;
+        this.#frameBytes = 0;
+      }
+    }
+
+    return frames;
+  }
 }
 
 /** Decodes one sync chunk body and rejects invalid positions, counts, and duplicate members. */
@@ -1075,10 +1215,10 @@ function decodeSyncBody(
     fail("sync header is truncated");
   }
 
-  const exchangeId = view.getBigUint64(offset);
-  const chunkIndex = view.getUint16(offset + 8);
-  const chunkCount = view.getUint16(offset + 10);
-  const memberCount = view.getUint16(offset + 12);
+  const exchangeId: bigint = view.getBigUint64(offset);
+  const chunkIndex: number = view.getUint16(offset + 8);
+  const chunkCount: number = view.getUint16(offset + 10);
+  const memberCount: number = view.getUint16(offset + 12);
   if (exchangeId === 0n) {
     fail("exchange ID is zero");
   }
@@ -1091,14 +1231,14 @@ function decodeSyncBody(
     fail(SYNC_MEMBER_COUNT_MESSAGE);
   }
 
-  const updates = decodeUpdateList(
+  const updates: readonly MembershipUpdate[] = decodeUpdateList(
     bytes,
     view,
     offset + SYNC_HEADER_BYTES,
     bytes.length,
     memberCount,
   );
-  const names = new Set<string>();
+  const names: Set<string> = new Set<string>();
   for (const update of updates) {
     addDistinctMember(names, update.member);
   }
@@ -1115,8 +1255,8 @@ function decodeSyncBody(
  * @internal
  */
 export function decodeMessage(bytes: Uint8Array): MembershipMessage {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const envelope = decodeEnvelope(bytes, view);
+  const view: DataView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const envelope: ReturnType<typeof decodeEnvelope> = decodeEnvelope(bytes, view);
   if (envelope.type >= MESSAGE_PING && envelope.type <= MESSAGE_GOSSIP) {
     if (bytes.length > MAX_PACKET_BYTES) {
       fail(PACKET_SIZE_MESSAGE);
@@ -1145,7 +1285,7 @@ export function decodeMessage(bytes: Uint8Array): MembershipMessage {
  * @internal
  */
 export function decodePacketMessage(bytes: Uint8Array): PacketMessage {
-  const message = decodeMessage(bytes);
+  const message: MembershipMessage = decodeMessage(bytes);
   if (isSyncMessage(message)) {
     fail("sync message is illegal on a packet connection");
   }
@@ -1160,7 +1300,7 @@ export function decodePacketMessage(bytes: Uint8Array): PacketMessage {
  * @internal
  */
 export function decodeSyncMessage(bytes: Uint8Array): SyncMessage {
-  const message = decodeMessage(bytes);
+  const message: MembershipMessage = decodeMessage(bytes);
   if (message.type !== MESSAGE_SYNC_REQUEST && message.type !== MESSAGE_SYNC_RESPONSE) {
     fail("packet message is illegal on a stream connection");
   }
@@ -1192,7 +1332,7 @@ export function encodeSyncChunks(
     fail(SYNC_TABLE_MESSAGE);
   }
 
-  const names = new Set<string>();
+  const names: Set<string> = new Set<string>();
   const sizes: number[] = [];
   for (const update of updates) {
     addDistinctMember(names, update.member);
@@ -1201,9 +1341,9 @@ export function encodeSyncChunks(
 
   const chunks: MembershipUpdate[][] = [];
   let current: MembershipUpdate[] = [];
-  let currentSize = MESSAGE_HEADER_BYTES + SYNC_HEADER_BYTES;
+  let currentSize: number = MESSAGE_HEADER_BYTES + SYNC_HEADER_BYTES;
   for (let index = 0; index < updates.length; index += 1) {
-    const size = sizes[index] as number;
+    const size: number = sizes[index] as number;
     if (current.length > 0 && currentSize + size > MAX_SYNC_MESSAGE_BYTES) {
       chunks.push(current);
       current = [];
@@ -1215,8 +1355,8 @@ export function encodeSyncChunks(
   }
 
   chunks.push(current);
-  const chunkCount = chunks.length;
-  const encoded = chunks.map(
+  const chunkCount: number = chunks.length;
+  const encoded: readonly Uint8Array[] = chunks.map(
     (chunk: MembershipUpdate[], chunkIndex: number): Uint8Array =>
       encodeMessage({ type, exchangeId, chunkIndex, chunkCount, updates: chunk }),
   );
@@ -1228,17 +1368,20 @@ export function encodeSyncChunks(
  *
  * This stage validates each chunk independently but does not yet validate exchange ordering.
  */
-function decodeSyncExchangeChunks(chunks: readonly Uint8Array[]): readonly SyncMessage[] {
-  let framedBytes = 0;
-
-  return chunks.map((bytes: Uint8Array): SyncMessage => {
+/**
+ * Enforces the exchange-wide framed byte budget over one direction's raw chunks.
+ *
+ * @throws {ProtocolError} When the cumulative framed size exceeds the budget.
+ * @internal
+ */
+export function assertSyncExchangeBudget(chunks: readonly Uint8Array[]): void {
+  let framedBytes: number = 0;
+  for (const bytes of chunks) {
     framedBytes += 4 + bytes.length;
     if (framedBytes > MAX_SYNC_EXCHANGE_BYTES) {
       fail(`sync exchange exceeds ${MAX_SYNC_EXCHANGE_BYTES} framed bytes`);
     }
-
-    return decodeSyncMessage(bytes);
-  });
+  }
 }
 
 /** Appends one chunk while enforcing exchange-wide member uniqueness and capacity. */
@@ -1279,7 +1422,7 @@ function validateCanonicalChunk(
 
 /** Ensures the current chunk could not have accepted the next chunk's first record. */
 function validateLargestPrefix(currentBytes: Uint8Array, next: SyncMessage | undefined): void {
-  const nextUpdate = next?.updates[0];
+  const nextUpdate: MembershipUpdate | undefined = next?.updates[0];
   if (
     nextUpdate !== undefined &&
     currentBytes.length + membershipUpdateSize(nextUpdate) <= MAX_SYNC_MESSAGE_BYTES
@@ -1298,16 +1441,16 @@ function validateCanonicalSyncChunks(
   chunks: readonly Uint8Array[],
   decoded: readonly SyncMessage[],
 ): readonly MembershipUpdate[] {
-  const first = decoded[0] as SyncMessage;
+  const first: SyncMessage = decoded[0] as SyncMessage;
   if (first.chunkCount !== decoded.length) {
     fail("sync chunk count is incomplete");
   }
 
   const updates: MembershipUpdate[] = [];
-  const names = new Set<string>();
+  const names: Set<string> = new Set<string>();
 
   for (let index = 0; index < decoded.length; index += 1) {
-    const chunk = decoded[index] as SyncMessage;
+    const chunk: SyncMessage = decoded[index] as SyncMessage;
     validateCanonicalChunk(chunk, first, index, decoded.length);
     appendCanonicalChunkUpdates(chunk, names, updates);
     validateLargestPrefix(chunks[index] as Uint8Array, decoded[index + 1]);
@@ -1330,9 +1473,36 @@ export function decodeSyncChunks(chunks: readonly Uint8Array[]): DecodedSyncExch
     fail("sync exchange has no chunks");
   }
 
-  const decoded = decodeSyncExchangeChunks(chunks);
-  const first = decoded[0] as SyncMessage;
-  const updates = validateCanonicalSyncChunks(chunks, decoded);
+  assertSyncExchangeBudget(chunks);
+  return combineSyncChunks(
+    chunks,
+    chunks.map((bytes: Uint8Array): SyncMessage => decodeSyncMessage(bytes)),
+  );
+}
+
+/**
+ * Validates and joins one exchange direction from already-decoded chunks and
+ * their raw frames, so a reader that decoded each chunk on arrival does not
+ * decode the exchange a second time.
+ *
+ * The inputs must be position-aligned: `decoded[i]` is the decoding of
+ * `chunks[i]`. Canonical ordering, chunk-count consistency, cross-chunk member
+ * uniqueness, and largest-prefix packing are enforced exactly as in
+ * {@link decodeSyncChunks}; the caller owns the framed byte budget.
+ *
+ * @throws {ProtocolError} If the exchange is empty, incomplete, mismatched, or noncanonical.
+ * @internal
+ */
+export function combineSyncChunks(
+  chunks: readonly Uint8Array[],
+  decoded: readonly SyncMessage[],
+): DecodedSyncExchange {
+  if (decoded.length === 0 || chunks.length !== decoded.length) {
+    fail("sync exchange has no chunks");
+  }
+
+  const first: SyncMessage = decoded[0] as SyncMessage;
+  const updates: readonly MembershipUpdate[] = validateCanonicalSyncChunks(chunks, decoded);
 
   return { type: first.type, exchangeId: first.exchangeId, updates };
 }

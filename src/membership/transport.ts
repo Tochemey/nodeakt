@@ -35,22 +35,18 @@ import {
   type ConnectionOptions as TlsConnectionOptions,
   type TlsOptions,
 } from "node:tls";
-import { timedSignal } from "./clock";
+import { type Deadline, timedSignal } from "./clock";
 import {
-  MAX_NAME_BYTES,
+  assertEnvelopeForRole,
+  bytesEqual,
+  decodeName,
+  encodeName,
   MAX_PACKET_BYTES,
   MAX_SYNC_EXCHANGE_BYTES,
-  MAX_SYNC_MESSAGE_BYTES,
-  MESSAGE_ACK,
-  MESSAGE_GOSSIP,
-  MESSAGE_NACK,
-  MESSAGE_PING,
-  MESSAGE_PING_REQ,
-  MESSAGE_SYNC_REQUEST,
-  MESSAGE_SYNC_RESPONSE,
   PROTOCOL_VERSION,
   ROLE_PACKET,
   ROLE_STREAM,
+  SyncFrameAssembler,
 } from "./wire";
 
 /**
@@ -241,6 +237,10 @@ export interface TcpMembershipTransportOptions {
   /**
    * Maximum logical destinations retained in the packet LRU, including
    * connections that are still dialing or handshaking.
+   *
+   * This override exists so tests can exercise eviction without opening
+   * thirty-plus sockets; production composition always takes the default,
+   * and the clustering seam must never expose it.
    */
   readonly maxPacketConnections?: number;
 
@@ -249,6 +249,9 @@ export interface TcpMembershipTransportOptions {
    *
    * Read and write accounting are independent; exceeding either side destroys
    * or rejects work on that connection rather than applying socket backpressure.
+   * This override exists so tests can exercise the byte ceilings directly;
+   * production composition always takes the default, and the clustering seam
+   * must never expose it.
    */
   readonly maxQueuedBytes?: number;
 
@@ -348,8 +351,26 @@ export class MembershipTransportError extends Error {
  * @internal Keep these byte layouts synchronized with {@link connectionRole}
  * and the wire protocol specification.
  */
-const PREFACE_PACKET = Uint8Array.of(0x4e, 0x41, 0x4b, 0x54, PROTOCOL_VERSION, ROLE_PACKET, 0, 0);
-const PREFACE_STREAM = Uint8Array.of(0x4e, 0x41, 0x4b, 0x54, PROTOCOL_VERSION, ROLE_STREAM, 0, 0);
+const PREFACE_PACKET: Uint8Array = Uint8Array.of(
+  0x4e,
+  0x41,
+  0x4b,
+  0x54,
+  PROTOCOL_VERSION,
+  ROLE_PACKET,
+  0,
+  0,
+);
+const PREFACE_STREAM: Uint8Array = Uint8Array.of(
+  0x4e,
+  0x41,
+  0x4b,
+  0x54,
+  PROTOCOL_VERSION,
+  ROLE_STREAM,
+  0,
+  0,
+);
 
 /**
  * Default number of logical destinations retained in the packet LRU.
@@ -357,7 +378,7 @@ const PREFACE_STREAM = Uint8Array.of(0x4e, 0x41, 0x4b, 0x54, PROTOCOL_VERSION, R
  * @internal The limit counts pending connection attempts as well as established
  * packet sockets.
  */
-export const TCP_PACKET_POOL_SIZE = 32;
+export const TCP_PACKET_POOL_SIZE: number = 32;
 
 /**
  * Default ceiling for each connection's unread-byte queue and pending-write
@@ -367,32 +388,49 @@ export const TCP_PACKET_POOL_SIZE = 32;
  * largest legal stream frame so a frame can be buffered without configuration
  * changes.
  */
-export const TCP_MAX_QUEUED_BYTES = 256 * 1024;
+export const TCP_MAX_QUEUED_BYTES: number = 256 * 1024;
 
 /**
  * Default deadline, in milliseconds, for TCP connect or TLS establishment.
  *
- * @internal Transport handshake writes use the write timeout instead.
+ * @internal Transport handshake writes use the write timeout instead. The
+ * protocol's own connect deadline (`SYNC_CONNECT_TIMEOUT_MS`, 1s) is the
+ * truth for synchronization; this carrier limit is deliberately a strictly
+ * larger backstop so the protocol's typed timeout always wins the race and
+ * callers observe one deterministic error type.
  */
-export const TCP_CONNECT_TIMEOUT_MS = 1_000;
+export const TCP_CONNECT_TIMEOUT_MS: number = 2_000;
+
+/**
+ * Delay, in milliseconds, before TCP keepalive probing begins on an idle
+ * carrier socket.
+ *
+ * @internal Keepalive is what reclaims a half-open connection whose peer
+ * vanished without a FIN: persistent packet reads are deliberately unbounded,
+ * so without it such sockets would survive until transport shutdown.
+ */
+export const TCP_KEEPALIVE_DELAY_MS: number = 30_000;
+
+/**
+ * Grace period, in milliseconds, between half-closing a stream connection and
+ * forcibly destroying a socket whose peer never completes the close handshake.
+ *
+ * @internal
+ */
+export const TCP_CLOSE_LINGER_MS: number = 5_000;
 
 /**
  * Default per-operation socket read, socket write, and stream-read deadline in
  * milliseconds.
  *
  * @internal This is an inactivity/per-operation limit, not a lifetime limit for
- * a connection or synchronization exchange.
+ * a connection or synchronization exchange. The protocol's exchange deadline
+ * (`SYNC_EXCHANGE_TIMEOUT_MS`, 5s) is the truth for synchronization; this
+ * carrier limit is deliberately a strictly larger backstop so the protocol's
+ * typed timeout always wins the race and callers observe one deterministic
+ * error type.
  */
-export const TCP_IO_TIMEOUT_MS = 5_000;
-
-/** Shared UTF-8 codec for logical transport identities. */
-const encoder = new TextEncoder();
-
-/**
- * Strict UTF-8 decoder used for untrusted identities; malformed sequences are
- * rejected rather than replaced.
- */
-const decoder = new TextDecoder("utf-8", { fatal: true });
+export const TCP_IO_TIMEOUT_MS: number = 10_000;
 
 /**
  * Parsed dial endpoint for a logical membership address.
@@ -434,7 +472,7 @@ function transportError(
  * @internal `field` is diagnostic text and does not identify a wire field.
  */
 function positiveInteger(value: number | undefined, fallback: number, field: string): number {
-  const resolved = value ?? fallback;
+  const resolved: number = value ?? fallback;
   if (!Number.isSafeInteger(resolved) || resolved <= 0) {
     throw new MembershipTransportError("address", `${field} must be a positive integer`);
   }
@@ -455,7 +493,7 @@ function positiveInteger(value: number | undefined, fallback: number, field: str
  * @internal Parsing validates representation only; it performs no DNS lookup.
  */
 /** Canonical decimal port text; rejects aliases such as `0x50`, `1e3`, or padded digits. */
-const PORT_TEXT = /^[0-9]{1,5}$/;
+const PORT_TEXT: RegExp = /^[0-9]{1,5}$/;
 
 /** Builds the shared diagnostic for any malformed textual `host:port` representation. */
 function invalidAddress(address: string): MembershipTransportError {
@@ -466,7 +504,7 @@ function parseAddress(address: string): Endpoint {
   let host: string;
   let portText: string;
   if (address.startsWith("[")) {
-    const close = address.indexOf("]");
+    const close: number = address.indexOf("]");
     if (close < 2 || address[close + 1] !== ":") {
       throw invalidAddress(address);
     }
@@ -474,7 +512,7 @@ function parseAddress(address: string): Endpoint {
     host = address.slice(1, close);
     portText = address.slice(close + 2);
   } else {
-    const colon = address.lastIndexOf(":");
+    const colon: number = address.lastIndexOf(":");
     if (colon <= 0) {
       throw invalidAddress(address);
     }
@@ -487,7 +525,7 @@ function parseAddress(address: string): Endpoint {
     throw invalidAddress(address);
   }
 
-  const port = Number(portText);
+  const port: number = Number(portText);
   if (port < 1 || port > 65_535 || host.length === 0) {
     throw invalidAddress(address);
   }
@@ -520,20 +558,11 @@ function formatAddress(host: string, port: number): string {
  * and bind state establish that separately.
  */
 function encodeIdentity(address: string): Uint8Array {
-  if (address.includes("\0")) {
-    throw new MembershipTransportError("address", "transport address contains NUL", address);
+  try {
+    return encodeName(address, "transport address");
+  } catch (cause) {
+    throw new MembershipTransportError("address", "invalid transport address", address, cause);
   }
-
-  const bytes = encoder.encode(address);
-  if (bytes.length < 1 || bytes.length > MAX_NAME_BYTES) {
-    throw new MembershipTransportError(
-      "address",
-      `transport address must be 1..${MAX_NAME_BYTES} UTF-8 bytes`,
-      address,
-    );
-  }
-
-  return bytes;
 }
 
 /**
@@ -551,13 +580,14 @@ function encodeIdentity(address: string): Uint8Array {
 function decodeIdentity(bytes: Uint8Array): string {
   let value: string;
   try {
-    value = decoder.decode(bytes);
+    value = decodeName(bytes, 0, bytes.length, "transport identity");
   } catch (cause) {
-    throw transportError("protocol", "transport identity is invalid UTF-8", undefined, cause);
-  }
-
-  if (value.length === 0 || value.includes("\0")) {
-    throw new MembershipTransportError("protocol", "transport identity is invalid");
+    throw new MembershipTransportError(
+      "protocol",
+      "transport identity is invalid",
+      undefined,
+      cause,
+    );
   }
 
   parseAddress(value);
@@ -566,11 +596,7 @@ function decodeIdentity(bytes: Uint8Array): string {
 
 /**
  * Validates the common membership envelope and its legality for a connection
- * role.
- *
- * The envelope is `[version, type, uint16 payloadLength, payload...]`, with the
- * length encoded big-endian by `DataView`. Packet roles permit probe and gossip
- * messages; stream roles permit only synchronization request/response messages.
+ * role by consulting the wire module, the single owner of that rule.
  *
  * @throws {MembershipTransportError} With code `"protocol"` for a version, length,
  * message-type, or role mismatch.
@@ -578,21 +604,15 @@ function decodeIdentity(bytes: Uint8Array): string {
  * @internal Callers establish minimum byte length before invoking this helper.
  */
 function validateEnvelope(bytes: Uint8Array, role: 1 | 2): void {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (bytes[0] !== PROTOCOL_VERSION || view.getUint16(2) + 4 !== bytes.length) {
-    throw new MembershipTransportError("protocol", "invalid membership message envelope");
-  }
-
-  const type = bytes[1] as number;
-  const legalPacket =
-    type === MESSAGE_PING ||
-    type === MESSAGE_PING_REQ ||
-    type === MESSAGE_ACK ||
-    type === MESSAGE_NACK ||
-    type === MESSAGE_GOSSIP;
-  const legalStream = type === MESSAGE_SYNC_REQUEST || type === MESSAGE_SYNC_RESPONSE;
-  if (role === ROLE_PACKET ? !legalPacket : !legalStream) {
-    throw new MembershipTransportError("protocol", "message type is illegal for connection role");
+  try {
+    assertEnvelopeForRole(bytes, role);
+  } catch (cause) {
+    throw new MembershipTransportError(
+      "protocol",
+      "invalid membership message envelope",
+      undefined,
+      cause,
+    );
   }
 }
 
@@ -614,8 +634,8 @@ function framePacket(bytes: Uint8Array): Uint8Array {
   }
 
   validateEnvelope(bytes, ROLE_PACKET);
-  const framed = new Uint8Array(2 + bytes.length);
-  const view = new DataView(framed.buffer);
+  const framed: Uint8Array = new Uint8Array(2 + bytes.length);
+  const view: DataView = new DataView(framed.buffer);
   view.setUint16(0, bytes.length);
 
   framed.set(bytes, 2);
@@ -631,18 +651,11 @@ function framePacket(bytes: Uint8Array): Uint8Array {
  * @internal The identity length must already fit one byte.
  */
 function handshake(preface: Uint8Array, identity: Uint8Array): Uint8Array {
-  const bytes = new Uint8Array(preface.length + 1 + identity.length);
+  const bytes: Uint8Array = new Uint8Array(preface.length + 1 + identity.length);
   bytes.set(preface);
   bytes[8] = identity.length;
   bytes.set(identity, 9);
   return bytes;
-}
-
-/** Compares byte sequences by value without assuming shared backing storage. */
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return (
-    left.length === right.length && left.every((byte, index): boolean => byte === right[index])
-  );
 }
 
 /**
@@ -654,11 +667,11 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
  * @internal
  */
 function connectionRole(preface: Uint8Array): 1 | 2 {
-  if (equalBytes(preface, PREFACE_PACKET)) {
+  if (bytesEqual(preface, PREFACE_PACKET)) {
     return ROLE_PACKET;
   }
 
-  if (equalBytes(preface, PREFACE_STREAM)) {
+  if (bytesEqual(preface, PREFACE_STREAM)) {
     return ROLE_STREAM;
   }
 
@@ -685,13 +698,13 @@ class SocketWriter {
   readonly #timeout: number;
 
   /** Bytes represented by queued or currently executing writes. */
-  #queued = 0;
+  #queued: number = 0;
 
   /** Settlement chain that preserves invocation order after failures. */
-  #tail = Promise.resolve();
+  #tail: Promise<void> = Promise.resolve();
 
   /** Local admission flag; closing does not itself end or destroy the socket. */
-  #closed = false;
+  #closed: boolean = false;
 
   /**
    * Attaches an ordered writer to an existing socket.
@@ -741,7 +754,7 @@ class SocketWriter {
     }
 
     this.#queued += bytes.length;
-    const operation = this.#tail.then((): Promise<void> => this.#writeNow(bytes));
+    const operation: Promise<void> = this.#tail.then((): Promise<void> => this.#writeNow(bytes));
     this.#tail = operation.catch((): void => undefined);
     return operation.finally((): void => {
       this.#queued -= bytes.length;
@@ -757,8 +770,8 @@ class SocketWriter {
    */
   #writeNow(bytes: Uint8Array): Promise<void> {
     return new Promise<void>((resolve, reject): void => {
-      const deadline = timedSignal(this.#timeout);
-      let settled = false;
+      const deadline: Deadline = timedSignal(this.#timeout);
+      let settled: boolean = false;
       const finish = (error?: MembershipTransportError): void => {
         if (settled) {
           return;
@@ -775,7 +788,7 @@ class SocketWriter {
       };
 
       const timeout = (): void => {
-        const error = new MembershipTransportError(
+        const error: MembershipTransportError = new MembershipTransportError(
           "write_timeout",
           "connection write timed out",
           this.#peer,
@@ -813,10 +826,10 @@ class ByteReader {
   #chunks: Buffer[] = [];
 
   /** Total unconsumed bytes represented by {@link #chunks}. */
-  #queued = 0;
+  #queued: number = 0;
 
   /** Whether the readable carrier emitted `end` or `close`. */
-  #ended = false;
+  #ended: boolean = false;
 
   /** Most recent carrier or queue-limit error, if any. */
   #error: Error | undefined;
@@ -892,13 +905,16 @@ class ByteReader {
   async read(
     length: number,
     timeoutMs: number | undefined,
-    allowEof = false,
+    allowEof: boolean = false,
   ): Promise<Uint8Array | undefined> {
     if (!Number.isSafeInteger(length) || length < 0 || length > this.#maximumQueued) {
       throw new MembershipTransportError("protocol", "invalid read length", this.#peer);
     }
 
-    const available = await this.#waitFor((): boolean => this.#queued >= length, timeoutMs);
+    const available: boolean = await this.#waitFor(
+      (): boolean => this.#queued >= length,
+      timeoutMs,
+    );
     if (!available) {
       if (allowEof && this.#queued === 0) {
         return undefined;
@@ -926,7 +942,7 @@ class ByteReader {
    * @internal Data arriving in later turns remains for a subsequent call.
    */
   async readSome(timeoutMs: number): Promise<Uint8Array | undefined> {
-    const available = await this.#waitFor((): boolean => this.#queued > 0, timeoutMs);
+    const available: boolean = await this.#waitFor((): boolean => this.#queued > 0, timeoutMs);
     return available ? this.#consume(this.#queued) : undefined;
   }
 
@@ -936,12 +952,12 @@ class ByteReader {
    * @internal The caller must establish that enough bytes are queued.
    */
   #consume(length: number): Uint8Array {
-    const result = new Uint8Array(length);
-    let offset = 0;
+    const result: Uint8Array = new Uint8Array(length);
+    let offset: number = 0;
 
     while (offset < length) {
-      const chunk = this.#chunks[0] as Buffer;
-      const count = Math.min(chunk.length, length - offset);
+      const chunk: Buffer = this.#chunks[0] as Buffer;
+      const count: number = Math.min(chunk.length, length - offset);
       result.set(chunk.subarray(0, count), offset);
       offset += count;
       this.#queued -= count;
@@ -966,7 +982,8 @@ class ByteReader {
    * precedence when observed before EOF.
    */
   async #waitFor(ready: () => boolean, timeoutMs: number | undefined): Promise<boolean> {
-    const deadline = timeoutMs === undefined ? undefined : timedSignal(timeoutMs);
+    const deadline: Deadline | undefined =
+      timeoutMs === undefined ? undefined : timedSignal(timeoutMs);
     try {
       while (!ready()) {
         if (this.#error !== undefined) {
@@ -989,11 +1006,24 @@ class ByteReader {
   /**
    * Suspends one read until a socket event wakes it or the deadline aborts.
    *
-   * @internal There can be only one waiter. Timeout clears the stored resolver
-   * but does not destroy the socket.
+   * @internal There can be only one waiter; a second concurrent wait rejects
+   * loudly instead of silently displacing the first, whose promise would
+   * otherwise never settle. Timeout clears the stored resolver but does not
+   * destroy the socket.
    */
   #wait(signal: AbortSignal | undefined): Promise<void> {
     return new Promise<void>((resolve, reject): void => {
+      if (this.#wake !== undefined) {
+        reject(
+          new MembershipTransportError(
+            "lifecycle",
+            "connection supports one pending read at a time",
+            this.#peer,
+          ),
+        );
+        return;
+      }
+
       if (signal === undefined) {
         this.#wake = resolve;
         return;
@@ -1020,7 +1050,7 @@ class ByteReader {
    * @internal Socket event listeners call this after updating reader state.
    */
   #notify(): void {
-    const wake = this.#wake;
+    const wake: (() => void) | undefined = this.#wake;
     this.#wake = undefined;
     wake?.();
   }
@@ -1053,17 +1083,8 @@ interface PacketConnection {
  * for validation and does not transform bytes sent to or returned from callers.
  */
 class StreamFrameValidator {
-  /** Four-byte big-endian frame-length prefix under construction. */
-  #prefix = new Uint8Array(4);
-
-  /** Number of prefix bytes currently accumulated. */
-  #prefixBytes = 0;
-
-  /** Declared envelope buffer under construction, absent between frames. */
-  #message: Uint8Array | undefined;
-
-  /** Number of bytes copied into the current envelope. */
-  #messageBytes = 0;
+  /** Shared framing state machine owned by the wire module. */
+  readonly #assembler: SyncFrameAssembler = new SyncFrameAssembler();
 
   /**
    * Whether all pushed bytes end exactly on a frame boundary.
@@ -1072,7 +1093,7 @@ class StreamFrameValidator {
    * frame has been observed.
    */
   get complete(): boolean {
-    return this.#prefixBytes === 0 && this.#message === undefined;
+    return this.#assembler.complete;
   }
 
   /**
@@ -1088,37 +1109,20 @@ class StreamFrameValidator {
    * callers close the associated connection.
    */
   push(bytes: Uint8Array): void {
-    let offset = 0;
-    while (offset < bytes.length) {
-      if (this.#message === undefined) {
-        const count = Math.min(4 - this.#prefixBytes, bytes.length - offset);
-        this.#prefix.set(bytes.subarray(offset, offset + count), this.#prefixBytes);
-        this.#prefixBytes += count;
-        offset += count;
-        if (this.#prefixBytes < 4) {
-          return;
-        }
+    let frames: readonly Uint8Array[];
+    try {
+      frames = this.#assembler.push(bytes);
+    } catch (cause) {
+      throw new MembershipTransportError(
+        "protocol",
+        "invalid stream frame length",
+        undefined,
+        cause,
+      );
+    }
 
-        const length = new DataView(this.#prefix.buffer).getUint32(0);
-        if (length < 4 || length > MAX_SYNC_MESSAGE_BYTES) {
-          throw new MembershipTransportError("protocol", "invalid stream frame length");
-        }
-
-        this.#message = new Uint8Array(length);
-        this.#messageBytes = 0;
-      }
-
-      const message = this.#message as Uint8Array;
-      const count = Math.min(message.length - this.#messageBytes, bytes.length - offset);
-      message.set(bytes.subarray(offset, offset + count), this.#messageBytes);
-      this.#messageBytes += count;
-      offset += count;
-      if (this.#messageBytes === message.length) {
-        validateEnvelope(message, ROLE_STREAM);
-        this.#prefixBytes = 0;
-        this.#message = undefined;
-        this.#messageBytes = 0;
-      }
+    for (const frame of frames) {
+      validateEnvelope(frame, ROLE_STREAM);
     }
   }
 }
@@ -1146,19 +1150,19 @@ class TcpMembershipStream implements MembershipStream {
   readonly #timeout: number;
 
   /** Total carrier bytes returned by successful reads. */
-  #readBytes = 0;
+  #readBytes: number = 0;
 
   /** Total carrier bytes included in successful writes. */
-  #writtenBytes = 0;
+  #writtenBytes: number = 0;
 
   /** Whether local close admission has occurred. */
-  #closed = false;
+  #closed: boolean = false;
 
   /** Incremental validator for bytes received from the peer. */
-  readonly #readFrames = new StreamFrameValidator();
+  readonly #readFrames: StreamFrameValidator = new StreamFrameValidator();
 
   /** Incremental validator for bytes submitted by the local caller. */
-  readonly #writtenFrames = new StreamFrameValidator();
+  readonly #writtenFrames: StreamFrameValidator = new StreamFrameValidator();
 
   /**
    * Wraps an already-established, stream-role connection.
@@ -1200,7 +1204,7 @@ class TcpMembershipStream implements MembershipStream {
       return undefined;
     }
 
-    const bytes = await this.#reader.readSome(this.#timeout);
+    const bytes: Uint8Array | undefined = await this.#reader.readSome(this.#timeout);
     if (bytes === undefined) {
       if (!this.#readFrames.complete) {
         this.close();
@@ -1278,6 +1282,10 @@ class TcpMembershipStream implements MembershipStream {
   /**
    * Idempotently closes local admission and half-closes the socket.
    *
+   * A peer that never completes the close handshake cannot keep the half-closed
+   * socket alive indefinitely: a linger deadline destroys the carrier if its
+   * `close` event does not arrive in time.
+   *
    * @internal Already queued writer operations are not cancelled by
    * `SocketWriter.close`; `socket.end()` controls their carrier disposition.
    */
@@ -1288,9 +1296,23 @@ class TcpMembershipStream implements MembershipStream {
 
     this.#closed = true;
     this.#writer.close();
-    if (!this.#socket.destroyed) {
-      this.#socket.end();
+    if (this.#socket.destroyed) {
+      return;
     }
+
+    this.#socket.end();
+    const socket: Socket = this.#socket;
+    const linger: Deadline = timedSignal(TCP_CLOSE_LINGER_MS);
+    linger.signal.addEventListener(
+      "abort",
+      (): void => {
+        if (!socket.destroyed) {
+          socket.destroy();
+        }
+      },
+      { once: true },
+    );
+    socket.once("close", (): void => linger.dispose());
   }
 }
 
@@ -1332,10 +1354,10 @@ export class TcpMembershipTransport implements MembershipTransport {
   readonly #exchangeTimeout: number;
 
   /** Accepted and outbound sockets not yet observed closed. */
-  readonly #sockets = new Set<Socket>();
+  readonly #sockets: Set<Socket> = new Set<Socket>();
 
   /** Access-ordered destination map for pending and ready packet connections. */
-  readonly #packetPool = new Map<string, PacketConnection>();
+  readonly #packetPool: Map<string, PacketConnection> = new Map<string, PacketConnection>();
 
   /** Advertised logical identity, updated after an ephemeral bind. */
   #address: string;
@@ -1356,7 +1378,7 @@ export class TcpMembershipTransport implements MembershipTransport {
   #serverFailure: MembershipTransportError | undefined;
 
   /** Terminal lifecycle flag set by stop or listener failure. */
-  #stopped = false;
+  #stopped: boolean = false;
 
   /**
    * Creates an unbound TCP/TLS transport and validates local configuration.
@@ -1436,7 +1458,7 @@ export class TcpMembershipTransport implements MembershipTransport {
    * @internal
    */
   static async bind(options: TcpMembershipTransportOptions): Promise<TcpMembershipTransport> {
-    const transport = new TcpMembershipTransport(options);
+    const transport: TcpMembershipTransport = new TcpMembershipTransport(options);
     await transport.#bind();
     return transport;
   }
@@ -1512,7 +1534,7 @@ export class TcpMembershipTransport implements MembershipTransport {
     }
 
     this.#handlers = handlers;
-    const starting = this.#bind().catch((error: unknown): never => {
+    const starting: Promise<void> = this.#bind().catch((error: unknown): never => {
       this.#handlers = undefined;
       throw error;
     });
@@ -1542,10 +1564,10 @@ export class TcpMembershipTransport implements MembershipTransport {
     }
 
     this.#stopped = true;
-    const stopping = (async (): Promise<void> => {
+    const stopping: Promise<void> = (async (): Promise<void> => {
       await this.#startPromise?.catch((): void => undefined);
       this.#closeConnections();
-      const server = this.#server;
+      const server: Server | undefined = this.#server;
       this.#server = undefined;
       if (server?.listening) {
         await new Promise<void>((resolve): void => {
@@ -1580,8 +1602,8 @@ export class TcpMembershipTransport implements MembershipTransport {
    */
   async packet(to: string, bytes: Uint8Array): Promise<void> {
     this.#assertOperational(to);
-    const framed = framePacket(bytes);
-    const connection = this.#packetConnection(to);
+    const framed: Uint8Array = framePacket(bytes);
+    const connection: PacketConnection = this.#packetConnection(to);
 
     try {
       await connection.ready;
@@ -1630,7 +1652,7 @@ export class TcpMembershipTransport implements MembershipTransport {
   }
 
   #packetConnection(to: string): PacketConnection {
-    const pooled = this.#packetPool.get(to);
+    const pooled: PacketConnection | undefined = this.#packetPool.get(to);
     if (pooled !== undefined && pooled.socket?.destroyed !== true) {
       this.#packetPool.delete(to);
       this.#packetPool.set(to, pooled);
@@ -1641,7 +1663,7 @@ export class TcpMembershipTransport implements MembershipTransport {
       this.#packetPool.delete(to);
     }
 
-    const opened = this.#openPacket(to);
+    const opened: PacketConnection = this.#openPacket(to);
     this.#packetPool.set(to, opened);
     this.#evictPackets();
     return opened;
@@ -1673,7 +1695,10 @@ export class TcpMembershipTransport implements MembershipTransport {
 
   #evictPackets(): void {
     while (this.#packetPool.size > this.#maxPool) {
-      const oldest = this.#packetPool.entries().next().value as [string, PacketConnection];
+      const oldest: [string, PacketConnection] = this.#packetPool.entries().next().value as [
+        string,
+        PacketConnection,
+      ];
 
       this.#packetPool.delete(oldest[0]);
       void oldest[1].ready
@@ -1704,7 +1729,7 @@ export class TcpMembershipTransport implements MembershipTransport {
       return;
     }
 
-    const tls = this.#options.tls;
+    const tls: MembershipTlsOptions | undefined = this.#options.tls;
     const accepted = (socket: Socket): void => this.#accept(socket);
     let server: Server;
     try {
@@ -1745,14 +1770,17 @@ export class TcpMembershipTransport implements MembershipTransport {
       server.listen(this.#options.port, this.#options.host, (): void => {
         server.removeListener("error", failed);
         server.on("error", (cause: Error): void => this.#handleServerFailure(server, cause));
-        const bound = server.address() as Exclude<ReturnType<Server["address"]>, string | null>;
+        const bound: Exclude<
+          ReturnType<Server["address"]>,
+          string | null
+        > = server.address() as Exclude<ReturnType<Server["address"]>, string | null>;
 
         if (this.#options.port === 0) {
           this.#address = formatAddress(
             this.#options.advertiseHost ?? this.#options.host,
             bound.port,
           );
-          const identity = encodeIdentity(this.#address);
+          const identity: Uint8Array = encodeIdentity(this.#address);
           this.#identity = identity;
         }
 
@@ -1788,23 +1816,26 @@ export class TcpMembershipTransport implements MembershipTransport {
       return;
     }
 
-    this.#track(socket);
-    const reader = new ByteReader(socket, "inbound", this.#maxQueued);
+    // The listener's `connection` event tracks the carrier socket for both
+    // modes. Under TLS this callback receives the distinct TLSSocket wrapper
+    // over the already-tracked raw socket, so tracking it here would count
+    // and destroy every inbound connection twice.
+    const reader: ByteReader = new ByteReader(socket, "inbound", this.#maxQueued);
     void this.#readHandshake(socket, reader).catch((error: unknown): void => {
       socket.destroy(error instanceof Error ? error : undefined);
     });
   }
 
   async #readHandshake(socket: Socket, reader: ByteReader): Promise<void> {
-    const preface = await reader.read(8, this.#readTimeout);
-    const role = connectionRole(preface);
-    const length = (await reader.read(1, this.#readTimeout))[0] as number;
+    const preface: Uint8Array = await reader.read(8, this.#readTimeout);
+    const role: 1 | 2 = connectionRole(preface);
+    const length: number = (await reader.read(1, this.#readTimeout))[0] as number;
 
     if (length === 0) {
       throw new MembershipTransportError("protocol", "empty transport identity");
     }
 
-    const from = decodeIdentity(await reader.read(length, this.#readTimeout));
+    const from: string = decodeIdentity(await reader.read(length, this.#readTimeout));
 
     if (role === ROLE_PACKET) {
       await this.#servePacketConnection(socket, reader, from);
@@ -1823,8 +1854,13 @@ export class TcpMembershipTransport implements MembershipTransport {
   }
 
   async #serveStreamConnection(socket: Socket, reader: ByteReader, from: string): Promise<void> {
-    const writer = new SocketWriter(socket, from, this.#maxQueued, this.#writeTimeout);
-    const membershipStream = new TcpMembershipStream(
+    const writer: SocketWriter = new SocketWriter(
+      socket,
+      from,
+      this.#maxQueued,
+      this.#writeTimeout,
+    );
+    const membershipStream: TcpMembershipStream = new TcpMembershipStream(
       socket,
       from,
       reader,
@@ -1845,18 +1881,18 @@ export class TcpMembershipTransport implements MembershipTransport {
       // A packet connection is persistent: waiting for the next frame is not
       // bounded by the read timeout. Once a frame starts, its remaining bytes
       // must arrive within the timeout.
-      const first = await reader.read(1, undefined, true);
+      const first: Uint8Array | undefined = await reader.read(1, undefined, true);
       if (first === undefined) {
         return;
       }
 
-      const second = await reader.read(1, this.#readTimeout);
-      const length = ((first[0] as number) << 8) | (second[0] as number);
+      const second: Uint8Array = await reader.read(1, this.#readTimeout);
+      const length: number = ((first[0] as number) << 8) | (second[0] as number);
       if (length < 4 || length > MAX_PACKET_BYTES) {
         throw new MembershipTransportError("protocol", "invalid packet frame length", from);
       }
 
-      const bytes = await reader.read(length, this.#readTimeout);
+      const bytes: Uint8Array = await reader.read(length, this.#readTimeout);
       validateEnvelope(bytes, ROLE_PACKET);
       await this.#handlers?.packet(from, bytes);
     }
@@ -1865,7 +1901,7 @@ export class TcpMembershipTransport implements MembershipTransport {
   async #openConnection(
     peer: string,
   ): Promise<{ socket: Socket; reader: ByteReader; writer: SocketWriter }> {
-    const socket = await this.#dial(peer);
+    const socket: Socket = await this.#dial(peer);
     return {
       socket,
       reader: new ByteReader(socket, peer, this.#maxQueued),
@@ -1874,10 +1910,10 @@ export class TcpMembershipTransport implements MembershipTransport {
   }
 
   #dial(peer: string): Promise<Socket> {
-    const endpoint = parseAddress(peer);
+    const endpoint: Endpoint = parseAddress(peer);
     return new Promise<Socket>((resolve, reject): void => {
-      const deadline = timedSignal(this.#connectTimeout);
-      const tls = this.#options.tls;
+      const deadline: Deadline = timedSignal(this.#connectTimeout);
+      const tls: MembershipTlsOptions | undefined = this.#options.tls;
       const dialFailure = (cause: unknown): MembershipTransportError =>
         transportError(
           tls === undefined ? "connect" : "tls",
@@ -1895,8 +1931,9 @@ export class TcpMembershipTransport implements MembershipTransport {
         return;
       }
 
-      let settled = false;
-      const connectedEvent = tls === undefined ? "connect" : "secureConnect";
+      let settled: boolean = false;
+      const connectedEvent: "connect" | "secureConnect" =
+        tls === undefined ? "connect" : "secureConnect";
       const finish = (error?: MembershipTransportError): void => {
         if (settled) {
           return;
@@ -1940,7 +1977,7 @@ export class TcpMembershipTransport implements MembershipTransport {
       port: endpoint.port,
     };
 
-    const tls = this.#options.tls;
+    const tls: MembershipTlsOptions | undefined = this.#options.tls;
 
     if (tls === undefined) {
       return connectTcp(tcpOptions);
@@ -1962,11 +1999,12 @@ export class TcpMembershipTransport implements MembershipTransport {
   }
 
   #track(socket: Socket): void {
-    if (this.#sockets.has(socket)) {
+    if (socket.destroyed || this.#sockets.has(socket)) {
       return;
     }
 
     this.#sockets.add(socket);
+    socket.setKeepAlive(true, TCP_KEEPALIVE_DELAY_MS);
     socket.on("error", (): void => undefined);
     socket.once("close", (): void => {
       this.#sockets.delete(socket);

@@ -24,6 +24,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  combineSyncChunks,
   decodeMembershipUpdate,
   decodeMessage,
   decodePacketMessage,
@@ -32,6 +33,7 @@ import {
   encodeMembershipUpdate,
   encodeMessage,
   encodeSyncChunks,
+  type GossipMessage,
   MAX_MEMBERS,
   MAX_METADATA_BYTES,
   MAX_NAME_BYTES,
@@ -47,16 +49,19 @@ import {
   MESSAGE_SYNC_RESPONSE,
   type MembershipUpdate,
   membershipUpdateSize,
+  type PacketMessage,
+  type PingMessage,
   ProtocolError,
   STATE_ALIVE,
   STATE_DEAD,
   STATE_LEFT,
   STATE_SUSPECT,
+  type SyncMessage,
 } from "../../src/membership/wire";
 
-const empty = new Uint8Array(0);
+const empty: Uint8Array = new Uint8Array(0);
 
-function alive(member = "a", metadata: Uint8Array = empty): MembershipUpdate {
+function alive(member: string = "a", metadata: Uint8Array = empty): MembershipUpdate {
   return {
     state: STATE_ALIVE,
     selfOriginated: true,
@@ -84,7 +89,7 @@ function updateFor(state: number): MembershipUpdate {
 }
 
 function copy(bytes: Uint8Array, change: (result: Uint8Array) => void): Uint8Array {
-  const result = Uint8Array.from(bytes);
+  const result: Uint8Array = Uint8Array.from(bytes);
   change(result);
   return result;
 }
@@ -95,7 +100,7 @@ function expectProtocol(action: () => unknown): void {
 
 describe("membership update codec", () => {
   it("encodes the exact big-endian layout", () => {
-    const bytes = encodeMembershipUpdate(alive("a", Uint8Array.of(0xaa)));
+    const bytes: Uint8Array = encodeMembershipUpdate(alive("a", Uint8Array.of(0xaa)));
     expect(Array.from(bytes)).toEqual([
       0x00, 0x14, 0x00, 0x01, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
       0x08, 0x01, 0x00, 0x00, 0x01, 0x61, 0xaa,
@@ -105,9 +110,9 @@ describe("membership update codec", () => {
 
   it("round-trips every state and copies metadata", () => {
     for (const state of [STATE_ALIVE, STATE_SUSPECT, STATE_DEAD, STATE_LEFT]) {
-      const source = updateFor(state);
-      const encoded = encodeMembershipUpdate(source);
-      const decoded = decodeMembershipUpdate(encoded);
+      const source: MembershipUpdate = updateFor(state);
+      const encoded: Uint8Array = encodeMembershipUpdate(source);
+      const decoded: MembershipUpdate = decodeMembershipUpdate(encoded);
       expect(decoded).toEqual(source);
       if (state === STATE_ALIVE) {
         encoded[encoded.length - 1] = 99;
@@ -117,8 +122,8 @@ describe("membership update codec", () => {
   });
 
   it("accepts scalar and field boundaries", () => {
-    const member = "x".repeat(MAX_NAME_BYTES);
-    const metadata = new Uint8Array(MAX_METADATA_BYTES).fill(0xff);
+    const member: string = "x".repeat(MAX_NAME_BYTES);
+    const metadata: Uint8Array = new Uint8Array(MAX_METADATA_BYTES).fill(0xff);
     const source: MembershipUpdate = {
       ...alive(member, metadata),
       incarnation: 0xffffffff,
@@ -154,33 +159,33 @@ describe("membership update codec", () => {
   });
 
   it("rejects malformed fixed fields before variable fields", () => {
-    const valid = encodeMembershipUpdate(alive("a", Uint8Array.of(1)));
-    const malformed = [
+    const valid: Uint8Array = encodeMembershipUpdate(alive("a", Uint8Array.of(1)));
+    const malformed: Uint8Array[] = [
       valid.subarray(0, 19),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[0] = 0;
         bytes[1] = 19;
       }),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[0] = 0xff;
         bytes[1] = 0xff;
       }),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[2] = 4;
       }),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[3] = 0x80;
       }),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[3] = 0;
       }),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[16] = 0;
       }),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[17] = 1;
       }),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[18] = 0x02;
         bytes[19] = 0x01;
       }),
@@ -192,17 +197,17 @@ describe("membership update codec", () => {
   });
 
   it("rejects invalid UTF-8 and NUL names", () => {
-    const valid = encodeMembershipUpdate(alive("a"));
+    const valid: Uint8Array = encodeMembershipUpdate(alive("a"));
     expectProtocol(() =>
       decodeMembershipUpdate(
-        copy(valid, (bytes) => {
+        copy(valid, (bytes): void => {
           bytes[20] = 0xff;
         }),
       ),
     );
     expectProtocol(() =>
       decodeMembershipUpdate(
-        copy(valid, (bytes) => {
+        copy(valid, (bytes): void => {
           bytes[20] = 0;
         }),
       ),
@@ -210,21 +215,21 @@ describe("membership update codec", () => {
   });
 
   it("rejects state-specific reporter, metadata, and provenance on decode", () => {
-    const aliveBytes = encodeMembershipUpdate(alive("a", Uint8Array.of(1)));
-    const suspectBytes = encodeMembershipUpdate(updateFor(STATE_SUSPECT));
-    const deadBytes = encodeMembershipUpdate(updateFor(STATE_DEAD));
-    const leftBytes = encodeMembershipUpdate(updateFor(STATE_LEFT));
-    const cases = [
-      copy(aliveBytes, (bytes) => {
+    const aliveBytes: Uint8Array = encodeMembershipUpdate(alive("a", Uint8Array.of(1)));
+    const suspectBytes: Uint8Array = encodeMembershipUpdate(updateFor(STATE_SUSPECT));
+    const deadBytes: Uint8Array = encodeMembershipUpdate(updateFor(STATE_DEAD));
+    const leftBytes: Uint8Array = encodeMembershipUpdate(updateFor(STATE_LEFT));
+    const cases: Uint8Array[] = [
+      copy(aliveBytes, (bytes): void => {
         bytes[2] = STATE_DEAD;
       }),
-      copy(suspectBytes, (bytes) => {
+      copy(suspectBytes, (bytes): void => {
         bytes[3] = 1;
       }),
-      copy(deadBytes, (bytes) => {
+      copy(deadBytes, (bytes): void => {
         bytes[3] = 1;
       }),
-      copy(leftBytes, (bytes) => {
+      copy(leftBytes, (bytes): void => {
         bytes[3] = 0;
       }),
     ];
@@ -234,10 +239,10 @@ describe("membership update codec", () => {
   });
 
   it("rejects missing suspect reporters and non-alive metadata on decode", () => {
-    const valid = encodeMembershipUpdate(alive("a", Uint8Array.of(1)));
+    const valid: Uint8Array = encodeMembershipUpdate(alive("a", Uint8Array.of(1)));
     expectProtocol(() =>
       decodeMembershipUpdate(
-        copy(valid, (bytes) => {
+        copy(valid, (bytes): void => {
           bytes[2] = STATE_SUSPECT;
           bytes[3] = 0;
         }),
@@ -245,7 +250,7 @@ describe("membership update codec", () => {
     );
     expectProtocol(() =>
       decodeMembershipUpdate(
-        copy(valid, (bytes) => {
+        copy(valid, (bytes): void => {
           bytes[2] = STATE_DEAD;
           bytes[3] = 0;
         }),
@@ -255,7 +260,7 @@ describe("membership update codec", () => {
 });
 
 describe("packet message codec", () => {
-  const fixtures = [
+  const fixtures: { message: PacketMessage; bytes: number[] }[] = [
     {
       message: { type: MESSAGE_PING, sequence: 1, owner: "o", relay: "", updates: [] } as const,
       bytes: [1, 1, 0, 8, 0, 0, 0, 1, 1, 0x6f, 0, 0],
@@ -293,15 +298,15 @@ describe("packet message codec", () => {
 
   it("matches exact fixtures and round-trips every packet type", () => {
     for (const fixture of fixtures) {
-      const encoded = encodeMessage(fixture.message);
+      const encoded: Uint8Array = encodeMessage(fixture.message);
       expect(Array.from(encoded)).toEqual(fixture.bytes);
       expect(decodePacketMessage(encoded)).toEqual(fixture.message);
     }
   });
 
   it("round-trips piggyback updates and relayed pings", () => {
-    const update = updateFor(STATE_SUSPECT);
-    const message = {
+    const update: MembershipUpdate = updateFor(STATE_SUSPECT);
+    const message: PingMessage = {
       type: MESSAGE_PING,
       sequence: 0xffffffff,
       owner: "owner:1",
@@ -312,7 +317,7 @@ describe("packet message codec", () => {
   });
 
   it("enforces the packet budget and update-count byte", () => {
-    const fitting = {
+    const fitting: GossipMessage = {
       type: MESSAGE_GOSSIP,
       updates: [alive("a", new Uint8Array(MAX_METADATA_BYTES))],
     } as const;
@@ -329,25 +334,27 @@ describe("packet message codec", () => {
     expectProtocol(() =>
       encodeMessage({
         type: MESSAGE_GOSSIP,
-        updates: ["a", "b", "c"].map((member) => alive(member, new Uint8Array(MAX_METADATA_BYTES))),
+        updates: ["a", "b", "c"].map(
+          (member): MembershipUpdate => alive(member, new Uint8Array(MAX_METADATA_BYTES)),
+        ),
       }),
     );
   });
 
   it("rejects malformed envelopes, reserved types, lengths, and trailing bytes", () => {
-    const valid = encodeMessage({ type: MESSAGE_GOSSIP, updates: [] });
-    const cases = [
+    const valid: Uint8Array = encodeMessage({ type: MESSAGE_GOSSIP, updates: [] });
+    const cases: Uint8Array[] = [
       valid.subarray(0, 3),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[0] = 2;
       }),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[1] = 0;
       }),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[1] = 6;
       }),
-      copy(valid, (bytes) => {
+      copy(valid, (bytes): void => {
         bytes[2] = 0;
         bytes[3] = 2;
       }),
@@ -359,30 +366,30 @@ describe("packet message codec", () => {
   });
 
   it("rejects truncated mandatory names, empty names, counts, and invalid names", () => {
-    const ping = encodeMessage({
+    const ping: Uint8Array = encodeMessage({
       type: MESSAGE_PING,
       sequence: 1,
       owner: "o",
       relay: "",
       updates: [],
     });
-    const cases = [
-      copy(ping, (bytes) => {
+    const cases: Uint8Array[] = [
+      copy(ping, (bytes): void => {
         bytes[8] = 0;
       }),
-      copy(ping, (bytes) => {
+      copy(ping, (bytes): void => {
         bytes[8] = 10;
       }),
-      copy(ping, (bytes) => {
+      copy(ping, (bytes): void => {
         bytes[9] = 0xff;
       }),
       ping.subarray(0, ping.length - 1),
     ];
     for (const original of cases) {
-      const bytes =
+      const bytes: Uint8Array =
         original.length === ping.length
           ? original
-          : copy(original, (value) => {
+          : copy(original, (value): void => {
               value[2] = 0;
               value[3] = value.length - 4;
             });
@@ -391,7 +398,7 @@ describe("packet message codec", () => {
   });
 
   it("rejects each truncated packet body boundary and trailing update bytes", () => {
-    const malformed = [
+    const malformed: Uint8Array[] = [
       Uint8Array.of(1, MESSAGE_PING, 0, 3, 0, 0, 0),
       Uint8Array.of(1, MESSAGE_PING, 0, 6, 0, 0, 0, 1, 1, 0x6f),
       Uint8Array.of(1, MESSAGE_GOSSIP, 0, 0),
@@ -400,7 +407,7 @@ describe("packet message codec", () => {
       expectProtocol(() => decodeMessage(bytes));
     }
 
-    const withUpdate = encodeMessage({
+    const withUpdate: Uint8Array = encodeMessage({
       type: MESSAGE_GOSSIP,
       updates: [alive("a")],
     });
@@ -409,8 +416,8 @@ describe("packet message codec", () => {
   });
 
   it("rejects an oversized packet before parsing its body", () => {
-    const bytes = new Uint8Array(MAX_PACKET_BYTES + 1);
-    const view = new DataView(bytes.buffer);
+    const bytes: Uint8Array = new Uint8Array(MAX_PACKET_BYTES + 1);
+    const view: DataView = new DataView(bytes.buffer);
     view.setUint8(0, 1);
     view.setUint8(1, MESSAGE_GOSSIP);
     view.setUint16(2, bytes.length - 4);
@@ -425,21 +432,21 @@ describe("packet message codec", () => {
 
 describe("sync message codec", () => {
   it("encodes an exact empty chunk fixture", () => {
-    const message = {
+    const message: SyncMessage = {
       type: MESSAGE_SYNC_REQUEST,
       exchangeId: 0x0102030405060708n,
       chunkIndex: 0,
       chunkCount: 1,
       updates: [],
     } as const;
-    const bytes = encodeMessage(message);
+    const bytes: Uint8Array = encodeMessage(message);
     expect(Array.from(bytes)).toEqual([1, 0x10, 0, 14, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 1, 0, 0]);
     expect(decodeSyncMessage(bytes)).toEqual(message);
   });
 
   it("round-trips requests and responses", () => {
     for (const type of [MESSAGE_SYNC_REQUEST, MESSAGE_SYNC_RESPONSE] as const) {
-      const message = {
+      const message: SyncMessage = {
         type,
         exchangeId: 0xffffffffffffffffn,
         chunkIndex: 1,
@@ -451,7 +458,7 @@ describe("sync message codec", () => {
   });
 
   it("rejects invalid sync scalar fields and duplicate names", () => {
-    const base = {
+    const base: SyncMessage = {
       type: MESSAGE_SYNC_REQUEST,
       exchangeId: 1n,
       chunkIndex: 0,
@@ -463,17 +470,17 @@ describe("sync message codec", () => {
     expectProtocol(() => encodeMessage({ ...base, chunkIndex: 1 }));
     expectProtocol(() => encodeMessage({ ...base, updates: [alive("a"), alive("a")] }));
 
-    const valid = encodeMessage(base);
+    const valid: Uint8Array = encodeMessage(base);
     expectProtocol(() =>
       decodeSyncMessage(
-        copy(valid, (bytes) => {
+        copy(valid, (bytes): void => {
           bytes.fill(0, 4, 12);
         }),
       ),
     );
     expectProtocol(() =>
       decodeSyncMessage(
-        copy(valid, (bytes) => {
+        copy(valid, (bytes): void => {
           bytes[14] = 0;
           bytes[15] = 0;
         }),
@@ -481,7 +488,7 @@ describe("sync message codec", () => {
     );
     expectProtocol(() =>
       decodeSyncMessage(
-        copy(valid, (bytes) => {
+        copy(valid, (bytes): void => {
           bytes[12] = 0;
           bytes[13] = 1;
         }),
@@ -490,7 +497,10 @@ describe("sync message codec", () => {
   });
 
   it("rejects oversized sync tables and envelope bodies on encode", () => {
-    const tooMany = Array.from({ length: MAX_MEMBERS + 1 }, (_, index) => alive(`n${index}`));
+    const tooMany: MembershipUpdate[] = Array.from(
+      { length: MAX_MEMBERS + 1 },
+      (_, index): MembershipUpdate => alive(`n${index}`),
+    );
     expectProtocol(() =>
       encodeMessage({
         type: MESSAGE_SYNC_REQUEST,
@@ -501,8 +511,9 @@ describe("sync message codec", () => {
       }),
     );
 
-    const oversizedBody = Array.from({ length: 130 }, (_, index) =>
-      alive(`large-${index}`, new Uint8Array(MAX_METADATA_BYTES)),
+    const oversizedBody: MembershipUpdate[] = Array.from(
+      { length: 130 },
+      (_, index): MembershipUpdate => alive(`large-${index}`, new Uint8Array(MAX_METADATA_BYTES)),
     );
     expectProtocol(() =>
       encodeMessage({
@@ -518,8 +529,8 @@ describe("sync message codec", () => {
   it("rejects truncated headers, oversized counts, and duplicate decoded members", () => {
     expectProtocol(() => decodeSyncMessage(Uint8Array.of(1, MESSAGE_SYNC_REQUEST, 0, 0)));
 
-    const oversizedCount = new Uint8Array(18);
-    const countView = new DataView(oversizedCount.buffer);
+    const oversizedCount: Uint8Array = new Uint8Array(18);
+    const countView: DataView = new DataView(oversizedCount.buffer);
     countView.setUint8(0, 1);
     countView.setUint8(1, MESSAGE_SYNC_REQUEST);
     countView.setUint16(2, 14);
@@ -528,25 +539,25 @@ describe("sync message codec", () => {
     countView.setUint16(16, MAX_MEMBERS + 1);
     expectProtocol(() => decodeSyncMessage(oversizedCount));
 
-    const single = encodeMessage({
+    const single: Uint8Array = encodeMessage({
       type: MESSAGE_SYNC_REQUEST,
       exchangeId: 1n,
       chunkIndex: 0,
       chunkCount: 1,
       updates: [alive("duplicate")],
     });
-    const record = single.slice(18);
-    const duplicate = new Uint8Array(single.length + record.length);
+    const record: Uint8Array = single.slice(18);
+    const duplicate: Uint8Array = new Uint8Array(single.length + record.length);
     duplicate.set(single);
     duplicate.set(record, single.length);
-    const duplicateView = new DataView(duplicate.buffer);
+    const duplicateView: DataView = new DataView(duplicate.buffer);
     duplicateView.setUint16(2, duplicate.length - 4);
     duplicateView.setUint16(16, 2);
     expectProtocol(() => decodeSyncMessage(duplicate));
   });
 
   it("rejects sync messages on the packet role", () => {
-    const bytes = encodeMessage({
+    const bytes: Uint8Array = encodeMessage({
       type: MESSAGE_SYNC_REQUEST,
       exchangeId: 1n,
       chunkIndex: 0,
@@ -557,20 +568,22 @@ describe("sync message codec", () => {
   });
 
   it("chunks at the largest stream-frame prefix and rejoins atomically", () => {
-    const updates = Array.from({ length: 100 }, (_, index) =>
-      alive(`node-${index}-${"x".repeat(220)}`, new Uint8Array(MAX_METADATA_BYTES).fill(index)),
+    const updates: MembershipUpdate[] = Array.from(
+      { length: 100 },
+      (_, index): MembershipUpdate =>
+        alive(`node-${index}-${"x".repeat(220)}`, new Uint8Array(MAX_METADATA_BYTES).fill(index)),
     );
-    const chunks = encodeSyncChunks(MESSAGE_SYNC_RESPONSE, 42n, updates);
+    const chunks: readonly Uint8Array[] = encodeSyncChunks(MESSAGE_SYNC_RESPONSE, 42n, updates);
     expect(chunks.length).toBeGreaterThan(1);
     for (const chunk of chunks) {
       expect(chunk.length).toBeLessThanOrEqual(MAX_SYNC_MESSAGE_BYTES);
     }
-    const joined = decodeSyncChunks(chunks);
+    const joined: ReturnType<typeof decodeSyncChunks> = decodeSyncChunks(chunks);
     expect(joined.type).toBe(MESSAGE_SYNC_RESPONSE);
     expect(joined.exchangeId).toBe(42n);
     expect(joined.updates).toEqual(updates);
-    const first = decodeSyncMessage(chunks[0] as Uint8Array);
-    const second = decodeSyncMessage(chunks[1] as Uint8Array);
+    const first: SyncMessage = decodeSyncMessage(chunks[0] as Uint8Array);
+    const second: SyncMessage = decodeSyncMessage(chunks[1] as Uint8Array);
     expect(
       (chunks[0] as Uint8Array).length +
         membershipUpdateSize(second.updates[0] as MembershipUpdate),
@@ -580,7 +593,7 @@ describe("sync message codec", () => {
   });
 
   it("uses one empty chunk for an empty table", () => {
-    const chunks = encodeSyncChunks(MESSAGE_SYNC_REQUEST, 7n, []);
+    const chunks: readonly Uint8Array[] = encodeSyncChunks(MESSAGE_SYNC_REQUEST, 7n, []);
     expect(chunks).toHaveLength(1);
     expect(decodeSyncChunks(chunks)).toEqual({
       type: MESSAGE_SYNC_REQUEST,
@@ -590,7 +603,10 @@ describe("sync message codec", () => {
   });
 
   it("enforces the complete-table member and duplicate limits", () => {
-    const updates = Array.from({ length: 1_024 }, (_, index) => alive(`n${index}`));
+    const updates: MembershipUpdate[] = Array.from(
+      { length: 1_024 },
+      (_, index): MembershipUpdate => alive(`n${index}`),
+    );
     expect(
       decodeSyncChunks(encodeSyncChunks(MESSAGE_SYNC_REQUEST, 1n, updates)).updates,
     ).toHaveLength(1_024);
@@ -603,30 +619,34 @@ describe("sync message codec", () => {
   });
 
   it("rejects partial, reordered, mismatched, duplicated, and noncanonical chunks", () => {
-    const large = Array.from({ length: 100 }, (_, index) =>
-      alive(`node-${index}-${"x".repeat(220)}`, new Uint8Array(MAX_METADATA_BYTES)),
+    const large: MembershipUpdate[] = Array.from(
+      { length: 100 },
+      (_, index): MembershipUpdate =>
+        alive(`node-${index}-${"x".repeat(220)}`, new Uint8Array(MAX_METADATA_BYTES)),
     );
-    const chunks = encodeSyncChunks(MESSAGE_SYNC_REQUEST, 3n, large);
+    const chunks: readonly Uint8Array[] = encodeSyncChunks(MESSAGE_SYNC_REQUEST, 3n, large);
     expect(chunks.length).toBeGreaterThan(1);
     expectProtocol(() => decodeSyncChunks([]));
     expectProtocol(() => decodeSyncChunks(chunks.slice(0, -1)));
+    expectProtocol(() => combineSyncChunks([], []));
+    expectProtocol(() => combineSyncChunks([chunks[0] as Uint8Array], []));
     expectProtocol(() => decodeSyncChunks([chunks[1] as Uint8Array, chunks[0] as Uint8Array]));
     expectProtocol(() => decodeSyncChunks([chunks[0] as Uint8Array, chunks[0] as Uint8Array]));
 
-    const decoded = chunks.map((chunk) => decodeSyncMessage(chunk));
-    const mismatched = [...chunks];
+    const decoded: SyncMessage[] = chunks.map((chunk): SyncMessage => decodeSyncMessage(chunk));
+    const mismatched: Uint8Array[] = [...chunks];
     mismatched[1] = encodeMessage({ ...(decoded[1] as (typeof decoded)[number]), exchangeId: 4n });
     expectProtocol(() => decodeSyncChunks(mismatched));
 
-    const duplicate = [...chunks];
-    const second = decoded[1] as (typeof decoded)[number];
+    const duplicate: Uint8Array[] = [...chunks];
+    const second: SyncMessage = decoded[1] as (typeof decoded)[number];
     duplicate[1] = encodeMessage({
       ...second,
       updates: [large[0] as MembershipUpdate, ...second.updates.slice(1)],
     });
     expectProtocol(() => decodeSyncChunks(duplicate));
 
-    const noncanonical = [
+    const noncanonical: Uint8Array[] = [
       encodeMessage({
         type: MESSAGE_SYNC_REQUEST,
         exchangeId: 9n,
@@ -648,47 +668,50 @@ describe("sync message codec", () => {
   it("rejects invalid chunk types and over-budget framed exchanges", () => {
     expectProtocol(() => encodeSyncChunks(MESSAGE_GOSSIP as typeof MESSAGE_SYNC_REQUEST, 1n, []));
 
-    const chunk = encodeMessage({
+    const chunk: Uint8Array = encodeMessage({
       type: MESSAGE_SYNC_REQUEST,
       exchangeId: 1n,
       chunkIndex: 0,
       chunkCount: 1,
       updates: [],
     });
-    const count = Math.floor(MAX_SYNC_EXCHANGE_BYTES / (chunk.length + 4)) + 1;
+    const count: number = Math.floor(MAX_SYNC_EXCHANGE_BYTES / (chunk.length + 4)) + 1;
     expectProtocol(() => decodeSyncChunks(Array.from({ length: count }, () => chunk)));
   });
 
   it("rejects multi-chunk empty records and aggregate tables over 1024 members", () => {
-    const emptyChunks = [0, 1].map((chunkIndex) =>
-      encodeMessage({
-        type: MESSAGE_SYNC_REQUEST,
-        exchangeId: 2n,
-        chunkIndex,
-        chunkCount: 2,
-        updates: [],
-      }),
+    const emptyChunks: Uint8Array[] = [0, 1].map(
+      (chunkIndex): Uint8Array =>
+        encodeMessage({
+          type: MESSAGE_SYNC_REQUEST,
+          exchangeId: 2n,
+          chunkIndex,
+          chunkCount: 2,
+          updates: [],
+        }),
     );
     expectProtocol(() => decodeSyncChunks(emptyChunks));
 
-    const updates = Array.from({ length: MAX_MEMBERS + 1 }, (_, index) =>
-      alive(
-        `member-${index}`,
-        index < 130 ? new Uint8Array(MAX_METADATA_BYTES) : new Uint8Array(0),
-      ),
+    const updates: MembershipUpdate[] = Array.from(
+      { length: MAX_MEMBERS + 1 },
+      (_, index): MembershipUpdate =>
+        alive(
+          `member-${index}`,
+          index < 130 ? new Uint8Array(MAX_METADATA_BYTES) : new Uint8Array(0),
+        ),
     );
-    const split = updates.findIndex((_, index) => {
-      const prefix = updates.slice(0, index + 1);
+    const split: number = updates.findIndex((_, index): boolean => {
+      const prefix: MembershipUpdate[] = updates.slice(0, index + 1);
       return (
-        18 + prefix.reduce((bytes, value) => bytes + membershipUpdateSize(value), 0) >
+        18 + prefix.reduce((bytes, value): number => bytes + membershipUpdateSize(value), 0) >
         MAX_SYNC_MESSAGE_BYTES
       );
     });
-    const first = updates.slice(0, split);
-    const second = updates.slice(split);
+    const first: MembershipUpdate[] = updates.slice(0, split);
+    const second: MembershipUpdate[] = updates.slice(split);
     expect(first.length).toBeGreaterThan(0);
     expect(second.length).toBeLessThanOrEqual(MAX_MEMBERS);
-    const chunks = [
+    const chunks: Uint8Array[] = [
       encodeMessage({
         type: MESSAGE_SYNC_REQUEST,
         exchangeId: 3n,

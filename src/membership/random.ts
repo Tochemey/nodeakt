@@ -25,9 +25,9 @@
 import { randomBytes } from "node:crypto";
 
 /** Number of distinct unsigned 32-bit values and exclusive seed upper bound. */
-const UINT32_RANGE = 0x1_0000_0000;
+const UINT32_RANGE: number = 0x1_0000_0000;
 /** Nonzero xorshift32 state substituted for the absorbing all-zero state. */
-const ZERO_SEED_STATE = 0x6d2b_79f5;
+const ZERO_SEED_STATE: number = 0x6d2b_79f5;
 
 /**
  * Randomness dependency used for membership protocol choices.
@@ -137,7 +137,7 @@ export class SeededRandom implements Random {
    * @returns An integer in `[0, 2^32)`.
    */
   #uint32(): number {
-    let value = this.#state;
+    let value: number = this.#state;
     value ^= value << 13;
     value ^= value >>> 17;
     value ^= value << 5;
@@ -166,8 +166,8 @@ export class SeededRandom implements Random {
    */
   integer(maximumExclusive: number): number {
     validateMaximum(maximumExclusive);
-    const rejectedBelow = UINT32_RANGE % maximumExclusive;
-    let value = this.#uint32();
+    const rejectedBelow: number = UINT32_RANGE % maximumExclusive;
+    let value: number = this.#uint32();
     while (value < rejectedBelow) {
       value = this.#uint32();
     }
@@ -199,10 +199,10 @@ export class SeededRandom implements Random {
    * @returns A new mutable array containing the same element references.
    */
   shuffle<T>(values: readonly T[]): T[] {
-    const shuffled = Array.from(values);
+    const shuffled: T[] = Array.from(values);
     for (let index = shuffled.length - 1; index > 0; index -= 1) {
-      const other = this.integer(index + 1);
-      const value = shuffled[index] as T;
+      const other: number = this.integer(index + 1);
+      const value: T = shuffled[index] as T;
       shuffled[index] = shuffled[other] as T;
       shuffled[other] = value;
     }

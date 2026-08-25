@@ -31,7 +31,7 @@ function choices(source: Random): readonly number[] {
 
 describe("seeded random source", () => {
   it("reproduces a stable xorshift32 sequence and reports its seed", () => {
-    const source = new SeededRandom(1);
+    const source: SeededRandom = new SeededRandom(1);
     expect(source.seed).toBe(1);
     expect(source.next()).toBe(270_369 / 0x1_0000_0000);
     expect(source.next()).toBe(67_634_689 / 0x1_0000_0000);
@@ -39,20 +39,20 @@ describe("seeded random source", () => {
   });
 
   it("handles zero and the full uint32 integer range deterministically", () => {
-    const first = new SeededRandom(0);
-    const second = new SeededRandom(0);
+    const first: SeededRandom = new SeededRandom(0);
+    const second: SeededRandom = new SeededRandom(0);
     expect(first.integer(0x1_0000_0000)).toBe(second.integer(0x1_0000_0000));
     expect(first.next()).toBe(second.next());
   });
 
   it("keeps integer choices inside every requested half-open range", () => {
-    const source = new SeededRandom(99);
+    const source: SeededRandom = new SeededRandom(99);
     expect(Array.from({ length: 100 }, (): number => source.integer(1))).toEqual(
       Array.from({ length: 100 }, (): number => 0),
     );
     for (const maximum of [2, 3, 255, 65_537, 0x1_0000_0000]) {
       for (let count = 0; count < 100; count += 1) {
-        const value = source.integer(maximum);
+        const value: number = source.integer(maximum);
         expect(Number.isInteger(value)).toBe(true);
         expect(value).toBeGreaterThanOrEqual(0);
         expect(value).toBeLessThan(maximum);
@@ -61,20 +61,20 @@ describe("seeded random source", () => {
   });
 
   it("retries samples in the modulo-bias rejection interval", () => {
-    const source = new SeededRandom(1);
-    const value = source.integer(0x8000_0001);
+    const source: SeededRandom = new SeededRandom(1);
+    const value: number = source.integer(0x8000_0001);
 
     expect(value).toBeGreaterThanOrEqual(0);
     expect(value).toBeLessThan(0x8000_0001);
   });
 
   it("picks values and shuffles a copy without loss", () => {
-    const values = ["a", "b", "c", "d", "e"] as const;
-    const first = new SeededRandom(42);
-    const second = new SeededRandom(42);
+    const values: readonly string[] = ["a", "b", "c", "d", "e"] as const;
+    const first: SeededRandom = new SeededRandom(42);
+    const second: SeededRandom = new SeededRandom(42);
 
     expect(first.pick(values)).toBe(second.pick(values));
-    const shuffled = first.shuffle(values);
+    const shuffled: string[] = first.shuffle(values);
     expect(shuffled).toEqual(second.shuffle(values));
     expect(shuffled).not.toBe(values);
     expect([...shuffled].sort()).toEqual([...values]);
@@ -85,7 +85,7 @@ describe("seeded random source", () => {
     for (const seed of [-1, 0x1_0000_0000, 1.5, Number.NaN]) {
       expect((): SeededRandom => new SeededRandom(seed)).toThrow(RangeError);
     }
-    const source = new SeededRandom(1);
+    const source: SeededRandom = new SeededRandom(1);
     for (const maximum of [0, -1, 1.5, 0x1_0000_0001, Number.NaN]) {
       expect((): number => source.integer(maximum)).toThrow(RangeError);
     }
@@ -95,12 +95,12 @@ describe("seeded random source", () => {
 
 describe("entropy boundary", () => {
   it("creates valid reported seeds and ready-to-inject sources", () => {
-    const seed = randomSeed();
+    const seed: number = randomSeed();
     expect(Number.isInteger(seed)).toBe(true);
     expect(seed).toBeGreaterThanOrEqual(0);
     expect(seed).toBeLessThan(0x1_0000_0000);
 
-    const source = createRandom();
+    const source: SeededRandom = createRandom();
     expect(source.seed).toBeGreaterThanOrEqual(0);
     expect(source.next()).toBeGreaterThanOrEqual(0);
     expect(source.next()).toBeLessThan(1);

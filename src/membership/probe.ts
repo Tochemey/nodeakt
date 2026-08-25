@@ -51,19 +51,19 @@ import {
 } from "./wire";
 
 /** Base duration, in milliseconds, of one SWIM period at zero awareness penalty. @internal */
-export const BASE_PROTOCOL_PERIOD_MS = 1_000;
+export const BASE_PROTOCOL_PERIOD_MS: number = 1_000;
 /** Direct-ping budget, in milliseconds, before an owner asks indirect helpers. @internal */
-export const BASE_DIRECT_TIMEOUT_MS = 500;
+export const BASE_DIRECT_TIMEOUT_MS: number = 500;
 /** Maximum distinct alive, non-owner, non-target members selected as indirect helpers. @internal */
-export const INDIRECT_HELPER_COUNT = 3;
+export const INDIRECT_HELPER_COUNT: number = 3;
 /** Fraction of a helper's Lifeguard-scaled relay window elapsed before it reports a NACK. @internal */
-export const HELPER_NACK_FRACTION = 0.8;
+export const HELPER_NACK_FRACTION: number = 0.8;
 /** Inclusive upper bound for the local Lifeguard awareness penalty. @internal */
-export const AWARENESS_MAX = 8;
+export const AWARENESS_MAX: number = 8;
 /** Wall-clock interval, in milliseconds, between dedicated gossip attempts. @internal */
-export const GOSSIP_INTERVAL_MS = 200;
+export const GOSSIP_INTERVAL_MS: number = 200;
 /** Maximum eligible peers contacted by one dedicated gossip tick. @internal */
-export const GOSSIP_FANOUT = 3;
+export const GOSSIP_FANOUT: number = 3;
 
 /**
  * Stable evidence captured when an owner probe reaches its period deadline
@@ -237,9 +237,9 @@ export class Probe {
   /** Whether this instance starts and stops `#transport`. */
   readonly #manageTransport: boolean;
   /** Active helper-side relay attempts keyed by owner/target/sequence. */
-  readonly #relayProbes = new Map<string, RelayProbe>();
+  readonly #relayProbes: Map<string, RelayProbe> = new Map<string, RelayProbe>();
   /** Every timer currently owned by this detector, for generation-safe cancellation. */
-  readonly #timers = new Set<ClockTimer>();
+  readonly #timers: Set<ClockTimer> = new Set<ClockTimer>();
   /** Current lifecycle gate for scheduling and packet acceptance. */
   #lifecycle: Lifecycle = "stopped";
   /** Shared promise returned to concurrent callers while transport binding is pending. */
@@ -247,9 +247,9 @@ export class Probe {
   /** Shared promise returned to concurrent callers while shutdown is pending. */
   #stopPromise: Promise<void> | undefined;
   /** Epoch invalidating callbacks scheduled by an earlier lifecycle. */
-  #generation = 0;
+  #generation: number = 0;
   /** Local Lifeguard penalty in `[0, AWARENESS_MAX]`. */
-  #awareness = 0;
+  #awareness: number = 0;
   /** Next owner-local unsigned 32-bit sequence, wrapping modulo 2^32. */
   #nextSequence: number;
   /** At most one owner probe exists per protocol period. */
@@ -257,7 +257,7 @@ export class Probe {
   /** Randomized queue of eligible names not yet visited in the current walk. */
   #walk: string[] = [];
   /** Names admitted to the current walk, including names already visited. */
-  #walkMembers = new Set<string>();
+  #walkMembers: Set<string> = new Set<string>();
 
   /**
    * Captures shared dependencies and seeds the owner-local probe sequence.
@@ -297,7 +297,7 @@ export class Probe {
 
   /** Defensive diagnostic snapshot, or `undefined` between periods and while inactive. */
   get outstanding(): OutstandingProbeSnapshot | undefined {
-    const probe = this.#outstanding;
+    const probe: OwnerProbe | undefined = this.#outstanding;
     if (probe === undefined) {
       return undefined;
     }
@@ -357,15 +357,15 @@ export class Probe {
     }
 
     this.#lifecycle = "starting";
-    const generation = this.#generation + 1;
+    const generation: number = this.#generation + 1;
     this.#generation = generation;
-    const bind = this.#manageTransport
+    const bind: Promise<void> = this.#manageTransport
       ? this.#transport.start({
           packet: (from: string, bytes: Uint8Array): void => {
             this.receivePacket(from, bytes);
           },
           stream: (from: string, stream: MembershipStream): void | Promise<void> => {
-            const handler = this.#callbacks.stream;
+            const handler: ProbeCallbacks["stream"] = this.#callbacks.stream;
             if (handler === undefined) {
               stream.close();
               return;
@@ -375,7 +375,7 @@ export class Probe {
           },
         })
       : Promise.resolve();
-    const start = bind
+    const start: Promise<void> = bind
       .then((): void => {
         if (this.#lifecycle !== "starting" || this.#generation !== generation) {
           return;
@@ -410,14 +410,15 @@ export class Probe {
       return this.#stopPromise as Promise<void>;
     }
 
-    const starting = this.#lifecycle === "starting" ? this.#startPromise : undefined;
+    const starting: Promise<void> | undefined =
+      this.#lifecycle === "starting" ? this.#startPromise : undefined;
     this.#lifecycle = "stopping";
     this.#generation += 1;
     this.#cancelAllTimers();
     this.#suspicion.cancelAll();
     this.#outstanding = undefined;
     this.#relayProbes.clear();
-    const stop = (starting ?? Promise.resolve())
+    const stop: Promise<void> = (starting ?? Promise.resolve())
       .catch((): void => undefined)
       .then(
         (): Promise<void> => (this.#manageTransport ? this.#transport.stop() : Promise.resolve()),
@@ -481,7 +482,7 @@ export class Probe {
 
   /** Returns current non-self members whose states permit failure detection. */
   #eligibleProbeNames(): string[] {
-    const self = this.#view.selfName;
+    const self: string = this.#view.selfName;
     const names: string[] = [];
     this.#view.eachMember((member: string, state: MemberState): void => {
       if (member !== self && isProbeEligibleState(state)) {
@@ -500,8 +501,8 @@ export class Probe {
    * for the next reshuffle.
    */
   #nextTarget(): MemberRecord | undefined {
-    const eligible = this.#eligibleProbeNames();
-    const eligibleSet = new Set(eligible);
+    const eligible: string[] = this.#eligibleProbeNames();
+    const eligibleSet: Set<string> = new Set(eligible);
     const retained: string[] = [];
     for (const name of this.#walk) {
       if (eligibleSet.has(name)) {
@@ -517,7 +518,7 @@ export class Probe {
         continue;
       }
 
-      const position = this.#random.integer(this.#walk.length + 1);
+      const position: number = this.#random.integer(this.#walk.length + 1);
       this.#walk.splice(position, 0, name);
       this.#walkMembers.add(name);
     }
@@ -528,8 +529,8 @@ export class Probe {
     }
 
     while (this.#walk.length > 0) {
-      const target = this.#walk.shift() as string;
-      const record = this.#view.get(target);
+      const target: string = this.#walk.shift() as string;
+      const record: MemberRecord | undefined = this.#view.get(target);
       if (record !== undefined && isProbeEligibleState(record.state)) {
         return record;
       }
@@ -544,16 +545,16 @@ export class Probe {
       return;
     }
 
-    const periodStart = this.#clock.now();
-    const scale = this.scale;
-    const effectivePeriod = BASE_PROTOCOL_PERIOD_MS * scale;
-    const record = this.#nextTarget();
+    const periodStart: number = this.#clock.now();
+    const scale: number = this.scale;
+    const effectivePeriod: number = BASE_PROTOCOL_PERIOD_MS * scale;
+    const record: MemberRecord | undefined = this.#nextTarget();
     if (record === undefined) {
       this.#scheduleNextPeriod(effectivePeriod, generation);
       return;
     }
 
-    const probe = this.#createOwnerProbe(
+    const probe: OwnerProbe = this.#createOwnerProbe(
       record.member,
       record.incarnation,
       periodStart,
@@ -580,7 +581,7 @@ export class Probe {
     scale: number,
     effectivePeriod: number,
   ): OwnerProbe {
-    const sequence = this.#nextSequence;
+    const sequence: number = this.#nextSequence;
     this.#nextSequence = (this.#nextSequence + 1) >>> 0;
 
     return {
@@ -625,7 +626,7 @@ export class Probe {
    * next timer turn instead of faulting the period loop with a negative delay.
    */
   #scheduleProbeDeadlines(probe: OwnerProbe, generation: number): void {
-    const now = this.#clock.now();
+    const now: number = this.#clock.now();
     probe.directTimer = this.#schedule(Math.max(0, probe.directDeadline - now), (): void => {
       probe.directTimer = undefined;
       this.#beginIndirect(probe, generation);
@@ -651,7 +652,7 @@ export class Probe {
     probe.indirectStarted = true;
     this.#cancel(probe.directTimer);
     probe.directTimer = undefined;
-    const helpers = this.#random
+    const helpers: string[] = this.#random
       .shuffle(
         this.#view
           .members()
@@ -694,32 +695,47 @@ export class Probe {
     this.#startPeriod(generation);
   }
 
-  /** Rewards an ACK, penalizes failure, and separately penalizes silent selected helpers. */
+  /**
+   * Rewards an ACK with a single improvement and penalizes a failed probe.
+   * A failure with selected helpers is scored solely by how many stayed silent:
+   * responsive helpers prove local timing was healthy, so an all-NACK failure
+   * costs nothing, while a failure with no helpers costs the base penalty.
+   * Successful periods never charge for slow helpers.
+   */
   #scoreCompletedPeriod(probe: OwnerProbe): void {
-    this.#changeAwareness(probe.succeeded ? -1 : 1);
+    if (probe.succeeded) {
+      this.#changeAwareness(-1);
+      return;
+    }
+
+    if (probe.helpers.size === 0) {
+      this.#changeAwareness(1);
+      return;
+    }
+
+    let silent: number = 0;
     for (const response of probe.helpers.values()) {
       if (response === "waiting") {
-        this.#changeAwareness(1);
+        silent += 1;
       }
     }
+
+    this.#changeAwareness(silent);
   }
 
-  /** Revalidates the captured incarnation, installs suspect truth, then starts its timer. */
+  /**
+   * Reports an unanswered probe to the engine and starts the local suspicion
+   * timer only when the engine accepted the evidence. The callback is the sole
+   * validator of the captured incarnation against current truth; the detector
+   * performs no revalidation of its own, so the rule cannot drift between two
+   * copies.
+   */
   #applyProbeFailure(probe: OwnerProbe): void {
     if (probe.succeeded) {
       return;
     }
 
-    const current = this.#view.get(probe.target);
-    if (
-      current === undefined ||
-      current.incarnation !== probe.incarnation ||
-      !isProbeEligibleState(current.state)
-    ) {
-      return;
-    }
-
-    const applied = this.#callbacks.suspect({
+    const applied: boolean = this.#callbacks.suspect({
       target: probe.target,
       incarnation: probe.incarnation,
       sequence: probe.sequence,
@@ -754,7 +770,7 @@ export class Probe {
 
   /** Sends queued or buddy truth to at most `GOSSIP_FANOUT` randomized eligible peers. */
   #gossip(generation: number): void {
-    const now = this.#clock.now();
+    const now: number = this.#clock.now();
     const candidates: string[] = [];
     this.#view.eachMember((member: string, state: MemberState): void => {
       if (
@@ -766,13 +782,13 @@ export class Probe {
       }
     });
 
-    const targets = this.#random.shuffle(candidates).slice(0, GOSSIP_FANOUT);
+    const targets: string[] = this.#random.shuffle(candidates).slice(0, GOSSIP_FANOUT);
     for (const target of targets) {
       if (!this.#active(generation)) {
         break;
       }
 
-      const buddy = this.#indictmentFor(target);
+      const buddy: MembershipUpdate | undefined = this.#indictmentFor(target);
       if (this.#broadcasts.size === 0 && buddy === undefined) {
         continue;
       }
@@ -783,7 +799,8 @@ export class Probe {
 
   /** Returns current non-alive truth about `member` for direct buddy dissemination. */
   #indictmentFor(member: string): MembershipUpdate | undefined {
-    const current = this.#view.stateOf(member);
+    const current: { readonly state: MemberState; readonly incarnation: number } | undefined =
+      this.#view.stateOf(member);
     if (current === undefined || current.state === STATE_ALIVE) {
       return undefined;
     }
@@ -802,12 +819,12 @@ export class Probe {
     buddy?: MembershipUpdate,
     onRejected?: () => void,
   ): void {
-    const baseLength = packetOverheadLength(message);
-    const selection =
+    const baseLength: number = packetOverheadLength(message);
+    const selection: BroadcastSelection =
       buddy === undefined
         ? this.#broadcasts.pack(MAX_PACKET_BYTES - baseLength)
         : this.#broadcasts.pack(MAX_PACKET_BYTES - baseLength, { buddy });
-    const bytes = encodeMessage({ ...message, updates: selection.updates });
+    const bytes: Uint8Array = encodeMessage({ ...message, updates: selection.updates });
     this.#sendSelection(to, bytes, selection, onRejected);
   }
 
@@ -878,7 +895,7 @@ export class Probe {
 
   /** Replies to a direct or relayed PING, including buddy evidence only for a direct owner. */
   #receivePing(from: string, message: PingMessage): void {
-    const destination = message.relay.length === 0 ? message.owner : message.relay;
+    const destination: string = message.relay.length === 0 ? message.owner : message.relay;
     const ack: AckMessage = {
       type: MESSAGE_ACK,
       sequence: message.sequence,
@@ -887,7 +904,7 @@ export class Probe {
       updates: [],
     };
 
-    const buddy =
+    const buddy: MembershipUpdate | undefined =
       message.relay.length === 0 && from === message.owner ? this.#indictmentFor(from) : undefined;
     this.#sendPacked(destination, ack, buddy);
   }
@@ -897,13 +914,13 @@ export class Probe {
    * an early NACK, and retains correlation state through the relay deadline.
    */
   #receivePingReq(message: PingReqMessage, generation: number): void {
-    const key = relayKey(message.owner, message.target, message.sequence);
-    const previous = this.#relayProbes.get(key);
+    const key: string = relayKey(message.owner, message.target, message.sequence);
+    const previous: RelayProbe | undefined = this.#relayProbes.get(key);
     if (previous !== undefined) {
       return;
     }
 
-    const relayWindow = BASE_DIRECT_TIMEOUT_MS * this.scale;
+    const relayWindow: number = BASE_DIRECT_TIMEOUT_MS * this.scale;
     const relay: RelayProbe = {
       key,
       owner: message.owner,
@@ -980,7 +997,7 @@ export class Probe {
    * Returns whether it matched, and records helper attribution when `from` is selected.
    */
   #receiveOwnerAck(from: string, message: AckMessage): boolean {
-    const probe = this.#outstanding;
+    const probe: OwnerProbe | undefined = this.#outstanding;
     if (
       probe === undefined ||
       message.owner !== this.#view.selfName ||
@@ -1006,8 +1023,8 @@ export class Probe {
    * updates before filling the remaining packet budget with local broadcasts.
    */
   #receiveRelayAck(message: AckMessage): void {
-    const key = relayKey(message.owner, message.target, message.sequence);
-    const relay = this.#relayProbes.get(key);
+    const key: string = relayKey(message.owner, message.target, message.sequence);
+    const relay: RelayProbe | undefined = this.#relayProbes.get(key);
     if (
       relay === undefined ||
       relay.target !== message.target ||
@@ -1030,14 +1047,17 @@ export class Probe {
       updates: message.updates,
     };
 
-    const baseLength = packetOverheadLength(forwarded);
-    const forwardedBytes = message.updates.reduce(
+    const baseLength: number = packetOverheadLength(forwarded);
+    const forwardedBytes: number = message.updates.reduce(
       (total: number, update: MembershipUpdate): number => total + membershipUpdateSize(update),
       0,
     );
-    const selection = this.#broadcasts.pack(MAX_PACKET_BYTES - baseLength - forwardedBytes, {
-      maxRecords: UPDATE_LIST_MAX_RECORDS - message.updates.length,
-    });
+    const selection: BroadcastSelection = this.#broadcasts.pack(
+      MAX_PACKET_BYTES - baseLength - forwardedBytes,
+      {
+        maxRecords: UPDATE_LIST_MAX_RECORDS - message.updates.length,
+      },
+    );
 
     this.#sendSelection(
       relay.owner,
@@ -1048,7 +1068,7 @@ export class Probe {
 
   /** Records the first timely NACK from a helper selected for the current owner probe. */
   #receiveNack(message: NackMessage): void {
-    const probe = this.#outstanding;
+    const probe: OwnerProbe | undefined = this.#outstanding;
     if (
       probe === undefined ||
       message.owner !== this.#view.selfName ||
@@ -1073,6 +1093,3 @@ export class Probe {
     );
   }
 }
-
-/** Maintainer-facing alias identifying {@link Probe} in its failure-detector role. @internal */
-export { Probe as ProbeDetector };

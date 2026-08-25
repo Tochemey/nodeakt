@@ -28,6 +28,7 @@ import {
   type MembershipUpdate,
   membershipUpdateSize,
   STATE_ALIVE,
+  STATE_SUSPECT,
   UPDATE_LIST_MAX_RECORDS,
 } from "./wire";
 
@@ -35,7 +36,7 @@ import {
 export { UPDATE_LIST_MAX_RECORDS } from "./wire";
 
 /** Scale factor in `4 * ceil(log10(N + 1))` accepted-send budgets. @internal */
-export const RETRANSMIT_MULTIPLIER = 4;
+export const RETRANSMIT_MULTIPLIER: number = 4;
 
 /**
  * Detached diagnostic snapshot of one member's queued truth and send budget.
@@ -150,8 +151,8 @@ function compareQueued(left: QueuedBroadcast, right: QueuedBroadcast): number {
     return left.priority ? -1 : 1;
   }
 
-  const leftTransmissions = left.initialRemaining - left.remaining;
-  const rightTransmissions = right.initialRemaining - right.remaining;
+  const leftTransmissions: number = left.initialRemaining - left.remaining;
+  const rightTransmissions: number = right.initialRemaining - right.remaining;
   if (leftTransmissions !== rightTransmissions) {
     return leftTransmissions - rightTransmissions;
   }
@@ -174,19 +175,22 @@ function truthMatches(left: MembershipUpdate, right: MembershipUpdate): boolean 
  */
 export class BroadcastQueue {
   /** Current queued truth indexed by canonical advertised member identity/address. */
-  readonly #queued = new Map<string, QueuedBroadcast>();
+  readonly #queued: Map<string, QueuedBroadcast> = new Map<string, QueuedBroadcast>();
 
   /** Single-use receipts keyed by exact selection object identity without retaining selections. */
-  readonly #receipts = new WeakMap<BroadcastSelection, SelectionReceipt>();
+  readonly #receipts: WeakMap<BroadcastSelection, SelectionReceipt> = new WeakMap<
+    BroadcastSelection,
+    SelectionReceipt
+  >();
 
   /** Reused scratch ordering buffer; valid only within one `pack` call. */
   readonly #scratch: QueuedBroadcast[] = [];
 
   /** Next insertion-order value; relevant only among equally transmitted records. */
-  #nextOrder = 0;
+  #nextOrder: number = 0;
 
   /** Next truth-generation guard used to make stale acknowledgements harmless. */
-  #nextGeneration = 0;
+  #nextGeneration: number = 0;
 
   /** Number of distinct member identities with queued truth. */
   get size(): number {
@@ -207,18 +211,61 @@ export class BroadcastQueue {
   enqueue(
     incoming: MembershipUpdate,
     aliveOrSuspectCount: number,
-    prioritySelfDefense = false,
+    prioritySelfDefense: boolean = false,
   ): boolean {
-    const encodedBytes = membershipUpdateSize(incoming);
-    const current = this.#queued.get(incoming.member);
+    const encodedBytes: number = membershipUpdateSize(incoming);
+    const current: QueuedBroadcast | undefined = this.#queued.get(incoming.member);
     if (current !== undefined && compareMembershipUpdates(incoming, current.update) <= 0) {
       return false;
     }
 
+    this.#store(incoming, encodedBytes, aliveOrSuspectCount, prioritySelfDefense);
+    return true;
+  }
+
+  /**
+   * Enqueues an equal-precedence suspect corroboration from a distinct accuser.
+   *
+   * Ordinary `enqueue` rejects truth that does not supersede the queued record, which
+   * would keep an independent confirmation from ever reaching the rest of the cluster.
+   * This path accepts a suspect record whose precedence matches the queued generation
+   * when its reporter differs, replacing that generation with a fresh send budget so the
+   * corroboration circulates. Callers gate acceptance on the suspicion manager, whose
+   * distinct-reporter cap bounds how many replacements one suspicion can cause. Stale
+   * precedence, a duplicate reporter, and non-suspect records are rejected unchanged.
+   *
+   * @throws {ProtocolError} If `incoming` is not wire-encodable.
+   * @throws {RangeError} If `aliveOrSuspectCount` is not a non-negative safe integer.
+   */
+  enqueueConfirmation(incoming: MembershipUpdate, aliveOrSuspectCount: number): boolean {
+    const encodedBytes: number = membershipUpdateSize(incoming);
+    if (incoming.state !== STATE_SUSPECT) {
+      return false;
+    }
+
+    const current: QueuedBroadcast | undefined = this.#queued.get(incoming.member);
+    if (current !== undefined) {
+      const precedence: number = compareMembershipUpdates(incoming, current.update);
+      if (precedence < 0 || (precedence === 0 && incoming.reporter === current.update.reporter)) {
+        return false;
+      }
+    }
+
+    this.#store(incoming, encodedBytes, aliveOrSuspectCount, false);
+    return true;
+  }
+
+  /** Installs one validated truth generation with a freshly derived send budget. */
+  #store(
+    incoming: MembershipUpdate,
+    encodedBytes: number,
+    aliveOrSuspectCount: number,
+    prioritySelfDefense: boolean,
+  ): void {
     assertNonnegativeInteger(aliveOrSuspectCount, "alive-or-suspect count");
-    const memberCount = Math.max(1, aliveOrSuspectCount);
-    const remaining = RETRANSMIT_MULTIPLIER * Math.ceil(Math.log10(memberCount + 1));
-    const update = copyMembershipUpdate(incoming);
+    const memberCount: number = Math.max(1, aliveOrSuspectCount);
+    const remaining: number = RETRANSMIT_MULTIPLIER * Math.ceil(Math.log10(memberCount + 1));
+    const update: MembershipUpdate = copyMembershipUpdate(incoming);
     this.#queued.set(update.member, {
       update,
       encodedBytes,
@@ -231,12 +278,11 @@ export class BroadcastQueue {
 
     this.#nextOrder += 1;
     this.#nextGeneration += 1;
-    return true;
   }
 
   /** Returns a detached snapshot for a member identity, or `undefined` when it is not queued. */
   get(member: string): BroadcastSnapshot | undefined {
-    const record = this.#queued.get(member);
+    const record: QueuedBroadcast | undefined = this.#queued.get(member);
     if (record === undefined) {
       return undefined;
     }
@@ -264,8 +310,8 @@ export class BroadcastQueue {
    */
   pack(byteBudget: number, options: BroadcastPackOptions = {}): BroadcastSelection {
     assertNonnegativeInteger(byteBudget, "byte budget");
-    const perRecordOverhead = options.perRecordOverhead ?? 0;
-    const maxRecords = options.maxRecords ?? UPDATE_LIST_MAX_RECORDS;
+    const perRecordOverhead: number = options.perRecordOverhead ?? 0;
+    const maxRecords: number = options.maxRecords ?? UPDATE_LIST_MAX_RECORDS;
     assertNonnegativeInteger(perRecordOverhead, "per-record overhead");
     assertNonnegativeInteger(maxRecords, "maximum record count");
     if (maxRecords > UPDATE_LIST_MAX_RECORDS) {
@@ -274,17 +320,17 @@ export class BroadcastQueue {
 
     const updates: MembershipUpdate[] = [];
     const included: IncludedQueuedRecord[] = [];
-    let bytes = 0;
-    const buddy = options.buddy;
+    let bytes: number = 0;
+    const buddy: MembershipUpdate | undefined = options.buddy;
     let buddyMember: string | undefined;
     if (buddy !== undefined && maxRecords > 0) {
-      const buddyBytes = membershipUpdateSize(buddy) + perRecordOverhead;
+      const buddyBytes: number = membershipUpdateSize(buddy) + perRecordOverhead;
       if (buddyBytes <= byteBudget) {
-        const buddyCopy = copyMembershipUpdate(buddy);
+        const buddyCopy: MembershipUpdate = copyMembershipUpdate(buddy);
         updates.push(buddyCopy);
         bytes = buddyBytes;
         buddyMember = buddyCopy.member;
-        const queuedBuddy = this.#queued.get(buddyCopy.member);
+        const queuedBuddy: QueuedBroadcast | undefined = this.#queued.get(buddyCopy.member);
         if (queuedBuddy !== undefined && truthMatches(queuedBuddy.update, buddyCopy)) {
           included.push({
             member: queuedBuddy.update.member,
@@ -294,7 +340,7 @@ export class BroadcastQueue {
       }
     }
 
-    const ordered = this.#scratch;
+    const ordered: QueuedBroadcast[] = this.#scratch;
     ordered.length = 0;
     for (const record of this.#queued.values()) {
       ordered.push(record);
@@ -310,7 +356,7 @@ export class BroadcastQueue {
         continue;
       }
 
-      const recordBytes = record.encodedBytes + perRecordOverhead;
+      const recordBytes: number = record.encodedBytes + perRecordOverhead;
       if (bytes + recordBytes > byteBudget) {
         continue;
       }
@@ -338,7 +384,7 @@ export class BroadcastQueue {
    * Buddy-only truth and generations superseded after packing are never charged.
    */
   acknowledge(selection: BroadcastSelection, accepted: boolean): boolean {
-    const receipt = this.#receipts.get(selection);
+    const receipt: SelectionReceipt | undefined = this.#receipts.get(selection);
     if (receipt === undefined) {
       return false;
     }
@@ -349,7 +395,7 @@ export class BroadcastQueue {
     }
 
     for (const included of receipt.included) {
-      const current = this.#queued.get(included.member);
+      const current: QueuedBroadcast | undefined = this.#queued.get(included.member);
       if (current === undefined || current.generation !== included.generation) {
         continue;
       }

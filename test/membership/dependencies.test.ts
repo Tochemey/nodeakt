@@ -27,7 +27,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const membershipDir = fileURLToPath(new URL("../../src/membership", import.meta.url));
+const membershipDir: string = fileURLToPath(new URL("../../src/membership", import.meta.url));
 
 function membershipSources(): readonly string[] {
   return readdirSync(membershipDir)
@@ -37,7 +37,8 @@ function membershipSources(): readonly string[] {
 
 describe("membership dependency injection boundaries", () => {
   it("confines wall clocks and timers to clock.ts", () => {
-    const ambientTime = /\b(?:Date\.now|setTimeout|clearTimeout|setInterval|clearInterval)\b/;
+    const ambientTime: RegExp =
+      /\b(?:Date\.now|setTimeout|clearTimeout|setInterval|clearInterval)\b/;
     for (const path of membershipSources()) {
       if (basename(path) === "clock.ts") {
         continue;
@@ -47,7 +48,8 @@ describe("membership dependency injection boundaries", () => {
   });
 
   it("confines entropy to random.ts", () => {
-    const ambientEntropy = /\b(?:Math\.random|randomBytes|randomInt|getRandomValues|randomUUID)\b/;
+    const ambientEntropy: RegExp =
+      /\b(?:Math\.random|randomBytes|randomInt|getRandomValues|randomUUID)\b/;
     for (const path of membershipSources()) {
       if (basename(path) === "random.ts") {
         continue;

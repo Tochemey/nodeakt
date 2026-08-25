@@ -125,6 +125,12 @@ describe("call-site helpers", () => {
 
     expect(scriptUrlOf("file:///app/greeter.actor.js")).toBe("file:///app/greeter.actor.js");
     expect(scriptUrlOf(absoluteScript)).toBe(pathToFileURL(absoluteScript).href);
+    // The literal pin keeps an implementation-independent oracle for the URL
+    // form; the comparison above alone mirrors the implementation's own call.
+    if (process.platform !== "win32") {
+      expect(scriptUrlOf("/app/greeter.actor.js")).toBe("file:///app/greeter.actor.js");
+    }
+
     expect(scriptUrlOf("")).toBeUndefined();
     expect(scriptUrlOf("[eval]")).toBeUndefined();
     expect(scriptUrlOf("evalmachine.<anonymous>")).toBeUndefined();

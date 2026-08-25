@@ -22,11 +22,12 @@
  * SOFTWARE.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, type Mock, vi } from "vitest";
 import { BroadcastQueue } from "../../src/membership/broadcast";
 import {
   BASE_DIRECT_TIMEOUT_MS,
   GOSSIP_INTERVAL_MS,
+  type OutstandingProbeSnapshot,
   Probe,
   type ProbeFailure,
 } from "../../src/membership/probe";
@@ -37,7 +38,12 @@ import type {
   MembershipTransport,
   TransportHandlers,
 } from "../../src/membership/transport";
-import { MembershipView } from "../../src/membership/view";
+import {
+  isProbeEligibleState,
+  type MemberRecord,
+  MembershipView,
+  type ReapOperation,
+} from "../../src/membership/view";
 import {
   type AckMessage,
   decodePacketMessage,
@@ -50,17 +56,20 @@ import {
   type MemberState,
   type MembershipUpdate,
   type NackMessage,
+  type PacketMessage,
+  type PingMessage,
+  type PingReqMessage,
   STATE_ALIVE,
   STATE_DEAD,
   STATE_LEFT,
   STATE_SUSPECT,
 } from "../../src/membership/wire";
-import { SimNetwork } from "./sim";
+import { flush, SimNetwork } from "./sim";
 
 function update(
   member: string,
   state: MemberState = STATE_ALIVE,
-  incarnation = 0,
+  incarnation: number = 0,
 ): MembershipUpdate {
   return {
     state,
@@ -74,7 +83,7 @@ function update(
 }
 
 function view(self: string, peers: readonly string[]): MembershipView {
-  const members = new MembershipView(self);
+  const members: MembershipView = new MembershipView(self);
   members.applyLocal(update(self), 0);
   for (const peer of peers) {
     members.apply(update(peer), 0);
@@ -96,16 +105,16 @@ function fixture(
   network: SimNetwork,
   self: string,
   peers: readonly string[],
-  transport = network.endpoint(self),
-  seed = 11,
+  transport: MembershipTransport = network.endpoint(self),
+  seed: number = 11,
 ): Fixture {
-  const members = view(self, peers);
-  const queue = new BroadcastQueue();
+  const members: MembershipView = view(self, peers);
+  const queue: BroadcastQueue = new BroadcastQueue();
   const received: MembershipUpdate[][] = [];
   const failures: ProbeFailure[] = [];
   const suspicionPresentDuringFailure: boolean[] = [];
-  const suspicion = new SuspicionManager(network.clock, (): void => undefined);
-  const probe = new Probe({
+  const suspicion: SuspicionManager = new SuspicionManager(network.clock, (): void => undefined);
+  const probe: Probe = new Probe({
     view: members,
     broadcasts: queue,
     clock: network.clock,
@@ -134,11 +143,6 @@ function fixture(
   };
 }
 
-async function flush(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-}
-
 interface Deferred<T> {
   readonly promise: Promise<T>;
   readonly resolve: (value: T | PromiseLike<T>) => void;
@@ -148,15 +152,15 @@ interface Deferred<T> {
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((accept, decline): void => {
+  const promise: Promise<T> = new Promise<T>((accept, decline): void => {
     resolve = accept;
     reject = decline;
   });
   return { promise, resolve, reject };
 }
 
-function streamStub(): MembershipStream & { readonly close: ReturnType<typeof vi.fn> } {
-  const close = vi.fn();
+function streamStub(): MembershipStream & { readonly close: Mock<() => void> } {
+  const close: Mock<() => void> = vi.fn();
   return {
     remoteAddress: "peer",
     read: async (): Promise<Uint8Array | undefined> => undefined,
@@ -170,10 +174,10 @@ async function startAckingEndpoint(
   address: string,
   directTargets?: string[],
 ): Promise<MembershipTransport> {
-  const endpoint = network.endpoint(address);
+  const endpoint: MembershipTransport = network.endpoint(address);
   await endpoint.start({
     packet(_from, bytes): void {
-      const message = decodePacketMessage(bytes);
+      const message: PacketMessage = decodePacketMessage(bytes);
       if (message.type !== MESSAGE_PING) {
         return;
       }
@@ -198,10 +202,10 @@ async function startAckingEndpoint(
 
 describe("probe rounds and awareness", () => {
   it("accepts a strictly matching direct ACK and captures scaling per period", async () => {
-    const network = new SimNetwork(1);
+    const network: SimNetwork = new SimNetwork(1);
     const targets: string[] = [];
-    const remote = await startAckingEndpoint(network, "b", targets);
-    const local = fixture(network, "a", ["b"]);
+    const remote: MembershipTransport = await startAckingEndpoint(network, "b", targets);
+    const local: Fixture = fixture(network, "a", ["b"]);
 
     local.probe.selfRefute();
     expect(local.probe.awareness).toBe(1);
@@ -225,16 +229,16 @@ describe("probe rounds and awareness", () => {
     await remote.stop();
   });
 
-  it("succeeds indirectly and counts only silent helpers against awareness", async () => {
-    const network = new SimNetwork(2);
+  it("succeeds indirectly without charging silent helpers on success", async () => {
+    const network: SimNetwork = new SimNetwork(2);
     network.setLink("a", "target", { drop: true });
-    const target = await startAckingEndpoint(network, "target");
-    const helpers = await Promise.all(
+    const target: MembershipTransport = await startAckingEndpoint(network, "target");
+    const helpers: MembershipTransport[] = await Promise.all(
       ["h1", "h2", "h3"].map(async (name: string): Promise<MembershipTransport> => {
-        const endpoint = network.endpoint(name);
+        const endpoint: MembershipTransport = network.endpoint(name);
         await endpoint.start({
           packet(_from, bytes): void {
-            const message = decodePacketMessage(bytes);
+            const message: PacketMessage = decodePacketMessage(bytes);
             if (message.type !== MESSAGE_PING_REQ) {
               return;
             }
@@ -247,7 +251,10 @@ describe("probe rounds and awareness", () => {
                 updates: [],
               };
               void endpoint.packet(message.owner, encodeMessage(ack));
-            } else if (name === "h2") {
+              return;
+            }
+
+            if (name === "h2") {
               const nack: NackMessage = {
                 type: MESSAGE_NACK,
                 sequence: message.sequence,
@@ -266,7 +273,7 @@ describe("probe rounds and awareness", () => {
         return endpoint;
       }),
     );
-    const local = fixture(network, "a", ["target"], undefined, 3);
+    const local: Fixture = fixture(network, "a", ["target"], undefined, 3);
     await local.probe.start();
     for (const helper of ["h1", "h2", "h3"]) {
       local.view.apply(update(helper), 0);
@@ -278,7 +285,9 @@ describe("probe rounds and awareness", () => {
     await flush();
     expect(local.probe.outstanding?.succeeded).toBe(true);
     network.clock.advanceTo(1_000);
-    expect(local.probe.awareness).toBe(1);
+    // A successful probe improves local health and never charges for helpers
+    // that stayed silent, so the score stays at the floor.
+    expect(local.probe.awareness).toBe(0);
     expect(local.failures).toEqual([]);
 
     await local.probe.stop();
@@ -287,15 +296,15 @@ describe("probe rounds and awareness", () => {
   });
 
   it("treats NACKs as path health and scores every missing NACK separately", async () => {
-    const network = new SimNetwork(4);
+    const network: SimNetwork = new SimNetwork(4);
     network.setLink("a", "target", { drop: true });
-    const target = await startAckingEndpoint(network, "target");
-    const helpers = await Promise.all(
+    const target: MembershipTransport = await startAckingEndpoint(network, "target");
+    const helpers: MembershipTransport[] = await Promise.all(
       ["h1", "h2", "h3"].map(async (name: string): Promise<MembershipTransport> => {
-        const endpoint = network.endpoint(name);
+        const endpoint: MembershipTransport = network.endpoint(name);
         await endpoint.start({
           packet(_from, bytes): void {
-            const message = decodePacketMessage(bytes);
+            const message: PacketMessage = decodePacketMessage(bytes);
             if (message.type !== MESSAGE_PING_REQ || name === "h3") {
               return;
             }
@@ -316,7 +325,7 @@ describe("probe rounds and awareness", () => {
         return endpoint;
       }),
     );
-    const local = fixture(network, "a", ["target"], undefined, 7);
+    const local: Fixture = fixture(network, "a", ["target"], undefined, 7);
     await local.probe.start();
     for (const helper of ["h1", "h2", "h3"]) {
       local.view.apply(update(helper), 0);
@@ -324,7 +333,9 @@ describe("probe rounds and awareness", () => {
     network.clock.advanceTo(1_000);
     await flush();
 
-    expect(local.probe.awareness).toBe(2);
+    // A failure with responsive helpers is scored solely by the missing NACKs:
+    // h1 and h2 answered, h3 stayed silent, so the penalty is exactly one.
+    expect(local.probe.awareness).toBe(1);
     expect(local.failures).toHaveLength(1);
     expect(local.failures[0]).toMatchObject({
       target: "target",
@@ -343,16 +354,16 @@ describe("probe rounds and awareness", () => {
   });
 
   it("ignores mismatched and late ACKs while still processing their piggybacks", async () => {
-    const network = new SimNetwork(5);
-    const endpoint = network.endpoint("b");
+    const network: SimNetwork = new SimNetwork(5);
+    const endpoint: MembershipTransport = network.endpoint("b");
     let matching: AckMessage | undefined;
     await endpoint.start({
       packet(_from, bytes): void {
-        const message = decodePacketMessage(bytes);
+        const message: PacketMessage = decodePacketMessage(bytes);
         if (message.type !== MESSAGE_PING) {
           return;
         }
-        const news = update("news");
+        const news: MembershipUpdate = update("news");
         const wrong: AckMessage = {
           type: MESSAGE_ACK,
           sequence: (message.sequence + 1) >>> 0,
@@ -367,7 +378,7 @@ describe("probe rounds and awareness", () => {
         stream.close();
       },
     });
-    const local = fixture(network, "a", ["b"]);
+    const local: Fixture = fixture(network, "a", ["b"]);
     await local.probe.start();
     network.clock.advanceBy(0);
     await flush();
@@ -391,8 +402,8 @@ describe("probe rounds and awareness", () => {
   });
 
   it("sends a helper NACK at 80% and still forwards a later matching ACK", async () => {
-    const network = new SimNetwork(10);
-    const owner = network.endpoint("owner");
+    const network: SimNetwork = new SimNetwork(10);
+    const owner: MembershipTransport = network.endpoint("owner");
     const received: number[] = [];
     await owner.start({
       packet(_from, bytes): void {
@@ -402,10 +413,10 @@ describe("probe rounds and awareness", () => {
         stream.close();
       },
     });
-    const target = network.endpoint("target");
+    const target: MembershipTransport = network.endpoint("target");
     await target.start({
       packet(_from, bytes): void {
-        const ping = decodePacketMessage(bytes);
+        const ping: PacketMessage = decodePacketMessage(bytes);
         if (ping.type !== MESSAGE_PING) {
           return;
         }
@@ -430,9 +441,9 @@ describe("probe rounds and awareness", () => {
         stream.close();
       },
     });
-    const helper = fixture(network, "helper", []);
+    const helper: Fixture = fixture(network, "helper", []);
     await helper.probe.start();
-    const request = {
+    const request: PingReqMessage = {
       type: MESSAGE_PING_REQ,
       sequence: 77,
       owner: "owner",
@@ -462,15 +473,15 @@ describe("probe rounds and awareness", () => {
 
 describe("walk, buddy, gossip, and lifecycle", () => {
   it("covers a walk without replacement and inserts a join into its remainder", async () => {
-    const network = new SimNetwork(6);
+    const network: SimNetwork = new SimNetwork(6);
     const targets: string[] = [];
-    const endpoints = await Promise.all(
+    const endpoints: MembershipTransport[] = await Promise.all(
       ["b", "c", "d", "joined"].map(
         async (name: string): Promise<MembershipTransport> =>
           startAckingEndpoint(network, name, targets),
       ),
     );
-    const local = fixture(network, "a", ["b", "c", "d"], undefined, 13);
+    const local: Fixture = fixture(network, "a", ["b", "c", "d"], undefined, 13);
     await local.probe.start();
     network.clock.advanceBy(0);
     await flush();
@@ -490,12 +501,12 @@ describe("walk, buddy, gossip, and lifecycle", () => {
   });
 
   it("places the target's suspect update first for the buddy rule", async () => {
-    const network = new SimNetwork(7);
-    const endpoint = network.endpoint("b");
+    const network: SimNetwork = new SimNetwork(7);
+    const endpoint: MembershipTransport = network.endpoint("b");
     let firstUpdate: MembershipUpdate | undefined;
     await endpoint.start({
       packet(_from, bytes): void {
-        const message = decodePacketMessage(bytes);
+        const message: PacketMessage = decodePacketMessage(bytes);
         if (message.type === MESSAGE_PING) {
           [firstUpdate] = message.updates;
         }
@@ -504,7 +515,7 @@ describe("walk, buddy, gossip, and lifecycle", () => {
         stream.close();
       },
     });
-    const local = fixture(network, "a", []);
+    const local: Fixture = fixture(network, "a", []);
     local.view.apply(update("b", STATE_SUSPECT, 3), 0);
     await local.probe.start();
     network.clock.advanceBy(0);
@@ -526,12 +537,12 @@ describe("walk, buddy, gossip, and lifecycle", () => {
   ] as const)(
     "gossips a %s target its indictment after the broadcast queue is exhausted",
     async (_label, state) => {
-      const network = new SimNetwork(70 + state);
-      const endpoint = network.endpoint("b");
+      const network: SimNetwork = new SimNetwork(70 + state);
+      const endpoint: MembershipTransport = network.endpoint("b");
       let gossip: readonly MembershipUpdate[] | undefined;
       await endpoint.start({
         packet(_from, bytes): void {
-          const message = decodePacketMessage(bytes);
+          const message: PacketMessage = decodePacketMessage(bytes);
           if (message.type === MESSAGE_GOSSIP) {
             gossip = message.updates;
           }
@@ -540,7 +551,8 @@ describe("walk, buddy, gossip, and lifecycle", () => {
           stream.close();
         },
       });
-      const local = fixture(network, "a", []);
+      const local: Fixture = fixture(network, "a", []);
+      local.view.apply(update("b", STATE_ALIVE, 2), 0);
       local.view.apply(update("b", state, 3), 0);
       expect(local.queue.size).toBe(0);
       await local.probe.start();
@@ -562,12 +574,12 @@ describe("walk, buddy, gossip, and lifecycle", () => {
   );
 
   it("puts the sender's indictment on a direct ACK only when the owner is the sender", async () => {
-    const network = new SimNetwork(73);
-    const endpoint = network.endpoint("b");
+    const network: SimNetwork = new SimNetwork(73);
+    const endpoint: MembershipTransport = network.endpoint("b");
     const acknowledgements: AckMessage[] = [];
     await endpoint.start({
       packet(_from, bytes): void {
-        const message = decodePacketMessage(bytes);
+        const message: PacketMessage = decodePacketMessage(bytes);
         if (message.type === MESSAGE_ACK) {
           acknowledgements.push(message);
         }
@@ -576,18 +588,19 @@ describe("walk, buddy, gossip, and lifecycle", () => {
         stream.close();
       },
     });
-    const impostor = network.endpoint("c");
+    const impostor: MembershipTransport = network.endpoint("c");
     await impostor.start({
       packet(): void {},
       stream(_from, stream): void {
         stream.close();
       },
     });
-    const local = fixture(network, "a", []);
+    const local: Fixture = fixture(network, "a", []);
+    local.view.apply(update("b", STATE_ALIVE, 3), 0);
     local.view.apply(update("b", STATE_DEAD, 4), 0);
     await local.probe.start();
 
-    const directPing = {
+    const directPing: PingMessage = {
       type: MESSAGE_PING,
       sequence: 41,
       owner: "b",
@@ -615,11 +628,11 @@ describe("walk, buddy, gossip, and lifecycle", () => {
   });
 
   it("gossips independently every 200ms to at most three eligible distinct targets", async () => {
-    const network = new SimNetwork(8);
+    const network: SimNetwork = new SimNetwork(8);
     const gossipTargets: string[] = [];
-    const endpoints = await Promise.all(
+    const endpoints: MembershipTransport[] = await Promise.all(
       ["b", "c", "d", "e"].map(async (name: string): Promise<MembershipTransport> => {
-        const endpoint = network.endpoint(name);
+        const endpoint: MembershipTransport = network.endpoint(name);
         await endpoint.start({
           packet(_from, bytes): void {
             if (decodePacketMessage(bytes).type === MESSAGE_GOSSIP) {
@@ -633,7 +646,7 @@ describe("walk, buddy, gossip, and lifecycle", () => {
         return endpoint;
       }),
     );
-    const local = fixture(network, "a", ["b", "c", "d", "e"]);
+    const local: Fixture = fixture(network, "a", ["b", "c", "d", "e"]);
     local.queue.enqueue(update("news", STATE_ALIVE, 2), local.view.aliveOrSuspectCount());
     await local.probe.start();
 
@@ -651,8 +664,8 @@ describe("walk, buddy, gossip, and lifecycle", () => {
   });
 
   it("respects packet budgets, charges local acceptance, and removes all timers on stop", async () => {
-    const network = new SimNetwork(9);
-    const endpoint = network.endpoint("b");
+    const network: SimNetwork = new SimNetwork(9);
+    const endpoint: MembershipTransport = network.endpoint("b");
     const packetSizes: number[] = [];
     await endpoint.start({
       packet(_from, bytes): void {
@@ -662,10 +675,10 @@ describe("walk, buddy, gossip, and lifecycle", () => {
         stream.close();
       },
     });
-    const local = fixture(network, "a", ["b"]);
-    const news = update("news", STATE_ALIVE, 1);
+    const local: Fixture = fixture(network, "a", ["b"]);
+    const news: MembershipUpdate = update("news", STATE_ALIVE, 1);
     local.queue.enqueue(news, 1);
-    const before = local.queue.get("news")?.remaining;
+    const before: number | undefined = local.queue.get("news")?.remaining;
     await local.probe.start();
     network.clock.advanceBy(0);
     await flush();
@@ -685,8 +698,8 @@ describe("walk, buddy, gossip, and lifecycle", () => {
 
 describe("probe lifecycle and defensive packet boundaries", () => {
   it("exposes diagnostics, pauses idempotently, and accepts packets during leave drain", async () => {
-    const network = new SimNetwork(80);
-    const local = fixture(network, "a", []);
+    const network: SimNetwork = new SimNetwork(80);
+    const local: Fixture = fixture(network, "a", []);
 
     expect(local.probe.scale).toBe(1);
     expect(local.probe.walkRemaining).toEqual([]);
@@ -718,9 +731,9 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("coalesces concurrent starts and stops while rejecting a start during shutdown", async () => {
-    const network = new SimNetwork(81);
-    const binding = deferred<void>();
-    const stopping = deferred<void>();
+    const network: SimNetwork = new SimNetwork(81);
+    const binding: Deferred<void> = deferred<void>();
+    const stopping: Deferred<void> = deferred<void>();
     let handlers: TransportHandlers | undefined;
     const transport: MembershipTransport = {
       address: "a",
@@ -734,11 +747,11 @@ describe("probe lifecycle and defensive packet boundaries", () => {
       packet: async (): Promise<void> => undefined,
       stream: async (): Promise<MembershipStream> => streamStub(),
     };
-    const local = fixture(network, "a", [], transport);
+    const local: Fixture = fixture(network, "a", [], transport);
 
-    const firstStart = local.probe.start();
+    const firstStart: Promise<void> = local.probe.start();
     expect(local.probe.start()).toBe(firstStart);
-    const firstStop = local.probe.stop();
+    const firstStop: Promise<void> = local.probe.stop();
     expect(local.probe.stop()).toBe(firstStop);
     await expect(local.probe.start()).rejects.toThrow("probe is stopping");
 
@@ -752,8 +765,8 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("completes shutdown when an in-flight transport start rejects", async () => {
-    const network = new SimNetwork(811);
-    const binding = deferred<void>();
+    const network: SimNetwork = new SimNetwork(811);
+    const binding: Deferred<void> = deferred<void>();
     const transport: MembershipTransport = {
       address: "a",
       start: (): Promise<void> => binding.promise,
@@ -761,10 +774,10 @@ describe("probe lifecycle and defensive packet boundaries", () => {
       packet: async (): Promise<void> => undefined,
       stream: async (): Promise<MembershipStream> => streamStub(),
     };
-    const local = fixture(network, "a", [], transport);
+    const local: Fixture = fixture(network, "a", [], transport);
 
-    const starting = local.probe.start();
-    const stopping = local.probe.stop();
+    const starting: Promise<void> = local.probe.start();
+    const stopping: Promise<void> = local.probe.stop();
     binding.reject(new Error("bind failed during shutdown"));
 
     await expect(starting).rejects.toThrow("bind failed during shutdown");
@@ -772,9 +785,9 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("restores stopped state after transport start fails and closes unhandled streams", async () => {
-    const network = new SimNetwork(82);
+    const network: SimNetwork = new SimNetwork(82);
     let handlers: TransportHandlers | undefined;
-    let fail = true;
+    let fail: boolean = true;
     const transport: MembershipTransport = {
       address: "a",
       start(next): Promise<void> {
@@ -789,13 +802,13 @@ describe("probe lifecycle and defensive packet boundaries", () => {
       packet: async (): Promise<void> => undefined,
       stream: async (): Promise<MembershipStream> => streamStub(),
     };
-    const local = fixture(network, "a", [], transport);
+    const local: Fixture = fixture(network, "a", [], transport);
 
     await expect(local.probe.start()).rejects.toThrow("bind failed");
     expect(local.probe.started).toBe(false);
     await local.probe.start();
 
-    const stream = streamStub();
+    const stream: MembershipStream & { readonly close: Mock<() => void> } = streamStub();
     await handlers?.stream("peer", stream);
     expect(stream.close).toHaveBeenCalledOnce();
 
@@ -803,10 +816,12 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("delegates streams and can leave shared transport ownership to its composer", async () => {
-    const network = new SimNetwork(83);
-    const members = view("a", []);
-    const stream = streamStub();
-    const streamHandler = vi.fn(async (): Promise<void> => undefined);
+    const network: SimNetwork = new SimNetwork(83);
+    const members: MembershipView = view("a", []);
+    const stream: MembershipStream & { readonly close: Mock<() => void> } = streamStub();
+    const streamHandler: Mock<(from: string, stream: MembershipStream) => Promise<void>> = vi.fn(
+      async (): Promise<void> => undefined,
+    );
     const transport: MembershipTransport = {
       address: "a",
       start: vi.fn(async (): Promise<void> => undefined),
@@ -814,7 +829,7 @@ describe("probe lifecycle and defensive packet boundaries", () => {
       packet: async (): Promise<void> => undefined,
       stream: async (): Promise<MembershipStream> => stream,
     };
-    const probe = new Probe({
+    const probe: Probe = new Probe({
       view: members,
       broadcasts: new BroadcastQueue(),
       clock: network.clock,
@@ -834,13 +849,13 @@ describe("probe lifecycle and defensive packet boundaries", () => {
     await probe.stop();
     expect(transport.stop).not.toHaveBeenCalled();
 
-    const owned = fixture(network, "owned", [], {
+    const owned: Fixture = fixture(network, "owned", [], {
       ...transport,
       start: async (handlers): Promise<void> => {
         await handlers.stream("peer", stream);
       },
     });
-    const handled = new Probe({
+    const handled: Probe = new Probe({
       view: owned.view,
       broadcasts: owned.queue,
       clock: network.clock,
@@ -867,11 +882,11 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   it.each(["throw", "reject"] as const)(
     "starts indirect probing when a direct packet is synchronously or asynchronously rejected: %s",
     async (failureMode) => {
-      const network = new SimNetwork(failureMode === "throw" ? 84 : 85);
+      const network: SimNetwork = new SimNetwork(failureMode === "throw" ? 84 : 85);
       const acknowledgements: boolean[] = [];
-      const queue = new BroadcastQueue();
+      const queue: BroadcastQueue = new BroadcastQueue();
       queue.enqueue(update("news"), 1);
-      const originalAcknowledge = queue.acknowledge.bind(queue);
+      const originalAcknowledge: BroadcastQueue["acknowledge"] = queue.acknowledge.bind(queue);
       queue.acknowledge = (selection, accepted): boolean => {
         acknowledgements.push(accepted);
         return originalAcknowledge(selection, accepted);
@@ -888,8 +903,8 @@ describe("probe lifecycle and defensive packet boundaries", () => {
         },
         stream: async (): Promise<MembershipStream> => streamStub(),
       };
-      const members = view("a", ["target"]);
-      const probe = new Probe({
+      const members: MembershipView = view("a", ["target"]);
+      const probe: Probe = new Probe({
         view: members,
         broadcasts: queue,
         clock: network.clock,
@@ -914,11 +929,14 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   it.each(["missing", "newer", "terminal", "declined"] as const)(
     "does not start stale or declined suspicion after a failed probe: %s",
     async (reason) => {
-      const network = new SimNetwork(90);
-      const members = view("a", ["target"]);
+      const network: SimNetwork = new SimNetwork(90);
+      const members: MembershipView = view("a", ["target"]);
       const failures: ProbeFailure[] = [];
-      const suspicion = new SuspicionManager(network.clock, (): void => undefined);
-      const probe = new Probe({
+      const suspicion: SuspicionManager = new SuspicionManager(
+        network.clock,
+        (): void => undefined,
+      );
+      const probe: Probe = new Probe({
         view: members,
         broadcasts: new BroadcastQueue(),
         clock: network.clock,
@@ -929,37 +947,57 @@ describe("probe lifecycle and defensive packet boundaries", () => {
           updates(): void {},
           suspect(failure): boolean {
             failures.push(failure);
-            return reason !== "declined";
+            if (reason === "declined") {
+              return false;
+            }
+
+            // The callback is the sole validator: mimic the engine's
+            // revalidation of the captured evidence against current truth.
+            const current: MemberRecord | undefined = members.get(failure.target);
+            return (
+              current !== undefined &&
+              current.incarnation === failure.incarnation &&
+              isProbeEligibleState(current.state)
+            );
           },
         },
       });
 
       await probe.start();
-      if (reason === "newer") {
-        members.apply(update("target", STATE_ALIVE, 1), 1);
-      } else if (reason === "terminal") {
-        members.apply(update("target", STATE_DEAD, 1), 1);
-      } else if (reason === "missing") {
-        members.apply(update("target", STATE_DEAD, 1), 1);
-        const operation = members.reapOperation("target");
-        if (operation === undefined) {
-          throw new Error("terminal member did not produce a reap operation");
+      switch (reason) {
+        case "newer":
+          members.apply(update("target", STATE_ALIVE, 1), 1);
+          break;
+        case "terminal":
+          members.apply(update("target", STATE_DEAD, 1), 1);
+          break;
+        case "missing": {
+          members.apply(update("target", STATE_DEAD, 1), 1);
+          const operation: ReapOperation | undefined = members.reapOperation("target");
+          if (operation === undefined) {
+            throw new Error("terminal member did not produce a reap operation");
+          }
+          members.reap(operation);
+          break;
         }
-        members.reap(operation);
+        default:
+          break;
       }
 
       network.clock.advanceTo(1_000);
 
       expect(suspicion.get("target")).toBeUndefined();
-      expect(failures).toHaveLength(reason === "declined" ? 1 : 0);
+      // The detector reports every unanswered probe; only the callback's
+      // verdict decides whether suspicion timing starts.
+      expect(failures).toHaveLength(1);
       await probe.stop();
     },
   );
 
   it("deduplicates relay requests, expires them, and permits a fresh retry", async () => {
-    const network = new SimNetwork(91);
-    const target = network.endpoint("target");
-    let pings = 0;
+    const network: SimNetwork = new SimNetwork(91);
+    const target: MembershipTransport = network.endpoint("target");
+    let pings: number = 0;
     await target.start({
       packet(_from, bytes): void {
         if (decodePacketMessage(bytes).type === MESSAGE_PING) {
@@ -970,16 +1008,16 @@ describe("probe lifecycle and defensive packet boundaries", () => {
         stream.close();
       },
     });
-    const owner = network.endpoint("owner");
+    const owner: MembershipTransport = network.endpoint("owner");
     await owner.start({
       packet(): void {},
       stream(_from, stream): void {
         stream.close();
       },
     });
-    const helper = fixture(network, "helper", []);
+    const helper: Fixture = fixture(network, "helper", []);
     await helper.probe.start();
-    const request = encodeMessage({
+    const request: Uint8Array = encodeMessage({
       type: MESSAGE_PING_REQ,
       sequence: 12,
       owner: "owner",
@@ -1005,7 +1043,7 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("NACKs an owner immediately when relaying cannot reach the target", async () => {
-    const network = new SimNetwork(92);
+    const network: SimNetwork = new SimNetwork(92);
     let handlers: TransportHandlers | undefined;
     const sent: NackMessage[] = [];
     const transport: MembershipTransport = {
@@ -1016,7 +1054,7 @@ describe("probe lifecycle and defensive packet boundaries", () => {
       },
       stop: async (): Promise<void> => undefined,
       packet(to, bytes): Promise<void> {
-        const message = decodePacketMessage(bytes);
+        const message: PacketMessage = decodePacketMessage(bytes);
         if (to === "target") {
           throw new Error("target unavailable");
         }
@@ -1027,7 +1065,7 @@ describe("probe lifecycle and defensive packet boundaries", () => {
       },
       stream: async (): Promise<MembershipStream> => streamStub(),
     };
-    const local = fixture(network, "helper", [], transport);
+    const local: Fixture = fixture(network, "helper", [], transport);
     await local.probe.start();
 
     handlers?.packet(
@@ -1048,17 +1086,17 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("rejects nonmatching ACK and NACK fields without changing the active probe", async () => {
-    const network = new SimNetwork(93);
-    const target = network.endpoint("target");
+    const network: SimNetwork = new SimNetwork(93);
+    const target: MembershipTransport = network.endpoint("target");
     await target.start({
       packet(): void {},
       stream(_from, stream): void {
         stream.close();
       },
     });
-    const local = fixture(network, "a", ["target"]);
+    const local: Fixture = fixture(network, "a", ["target"]);
     await local.probe.start();
-    const outstanding = local.probe.outstanding;
+    const outstanding: OutstandingProbeSnapshot | undefined = local.probe.outstanding;
     if (outstanding === undefined) {
       throw new Error("probe did not start");
     }
@@ -1080,7 +1118,7 @@ describe("probe lifecycle and defensive packet boundaries", () => {
 
     local.view.apply(update("helper"), 0);
     network.clock.advanceTo(BASE_DIRECT_TIMEOUT_MS);
-    const helper = local.probe.outstanding?.helpers[0];
+    const helper: string | undefined = local.probe.outstanding?.helpers[0];
     if (helper === undefined) {
       throw new Error("indirect helper was not selected");
     }
@@ -1109,18 +1147,18 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("ignores already-dispatched detector timers after shutdown", async () => {
-    const network = new SimNetwork(94);
+    const network: SimNetwork = new SimNetwork(94);
     vi.spyOn(network.clock, "cancel").mockImplementation((): void => undefined);
-    const idle = fixture(network, "idle", []);
+    const idle: Fixture = fixture(network, "idle", []);
     await idle.probe.start();
     await idle.probe.stop();
 
     network.clock.advanceTo(1_000);
     expect(idle.failures).toEqual([]);
 
-    const activeNetwork = new SimNetwork(95);
+    const activeNetwork: SimNetwork = new SimNetwork(95);
     vi.spyOn(activeNetwork.clock, "cancel").mockImplementation((): void => undefined);
-    const active = fixture(activeNetwork, "a", ["target"]);
+    const active: Fixture = fixture(activeNetwork, "a", ["target"]);
     await active.probe.start();
     await active.probe.stop();
 
@@ -1129,7 +1167,7 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("ignores an already-dispatched helper NACK timer after shutdown", async () => {
-    const network = new SimNetwork(96);
+    const network: SimNetwork = new SimNetwork(96);
     vi.spyOn(network.clock, "cancel").mockImplementation((): void => undefined);
     let handlers: TransportHandlers | undefined;
     const sent: number[] = [];
@@ -1146,7 +1184,7 @@ describe("probe lifecycle and defensive packet boundaries", () => {
       },
       stream: async (): Promise<MembershipStream> => streamStub(),
     };
-    const local = fixture(network, "helper", [], transport);
+    const local: Fixture = fixture(network, "helper", [], transport);
     await local.probe.start();
     handlers?.packet(
       "owner",
@@ -1165,22 +1203,24 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("reinserts a member that regains eligibility during the current walk", async () => {
-    const network = new SimNetwork(41);
-    const peers = ["b", "c", "d", "e", "f", "g", "h", "i", "j", "k"];
+    const network: SimNetwork = new SimNetwork(41);
+    const peers: string[] = ["b", "c", "d", "e", "f", "g", "h", "i", "j", "k"];
     const targets: string[] = [];
-    const endpoints = await Promise.all(
+    const endpoints: MembershipTransport[] = await Promise.all(
       peers.map(
         async (name: string): Promise<MembershipTransport> =>
           startAckingEndpoint(network, name, targets),
       ),
     );
-    const local = fixture(network, "a", peers, undefined, 17);
+    const local: Fixture = fixture(network, "a", peers, undefined, 17);
     await local.probe.start();
     network.clock.advanceBy(0);
     await flush();
 
     // Drop a still-pending walk entry as dead, then revive it one period later.
-    const revived = peers.find((name: string): boolean => !targets.includes(name)) as string;
+    const revived: string = peers.find(
+      (name: string): boolean => !targets.includes(name),
+    ) as string;
     local.view.apply(update(revived, STATE_DEAD, 0), network.clock.now());
     network.clock.advanceTo(1_000);
     network.clock.advanceBy(0);
@@ -1206,13 +1246,13 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("skips a walk entry removed before its eligibility check", async () => {
-    const network = new SimNetwork(981);
-    const members = view("a", ["removed"]);
-    const originalGet = members.get.bind(members);
-    vi.spyOn(members, "get").mockImplementation((name) =>
+    const network: SimNetwork = new SimNetwork(981);
+    const members: MembershipView = view("a", ["removed"]);
+    const originalGet: MembershipView["get"] = members.get.bind(members);
+    vi.spyOn(members, "get").mockImplementation((name): MemberRecord | undefined =>
       name === "removed" ? undefined : originalGet(name),
     );
-    const probe = new Probe({
+    const probe: Probe = new Probe({
       view: members,
       broadcasts: new BroadcastQueue(),
       clock: network.clock,
@@ -1231,12 +1271,12 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("routes an ACK for a relayed PING back through the named helper", async () => {
-    const network = new SimNetwork(982);
-    const helper = network.endpoint("helper");
+    const network: SimNetwork = new SimNetwork(982);
+    const helper: MembershipTransport = network.endpoint("helper");
     const acknowledgements: AckMessage[] = [];
     await helper.start({
       packet(_from, bytes): void {
-        const message = decodePacketMessage(bytes);
+        const message: PacketMessage = decodePacketMessage(bytes);
         if (message.type === MESSAGE_ACK) {
           acknowledgements.push(message);
         }
@@ -1245,7 +1285,7 @@ describe("probe lifecycle and defensive packet boundaries", () => {
         stream.close();
       },
     });
-    const local = fixture(network, "target", []);
+    const local: Fixture = fixture(network, "target", []);
     await local.probe.start();
 
     local.probe.receivePacket(
@@ -1268,12 +1308,12 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("stops a gossip fanout when packet acceptance pauses the detector", async () => {
-    const network = new SimNetwork(99);
-    const members = view("a", ["b", "c"]);
-    const queue = new BroadcastQueue();
+    const network: SimNetwork = new SimNetwork(99);
+    const members: MembershipView = view("a", ["b", "c"]);
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("news"), 2);
     let probe!: Probe;
-    let sends = 0;
+    let sends: number = 0;
     const transport: MembershipTransport = {
       address: "a",
       start: async (): Promise<void> => undefined,
@@ -1306,9 +1346,9 @@ describe("probe lifecycle and defensive packet boundaries", () => {
   });
 
   it("skips a gossip target when the broadcast queue drains after target selection", async () => {
-    const network = new SimNetwork(100);
-    const members = view("a", ["b"]);
-    const queue = new BroadcastQueue();
+    const network: SimNetwork = new SimNetwork(100);
+    const members: MembershipView = view("a", ["b"]);
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("news"), 1);
     const transport: MembershipTransport = {
       address: "a",
@@ -1317,7 +1357,7 @@ describe("probe lifecycle and defensive packet boundaries", () => {
       packet: async (): Promise<void> => undefined,
       stream: async (): Promise<MembershipStream> => streamStub(),
     };
-    const probe = new Probe({
+    const probe: Probe = new Probe({
       view: members,
       broadcasts: queue,
       clock: network.clock,

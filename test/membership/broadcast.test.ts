@@ -23,7 +23,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { BroadcastQueue } from "../../src/membership/broadcast";
+import {
+  BroadcastQueue,
+  type BroadcastSelection,
+  type BroadcastSnapshot,
+} from "../../src/membership/broadcast";
 import {
   type MemberState,
   type MembershipUpdate,
@@ -37,7 +41,7 @@ import {
 function update(
   member: string,
   state: MemberState = STATE_ALIVE,
-  incarnation = 1,
+  incarnation: number = 1,
   metadata: Uint8Array = Uint8Array.of(incarnation),
 ): MembershipUpdate {
   return {
@@ -57,7 +61,7 @@ function names(selection: { readonly updates: readonly MembershipUpdate[] }): re
 
 describe("broadcast queue truth and budgets", () => {
   it("rejects invalid enqueue counts without replacing queued truth", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("a"), 1);
 
     for (const count of [-1, Number.NaN]) {
@@ -67,9 +71,9 @@ describe("broadcast queue truth and budgets", () => {
   });
 
   it("keeps one truth per member and refreshes only on supersession", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     expect(queue.enqueue(update("a", STATE_ALIVE, 2), 1)).toBe(true);
-    const original = queue.get("a");
+    const original: BroadcastSnapshot | undefined = queue.get("a");
 
     expect(queue.enqueue(update("a", STATE_ALIVE, 1), 99)).toBe(false);
     expect(queue.enqueue(update("a", STATE_ALIVE, 2, Uint8Array.of(9)), 99)).toBe(false);
@@ -85,7 +89,7 @@ describe("broadcast queue truth and budgets", () => {
   });
 
   it("captures the current member count for each fresh counter", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("small"), 1);
     queue.enqueue(update("large"), 10);
 
@@ -94,13 +98,13 @@ describe("broadcast queue truth and budgets", () => {
   });
 
   it("copies enqueue inputs and exposed snapshots", () => {
-    const metadata = Uint8Array.of(1, 2);
-    const incoming = update("safe", STATE_ALIVE, 1, metadata);
-    const queue = new BroadcastQueue();
+    const metadata: Uint8Array = Uint8Array.of(1, 2);
+    const incoming: MembershipUpdate = update("safe", STATE_ALIVE, 1, metadata);
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(incoming, 1);
     metadata[0] = 8;
 
-    const snapshot = queue.get("safe");
+    const snapshot: BroadcastSnapshot | undefined = queue.get("safe");
     if (snapshot === undefined) {
       throw new Error("expected queued update");
     }
@@ -109,9 +113,56 @@ describe("broadcast queue truth and budgets", () => {
   });
 });
 
+describe("broadcast confirmations", () => {
+  function confirmation(member: string, incarnation: number, reporter: string): MembershipUpdate {
+    return { ...update(member, STATE_SUSPECT, incarnation), reporter };
+  }
+
+  it("replaces equal-precedence suspect truth from a distinct accuser with a fresh budget", () => {
+    const queue: BroadcastQueue = new BroadcastQueue();
+    queue.enqueue(confirmation("a", 2, "first"), 1);
+    const selection: BroadcastSelection = queue.pack(1_400);
+    queue.acknowledge(selection, true);
+    expect(queue.get("a")?.transmissions).toBe(1);
+
+    expect(queue.enqueueConfirmation(confirmation("a", 2, "second"), 1)).toBe(true);
+    expect(queue.get("a")).toMatchObject({
+      update: { state: STATE_SUSPECT, incarnation: 2, reporter: "second" },
+      transmissions: 0,
+    });
+  });
+
+  it("rejects duplicate reporters, stale precedence, and non-suspect records", () => {
+    const queue: BroadcastQueue = new BroadcastQueue();
+    queue.enqueue(confirmation("a", 2, "first"), 1);
+
+    expect(queue.enqueueConfirmation(confirmation("a", 2, "first"), 1)).toBe(false);
+    expect(queue.enqueueConfirmation(confirmation("a", 1, "second"), 1)).toBe(false);
+    expect(queue.enqueueConfirmation(update("a", STATE_ALIVE, 2), 1)).toBe(false);
+    expect(queue.get("a")?.update.reporter).toBe("first");
+  });
+
+  it("re-enqueues a corroboration after the original budget drained", () => {
+    const queue: BroadcastQueue = new BroadcastQueue();
+    expect(queue.enqueueConfirmation(confirmation("a", 2, "second"), 0)).toBe(true);
+    expect(queue.get("a")).toMatchObject({
+      update: { reporter: "second" },
+      initialRemaining: 4,
+    });
+  });
+
+  it("accepts a corroboration that supersedes stale queued truth", () => {
+    const queue: BroadcastQueue = new BroadcastQueue();
+    queue.enqueue(confirmation("a", 1, "first"), 1);
+
+    expect(queue.enqueueConfirmation(confirmation("a", 2, "second"), 1)).toBe(true);
+    expect(queue.get("a")?.update).toMatchObject({ incarnation: 2, reporter: "second" });
+  });
+});
+
 describe("broadcast packing order", () => {
   it("validates budgets, overheads, and record limits", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("a"), 1);
 
     for (const budget of [-1, Number.NaN]) {
@@ -123,7 +174,7 @@ describe("broadcast packing order", () => {
   });
 
   it("stops at the record limit and omits a buddy that cannot fit", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("a"), 1);
     queue.enqueue(update("b"), 1);
 
@@ -134,9 +185,11 @@ describe("broadcast packing order", () => {
   });
 
   it("does not charge queued truth that differs from a buddy", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("target", STATE_ALIVE, 1), 1);
-    const selection = queue.pack(1_000, { buddy: update("target", STATE_DEAD, 1) });
+    const selection: BroadcastSelection = queue.pack(1_000, {
+      buddy: update("target", STATE_DEAD, 1),
+    });
 
     expect(names(selection)).toEqual(["target"]);
     queue.acknowledge(selection, true);
@@ -144,19 +197,21 @@ describe("broadcast packing order", () => {
   });
 
   it("orders self-defense, fewer transmissions, then older records", () => {
-    const queue = new BroadcastQueue();
-    const oldest = update("oldest");
-    const newer = update("newer");
-    const defense = update("self", STATE_ALIVE, 3);
+    const queue: BroadcastQueue = new BroadcastQueue();
+    const oldest: MembershipUpdate = update("oldest");
+    const newer: MembershipUpdate = update("newer");
+    const defense: MembershipUpdate = update("self", STATE_ALIVE, 3);
     queue.enqueue(oldest, 1);
     queue.enqueue(newer, 1);
     queue.enqueue(defense, 1, true);
 
-    const first = queue.pack(membershipUpdateSize(defense));
+    const first: BroadcastSelection = queue.pack(membershipUpdateSize(defense));
     expect(names(first)).toEqual(["self"]);
     queue.acknowledge(first, true);
 
-    const second = queue.pack(membershipUpdateSize(defense) + membershipUpdateSize(oldest));
+    const second: BroadcastSelection = queue.pack(
+      membershipUpdateSize(defense) + membershipUpdateSize(oldest),
+    );
     expect(names(second)).toEqual(["self", "oldest"]);
     queue.acknowledge(second, true);
 
@@ -164,7 +219,7 @@ describe("broadcast packing order", () => {
   });
 
   it("orders a later normal record behind an earlier self-defense record", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("self"), 1, true);
     queue.enqueue(update("other"), 1);
 
@@ -172,15 +227,15 @@ describe("broadcast packing order", () => {
   });
 
   it("packs whole fitting records with overhead and skips oversized records", () => {
-    const queue = new BroadcastQueue();
-    const large = update("large", STATE_ALIVE, 1, new Uint8Array(40));
-    const small = update("s");
+    const queue: BroadcastQueue = new BroadcastQueue();
+    const large: MembershipUpdate = update("large", STATE_ALIVE, 1, new Uint8Array(40));
+    const small: MembershipUpdate = update("s");
     queue.enqueue(large, 1);
     queue.enqueue(small, 1);
-    const overhead = 3;
-    const budget = membershipUpdateSize(small) + overhead;
+    const overhead: number = 3;
+    const budget: number = membershipUpdateSize(small) + overhead;
 
-    const selection = queue.pack(budget, { perRecordOverhead: overhead });
+    const selection: BroadcastSelection = queue.pack(budget, { perRecordOverhead: overhead });
     expect(names(selection)).toEqual(["s"]);
     expect(selection.bytes).toBe(budget);
     expect(queue.get("large")?.remaining).toBe(4);
@@ -188,9 +243,9 @@ describe("broadcast packing order", () => {
   });
 
   it("returns copied selection metadata without changing counters", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("safe", STATE_ALIVE, 1, Uint8Array.of(3)), 1);
-    const selection = queue.pack(1_000);
+    const selection: BroadcastSelection = queue.pack(1_000);
 
     selection.updates[0]?.metadata.fill(7);
     expect(queue.get("safe")?.update.metadata).toEqual(Uint8Array.of(3));
@@ -200,15 +255,15 @@ describe("broadcast packing order", () => {
 
 describe("broadcast send acknowledgement", () => {
   it("decrements accepted sends once and leaves rejected sends unchanged", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("a"), 1);
 
-    const rejected = queue.pack(1_000);
+    const rejected: BroadcastSelection = queue.pack(1_000);
     expect(queue.acknowledge(rejected, false)).toBe(true);
     expect(queue.get("a")?.remaining).toBe(4);
     expect(queue.acknowledge(rejected, true)).toBe(false);
 
-    const accepted = queue.pack(1_000);
+    const accepted: BroadcastSelection = queue.pack(1_000);
     expect(queue.acknowledge(accepted, true)).toBe(true);
     expect(queue.get("a")?.remaining).toBe(3);
     expect(queue.acknowledge(accepted, true)).toBe(false);
@@ -216,10 +271,10 @@ describe("broadcast send acknowledgement", () => {
   });
 
   it("counts independently selected destinations and removes at zero", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("a"), 1);
 
-    const destinations = Array.from(
+    const destinations: BroadcastSelection[] = Array.from(
       { length: 4 },
       (): ReturnType<BroadcastQueue["pack"]> => queue.pack(1_000),
     );
@@ -231,9 +286,9 @@ describe("broadcast send acknowledgement", () => {
   });
 
   it("does not charge a superseding record for a stale selection", () => {
-    const queue = new BroadcastQueue();
+    const queue: BroadcastQueue = new BroadcastQueue();
     queue.enqueue(update("a", STATE_ALIVE, 1), 1);
-    const staleSelection = queue.pack(1_000);
+    const staleSelection: BroadcastSelection = queue.pack(1_000);
     queue.enqueue(update("a", STATE_DEAD, 1), 10);
 
     queue.acknowledge(staleSelection, true);
@@ -246,12 +301,12 @@ describe("broadcast send acknowledgement", () => {
 
 describe("buddy packing", () => {
   it("puts the buddy first, deduplicates it, and charges it once", () => {
-    const queue = new BroadcastQueue();
-    const buddy = update("target", STATE_SUSPECT, 4);
+    const queue: BroadcastQueue = new BroadcastQueue();
+    const buddy: MembershipUpdate = update("target", STATE_SUSPECT, 4);
     queue.enqueue(update("other"), 1);
     queue.enqueue(buddy, 1);
 
-    const selection = queue.pack(1_000, { buddy });
+    const selection: BroadcastSelection = queue.pack(1_000, { buddy });
     expect(names(selection)).toEqual(["target", "other"]);
     expect(names(selection).filter((name: string): boolean => name === "target")).toHaveLength(1);
     expect(queue.get("target")?.remaining).toBe(4);

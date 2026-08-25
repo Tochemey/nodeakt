@@ -29,14 +29,16 @@ import { SeededRandom } from "../../src/membership/random";
 import {
   ANTI_ENTROPY_INTERVAL_MS,
   AntiEntropy,
+  cancelSupersededSuspicion,
+  fanoutLeave,
   JoinError,
+  type JoinResult,
   join,
-  LEAVE_DRAIN_MS,
-  leave,
+  leaveTargets,
   mergeSyncTable,
   readSyncFrames,
   respondToSync,
-  SyncExchangeError,
+  type SyncExchange,
   type SyncOptions,
   SyncTimeoutError,
   syncWith,
@@ -62,11 +64,15 @@ import {
   STATE_LEFT,
   STATE_SUSPECT,
 } from "../../src/membership/wire";
-import { SimClock, SimNetwork } from "./sim";
+import { flush, SimClock, SimNetwork, settle } from "./sim";
 
-const empty = new Uint8Array(0);
+const empty: Uint8Array = new Uint8Array(0);
 
-function alive(member: string, incarnation = 0, metadata = empty): MembershipUpdate {
+function alive(
+  member: string,
+  incarnation: number = 0,
+  metadata: Uint8Array = empty,
+): MembershipUpdate {
   return {
     state: STATE_ALIVE,
     selfOriginated: true,
@@ -82,7 +88,7 @@ function accusation(
   member: string,
   state: typeof STATE_SUSPECT | typeof STATE_DEAD,
   incarnation: number,
-  reporter = "reporter",
+  reporter: string = "reporter",
 ): MembershipUpdate {
   return {
     state,
@@ -96,7 +102,7 @@ function accusation(
 }
 
 function membership(self: string, updates: readonly MembershipUpdate[] = []): MembershipView {
-  const view = new MembershipView(self);
+  const view: MembershipView = new MembershipView(self);
   view.applyLocal(alive(self), 0);
   for (const update of updates) {
     view.apply(update, 0);
@@ -120,38 +126,13 @@ function options(
   };
 }
 
-async function flush(): Promise<void> {
-  for (let turn = 0; turn < 10; turn += 1) {
-    await Promise.resolve();
-  }
-}
-
-async function settle<T>(network: SimNetwork, operation: Promise<T>): Promise<T> {
-  let done = false;
-  void operation.then(
-    (): void => {
-      done = true;
-    },
-    (): void => {
-      done = true;
-    },
-  );
-  for (let turns = 0; !done && turns < 100; turns += 1) {
-    await flush();
-    if (!done) {
-      network.clock.runNext();
-    }
-  }
-  return operation;
-}
-
 async function startSyncEndpoint(
   network: SimNetwork,
   address: string,
   view: MembershipView,
 ): Promise<{ readonly transport: MembershipTransport; readonly options: SyncOptions }> {
-  const transport = network.endpoint(address);
-  const configured = options(network, transport, view);
+  const transport: MembershipTransport = network.endpoint(address);
+  const configured: SyncOptions = options(network, transport, view);
   await transport.start({
     packet(): void {},
     stream(_from, stream): void {
@@ -163,7 +144,7 @@ async function startSyncEndpoint(
 
 class ChunkStream implements MembershipStream {
   readonly writes: Uint8Array[] = [];
-  private index = 0;
+  private index: number = 0;
 
   constructor(
     readonly remoteAddress: string,
@@ -171,7 +152,7 @@ class ChunkStream implements MembershipStream {
   ) {}
 
   read(): Promise<Uint8Array | undefined> {
-    const bytes = this.reads[this.index];
+    const bytes: Uint8Array | undefined = this.reads[this.index];
     this.index += 1;
     return Promise.resolve(bytes?.slice());
   }
@@ -194,14 +175,14 @@ function fragmented(bytes: Uint8Array): readonly Uint8Array[] {
 
 describe("sync stream framing", () => {
   it("writes u32 frames and reads arbitrarily fragmented chunks", async () => {
-    const writer = new ChunkStream("b", []);
+    const writer: ChunkStream = new ChunkStream("b", []);
     await writeSyncFrames(writer, MESSAGE_SYNC_REQUEST, 7n, [alive("a"), alive("b")]);
-    const wire = writer.writes[0] as Uint8Array;
+    const wire: Uint8Array = writer.writes[0] as Uint8Array;
     expect(new DataView(wire.buffer, wire.byteOffset, wire.byteLength).getUint32(0)).toBe(
       wire.length - 4,
     );
 
-    const read = await readSyncFrames(
+    const read: SyncExchange = await readSyncFrames(
       new ChunkStream("a", fragmented(wire)),
       MESSAGE_SYNC_REQUEST,
       7n,
@@ -210,8 +191,10 @@ describe("sync stream framing", () => {
   });
 
   it("rejects partial frames before exposing any table", async () => {
-    const chunk = encodeSyncChunks(MESSAGE_SYNC_RESPONSE, 9n, [alive("remote")])[0] as Uint8Array;
-    const frame = new Uint8Array(4 + chunk.length);
+    const chunk: Uint8Array = encodeSyncChunks(MESSAGE_SYNC_RESPONSE, 9n, [
+      alive("remote"),
+    ])[0] as Uint8Array;
+    const frame: Uint8Array = new Uint8Array(4 + chunk.length);
     new DataView(frame.buffer).setUint32(0, chunk.length);
     frame.set(chunk, 4);
     await expect(
@@ -226,22 +209,23 @@ describe("sync stream framing", () => {
 
 describe("sync exchange and merge", () => {
   it("returns the responder's post-merge table and merges the response atomically", async () => {
-    const network = new SimNetwork(1);
-    const remote = await startSyncEndpoint(network, "b", membership("b", [alive("c")]));
-    const localTransport = network.endpoint("a");
+    const network: SimNetwork = new SimNetwork(1);
+    const remote: { readonly transport: MembershipTransport; readonly options: SyncOptions } =
+      await startSyncEndpoint(network, "b", membership("b", [alive("c")]));
+    const localTransport: MembershipTransport = network.endpoint("a");
     await localTransport.start({ packet(): void {}, stream(): void {} });
-    const local = options(network, localTransport, membership("a"));
+    const local: SyncOptions = options(network, localTransport, membership("a"));
 
-    const exchange = await settle(network, syncWith(local, "b"));
+    const exchange: SyncExchange = await settle(network, syncWith(local, "b"));
     expect(exchange.updates.map((update): string => update.member)).toEqual(["b", "c", "a"]);
     expect(local.view.get("c")?.state).toBe(STATE_ALIVE);
     expect(remote.options.view.get("a")?.state).toBe(STATE_ALIVE);
   });
 
   it("enqueues accepted truth, routes confirmations, and refutes above the observed maximum", () => {
-    const network = new SimNetwork(2);
-    const view = membership("a", [accusation("b", STATE_SUSPECT, 3, "first")]);
-    const queue = new BroadcastQueue();
+    const network: SimNetwork = new SimNetwork(2);
+    const view: MembershipView = membership("a", [accusation("b", STATE_SUSPECT, 3, "first")]);
+    const queue: BroadcastQueue = new BroadcastQueue();
     const confirmations: string[] = [];
     const cancellations: string[] = [];
     const refutations: number[] = [];
@@ -252,11 +236,13 @@ describe("sync exchange and merge", () => {
       random: network.random,
       transport: network.endpoint("unused"),
       callbacks: {
-        cancelSuspicion(member, incarnation): void {
-          cancellations.push(`${member}:${incarnation}`);
+        applied(update): void {
+          cancelSupersededSuspicion(update, (member, incarnation): void => {
+            cancellations.push(`${member}:${incarnation}`);
+          });
         },
-        confirmSuspicion(member, incarnation, reporter): void {
-          confirmations.push(`${member}:${incarnation}:${reporter}`);
+        confirmSuspicion(update): void {
+          confirmations.push(`${update.member}:${update.incarnation}:${update.reporter}`);
         },
         selfRefuted(update): void {
           refutations.push(update.incarnation);
@@ -279,16 +265,43 @@ describe("sync exchange and merge", () => {
   });
 });
 
+describe("lifecycle gates", () => {
+  it("gates outbound sync work on the engine lifecycle", async () => {
+    const network: SimNetwork = new SimNetwork(11);
+    await startSyncEndpoint(network, "b", membership("b"));
+    const localTransport: MembershipTransport = network.endpoint("a");
+    await localTransport.start({ packet(): void {}, stream(): void {} });
+    let allowed: boolean = false;
+    const local: SyncOptions = {
+      ...options(network, localTransport, membership("a")),
+      outboundAllowed: (): boolean => allowed,
+    };
+
+    await expect(syncWith(local, "b")).rejects.toThrow(/no longer permits outbound sync/);
+    await expect(join(local, ["b"])).rejects.toBeInstanceOf(JoinError);
+
+    // The gate is re-checked after the response arrives, before any merge.
+    allowed = true;
+    const outcome: Promise<unknown> = syncWith(local, "b").catch(
+      (error: unknown): unknown => error,
+    );
+    allowed = false;
+    await settle(network, outcome);
+    expect(await outcome).toMatchObject({ name: "SyncExchangeError" });
+    expect(local.view.get("b")).toBeUndefined();
+  });
+});
+
 describe("join", () => {
   it("deduplicates seeds, keeps order, and treats later failures as best-effort", async () => {
-    const network = new SimNetwork(3);
+    const network: SimNetwork = new SimNetwork(3);
     await startSyncEndpoint(network, "b", membership("b"));
     await startSyncEndpoint(network, "c", membership("c"));
-    const localTransport = network.endpoint("a");
+    const localTransport: MembershipTransport = network.endpoint("a");
     await localTransport.start({ packet(): void {}, stream(): void {} });
-    const local = options(network, localTransport, membership("a"));
+    const local: SyncOptions = options(network, localTransport, membership("a"));
 
-    const result = await settle(network, join(local, ["a", "missing", "b", "b", "c"]));
+    const result: JoinResult = await settle(network, join(local, ["a", "missing", "b", "b", "c"]));
     expect(result.seed).toBe("b");
     expect(result.succeeded).toEqual(["b", "c"]);
     expect(result.failed).toEqual(["missing"]);
@@ -296,21 +309,23 @@ describe("join", () => {
   });
 
   it("rejects when no seed succeeds without applying remote partial data", async () => {
-    const network = new SimNetwork(4);
-    const bad = network.endpoint("bad");
+    const network: SimNetwork = new SimNetwork(4);
+    const bad: MembershipTransport = network.endpoint("bad");
     await bad.start({
       packet(): void {},
       stream(_from, stream): void {
-        const chunk = encodeSyncChunks(MESSAGE_SYNC_RESPONSE, 1n, [alive("leak")])[0] as Uint8Array;
-        const partial = new Uint8Array(4 + chunk.length);
+        const chunk: Uint8Array = encodeSyncChunks(MESSAGE_SYNC_RESPONSE, 1n, [
+          alive("leak"),
+        ])[0] as Uint8Array;
+        const partial: Uint8Array = new Uint8Array(4 + chunk.length);
         new DataView(partial.buffer).setUint32(0, chunk.length);
         partial.set(chunk, 4);
         void stream.write(partial.slice(0, partial.length - 1)).then((): void => stream.close());
       },
     });
-    const localTransport = network.endpoint("a");
+    const localTransport: MembershipTransport = network.endpoint("a");
     await localTransport.start({ packet(): void {}, stream(): void {} });
-    const local = options(network, localTransport, membership("a"));
+    const local: SyncOptions = options(network, localTransport, membership("a"));
 
     await expect(settle(network, join(local, ["bad"]))).rejects.toBeInstanceOf(JoinError);
     expect(local.view.members().map((member): string => member.member)).toEqual(["a"]);
@@ -319,8 +334,8 @@ describe("join", () => {
 
 describe("anti-entropy and leave", () => {
   it("does not overlap anti-entropy ticks", async () => {
-    const clock = new SimClock();
-    let streams = 0;
+    const clock: SimClock = new SimClock();
+    let streams: number = 0;
     const transport: MembershipTransport = {
       address: "a",
       start(): Promise<void> {
@@ -334,10 +349,10 @@ describe("anti-entropy and leave", () => {
       },
       stream(): Promise<MembershipStream> {
         streams += 1;
-        return new Promise<MembershipStream>(() => undefined);
+        return new Promise<MembershipStream>((): void => undefined);
       },
     };
-    const antiEntropy = new AntiEntropy({
+    const antiEntropy: AntiEntropy = new AntiEntropy({
       view: membership("a", [alive("b")]),
       broadcasts: new BroadcastQueue(),
       clock,
@@ -351,17 +366,14 @@ describe("anti-entropy and leave", () => {
     await flush();
   });
 
-  it("applies and enqueues left, fanouts in name order, then drains and stops", async () => {
-    const clock = new SimClock();
+  it("fans out left truth to eligible peers in deterministic name order", async () => {
     const sent: string[] = [];
-    let stopped = false;
     const transport: MembershipTransport = {
       address: "a",
       start(_handlers: TransportHandlers): Promise<void> {
         return Promise.resolve();
       },
       stop(): Promise<void> {
-        stopped = true;
         return Promise.resolve();
       },
       packet(to): Promise<void> {
@@ -372,18 +384,13 @@ describe("anti-entropy and leave", () => {
         return Promise.reject(new Error("unused"));
       },
     };
-    const view = membership("a", [alive("c"), alive("b")]);
-    const broadcasts = new BroadcastQueue();
-    const leaving = leave({ view, broadcasts, clock, transport });
-    await flush();
+    const view: MembershipView = membership("a", [alive("c"), alive("b")]);
+    const update: MembershipUpdate = { ...alive("a"), state: STATE_LEFT, metadata: empty };
+
+    const targets: readonly string[] = leaveTargets(view);
+    expect(targets).toEqual(["b", "c"]);
+    await fanoutLeave(transport, update, targets);
     expect(sent).toEqual(["b", "c"]);
-    expect(stopped).toBe(false);
-    clock.advanceBy(LEAVE_DRAIN_MS);
-    const result = await leaving;
-    expect(result.update.state).toBe(STATE_LEFT);
-    expect(view.self()?.state).toBe(STATE_LEFT);
-    expect(broadcasts.get("a")).toBeDefined();
-    expect(stopped).toBe(true);
   });
 });
 
@@ -394,14 +401,14 @@ describe("sync defensive paths", () => {
     );
 
     for (const length of [3, MAX_SYNC_MESSAGE_BYTES + 1]) {
-      const prefix = new Uint8Array(4);
+      const prefix: Uint8Array = new Uint8Array(4);
       new DataView(prefix.buffer).setUint32(0, length);
       await expect(
         readSyncFrames(new ChunkStream("b", [prefix]), MESSAGE_SYNC_REQUEST),
       ).rejects.toBeInstanceOf(ProtocolError);
     }
 
-    const response = new ChunkStream("b", []);
+    const response: ChunkStream = new ChunkStream("b", []);
     await writeSyncFrames(response, MESSAGE_SYNC_RESPONSE, 8n, [alive("b")]);
     await expect(
       readSyncFrames(new ChunkStream("b", response.writes), MESSAGE_SYNC_REQUEST),
@@ -410,7 +417,7 @@ describe("sync defensive paths", () => {
       readSyncFrames(new ChunkStream("b", response.writes), MESSAGE_SYNC_RESPONSE, 9n),
     ).rejects.toThrow(/exchange ID/);
 
-    const reordered = encodeSyncChunks(
+    const reordered: readonly Uint8Array[] = encodeSyncChunks(
       MESSAGE_SYNC_RESPONSE,
       10n,
       Array.from(
@@ -420,8 +427,8 @@ describe("sync defensive paths", () => {
       ),
     );
     expect(reordered.length).toBeGreaterThan(1);
-    const framedChunks = reordered.map((chunk): Uint8Array => {
-      const bytes = new Uint8Array(4 + chunk.length);
+    const framedChunks: Uint8Array[] = reordered.map((chunk): Uint8Array => {
+      const bytes: Uint8Array = new Uint8Array(4 + chunk.length);
       new DataView(bytes.buffer).setUint32(0, chunk.length);
       bytes.set(chunk, 4);
       return bytes;
@@ -436,7 +443,7 @@ describe("sync defensive paths", () => {
     await expect(
       readSyncFrames(
         new ChunkStream("b", [
-          Uint8Array.from([...framedChunks.flatMap((bytes) => Array.from(bytes)), 1]),
+          Uint8Array.from([...framedChunks.flatMap((bytes): number[] => Array.from(bytes)), 1]),
         ]),
         MESSAGE_SYNC_RESPONSE,
         10n,
@@ -445,7 +452,7 @@ describe("sync defensive paths", () => {
   });
 
   it("rejects updates that cannot be canonically encoded", async () => {
-    const huge = Array.from(
+    const huge: MembershipUpdate[] = Array.from(
       { length: MAX_MEMBERS },
       (_, index): MembershipUpdate =>
         alive(`member-${index.toString().padStart(4, "0")}`, 0, new Uint8Array(1_000)),
@@ -456,10 +463,10 @@ describe("sync defensive paths", () => {
   });
 
   it("times out connect and exchange, closes late streams, and preserves carrier failures", async () => {
-    const network = new SimNetwork(20);
+    const network: SimNetwork = new SimNetwork(20);
     let resolveLate: ((stream: MembershipStream) => void) | undefined;
-    const late = new ChunkStream("late", []);
-    let closes = 0;
+    const late: ChunkStream = new ChunkStream("late", []);
+    let closes: number = 0;
     late.close = (): void => {
       closes += 1;
     };
@@ -473,8 +480,8 @@ describe("sync defensive paths", () => {
           resolveLate = resolve;
         }),
     };
-    const configured = options(network, transport, membership("a"));
-    const connecting = syncWith(configured, "late");
+    const configured: SyncOptions = options(network, transport, membership("a"));
+    const connecting: Promise<SyncExchange> = syncWith(configured, "late");
     network.clock.advanceBy(1_000);
     await expect(connecting).rejects.toMatchObject({ phase: "connect", timeoutMs: 1_000 });
     resolveLate?.(late);
@@ -486,20 +493,20 @@ describe("sync defensive paths", () => {
       new Promise((_resolve, reject): void => {
         rejectLate = reject;
       });
-    const lateFailure = syncWith(configured, "bad");
+    const lateFailure: Promise<SyncExchange> = syncWith(configured, "bad");
     network.clock.advanceBy(1_000);
     await expect(lateFailure).rejects.toBeInstanceOf(SyncTimeoutError);
     rejectLate?.(new Error("dial failed"));
     await flush();
 
-    const hanging = new ChunkStream("b", []);
+    const hanging: ChunkStream = new ChunkStream("b", []);
     let resolveExchange: ((bytes: Uint8Array | undefined) => void) | undefined;
     hanging.read = (): Promise<Uint8Array | undefined> =>
       new Promise<Uint8Array | undefined>((resolve): void => {
         resolveExchange = resolve;
       });
     transport.stream = async (): Promise<MembershipStream> => hanging;
-    const deterministic = {
+    const deterministic: SyncOptions = {
       ...configured,
       random: {
         next: (): number => 0,
@@ -508,36 +515,38 @@ describe("sync defensive paths", () => {
         pick: <T>(items: readonly T[]): T => items[0] as T,
       },
     };
-    const exchanging = syncWith(deterministic, "b");
+    const exchanging: Promise<SyncExchange> = syncWith(deterministic, "b");
     await flush();
     network.clock.advanceBy(5_000);
     await expect(exchanging).rejects.toBeInstanceOf(SyncTimeoutError);
-    const response = new ChunkStream("b", []);
+    const response: ChunkStream = new ChunkStream("b", []);
     await writeSyncFrames(response, MESSAGE_SYNC_RESPONSE, 1n, []);
     resolveExchange?.(response.writes[0]);
     await flush();
   });
 
   it("rejects oversized merges and exhausted self-refutation without partial mutation", () => {
-    const network = new SimNetwork(21);
-    const base = membership("a");
-    const configured = options(network, network.endpoint("a"), base);
-    const additions = Array.from(
+    const network: SimNetwork = new SimNetwork(21);
+    const base: MembershipView = membership("a");
+    const configured: SyncOptions = options(network, network.endpoint("a"), base);
+    const additions: MembershipUpdate[] = Array.from(
       { length: MAX_MEMBERS },
       (_, index): MembershipUpdate => alive(`peer-${index}`),
     );
-    expect(() => mergeSyncTable(configured, additions)).toThrow(/1024 retained/);
+    expect((): readonly MembershipUpdate[] => mergeSyncTable(configured, additions)).toThrow(
+      /1024 retained/,
+    );
     expect(base.size).toBe(1);
 
     base.applyLocal(alive("a", 0xffff_ffff), 0);
-    expect(() => mergeSyncTable(configured, [accusation("a", STATE_DEAD, 0xffff_ffff)])).toThrow(
-      /exhaust/,
-    );
+    expect((): readonly MembershipUpdate[] =>
+      mergeSyncTable(configured, [accusation("a", STATE_DEAD, 0xffff_ffff)]),
+    ).toThrow(/exhaust/);
   });
 
   it("covers filtered, ignored, zero-incarnation suspect, and applied callbacks", () => {
-    const network = new SimNetwork(22);
-    const view = membership("a", [alive("same", 2)]);
+    const network: SimNetwork = new SimNetwork(22);
+    const view: MembershipView = membership("a", [alive("same", 2)]);
     const cancelled: string[] = [];
     const applied: string[] = [];
     const configured: SyncOptions = {
@@ -546,13 +555,13 @@ describe("sync defensive paths", () => {
       callbacks: {
         applied: (item): void => {
           applied.push(item.member);
-        },
-        cancelSuspicion: (member, incarnation): void => {
-          cancelled.push(`${member}:${incarnation}`);
+          cancelSupersededSuspicion(item, (member, incarnation): void => {
+            cancelled.push(`${member}:${incarnation}`);
+          });
         },
       },
     };
-    const result = mergeSyncTable(configured, [
+    const result: readonly MembershipUpdate[] = mergeSyncTable(configured, [
       alive("filtered"),
       alive("same", 1),
       accusation("zero", STATE_SUSPECT, 0),
@@ -561,13 +570,24 @@ describe("sync defensive paths", () => {
     expect(result.map((item): string => item.member)).toEqual(["zero", "one"]);
     expect(applied).toEqual(["zero", "one"]);
     expect(cancelled).toEqual(["one:0"]);
+
+    // A merge with no callbacks configured still applies and disseminates.
+    const bare: SyncOptions = {
+      view,
+      broadcasts: new BroadcastQueue(),
+      clock: network.clock,
+      random: network.random,
+      transport: network.endpoint("bare"),
+    };
+    mergeSyncTable(bare, [alive("plain", 1)]);
+    expect(view.get("plain")?.state).toBe(STATE_ALIVE);
   });
 
   it("handles responder timeout after a late request without writing a response", async () => {
-    const network = new SimNetwork(23);
+    const network: SimNetwork = new SimNetwork(23);
     let resolveRead: ((bytes: Uint8Array | undefined) => void) | undefined;
-    let writes = 0;
-    let closes = 0;
+    let writes: number = 0;
+    let closes: number = 0;
     const stream: MembershipStream = {
       remoteAddress: "b",
       read: (): Promise<Uint8Array | undefined> =>
@@ -581,11 +601,11 @@ describe("sync defensive paths", () => {
         closes += 1;
       },
     };
-    const configured = options(network, network.endpoint("a"), membership("a"));
-    const responding = respondToSync(configured, stream);
+    const configured: SyncOptions = options(network, network.endpoint("a"), membership("a"));
+    const responding: Promise<void> = respondToSync(configured, stream);
     network.clock.advanceBy(5_000);
     await expect(responding).rejects.toBeInstanceOf(SyncTimeoutError);
-    const request = new ChunkStream("a", []);
+    const request: ChunkStream = new ChunkStream("a", []);
     await writeSyncFrames(request, MESSAGE_SYNC_REQUEST, 1n, []);
     resolveRead?.(request.writes[0]);
     await flush();
@@ -608,8 +628,8 @@ describe("sync defensive paths", () => {
       }
       cancel(): void {}
     }
-    const clock = new AdversarialClock();
-    let rejectExchange = false;
+    const clock: AdversarialClock = new AdversarialClock();
+    let rejectExchange: boolean = false;
     const transport: MembershipTransport = {
       address: "a",
       start: async (): Promise<void> => undefined,
@@ -619,12 +639,12 @@ describe("sync defensive paths", () => {
         if (rejectExchange) {
           throw new Error("exchange failed");
         }
-        const response = new ChunkStream("b", []);
+        const response: ChunkStream = new ChunkStream("b", []);
         await writeSyncFrames(response, MESSAGE_SYNC_RESPONSE, 1n, []);
         return new ChunkStream("b", response.writes);
       },
     };
-    const emptyScheduler = new AntiEntropy({
+    const emptyScheduler: AntiEntropy = new AntiEntropy({
       view: membership("a"),
       broadcasts: new BroadcastQueue(),
       clock,
@@ -645,7 +665,7 @@ describe("sync defensive paths", () => {
       schedule: (): ClockTimer => undefined as unknown as ClockTimer,
       cancel: (): void => undefined,
     };
-    const missingTimer = new AntiEntropy({
+    const missingTimer: AntiEntropy = new AntiEntropy({
       view: membership("a"),
       broadcasts: new BroadcastQueue(),
       clock: missingTimerClock,
@@ -655,7 +675,7 @@ describe("sync defensive paths", () => {
     missingTimer.start();
     missingTimer.stop();
 
-    const scheduler = new AntiEntropy({
+    const scheduler: AntiEntropy = new AntiEntropy({
       view: membership("a", [alive("b")]),
       broadcasts: new BroadcastQueue(),
       clock,
@@ -680,69 +700,35 @@ describe("sync defensive paths", () => {
     scheduler.stop();
   });
 
-  it("handles leave without self, already-left state, failed fanout, and byte ordering", async () => {
-    const network = new SimNetwork(24);
-    const noSelf = new MembershipView("a");
-    await expect(
-      leave({
-        view: noSelf,
-        broadcasts: new BroadcastQueue(),
-        clock: network.clock,
-        transport: network.endpoint("a"),
-      }),
-    ).rejects.toBeInstanceOf(SyncExchangeError);
-
-    const view = membership("a", [alive("é"), alive("z"), alive("x"), alive("xy")]);
-    view.applyLocal(
-      {
-        ...alive("a"),
-        state: STATE_LEFT,
-        metadata: empty,
-      },
-      0,
-    );
+  it("orders leave targets by UTF-8 bytes and swallows per-target fanout failures", async () => {
+    const view: MembershipView = membership("a", [alive("é"), alive("z"), alive("x"), alive("xy")]);
+    view.applyLocal({ ...alive("a"), state: STATE_LEFT, metadata: empty }, 0);
+    const update: MembershipUpdate = { ...alive("a"), state: STATE_LEFT, metadata: empty };
     const sent: string[] = [];
     const transport: MembershipTransport = {
       address: "a",
       start: async (): Promise<void> => undefined,
       stop: async (): Promise<void> => undefined,
-      packet: async (target): Promise<void> => {
+      packet: (target): Promise<void> => {
         sent.push(target);
         if (target === "z") {
-          throw new Error("best effort");
+          throw new Error("synchronous best effort");
         }
+
+        if (target === "x") {
+          return Promise.reject(new Error("asynchronous best effort"));
+        }
+
+        return Promise.resolve();
       },
       stream: async (): Promise<MembershipStream> => {
         throw new Error("unused");
       },
     };
-    const leaving = leave({
-      view,
-      broadcasts: new BroadcastQueue(),
-      clock: network.clock,
-      transport,
-    });
-    await flush();
-    network.clock.advanceBy(LEAVE_DRAIN_MS);
-    const result = await leaving;
-    expect(result.targets).toEqual(["x", "xy", "z", "é"]);
-    expect(sent).toEqual(result.targets);
 
-    const ignoredView = {
-      selfName: "ignored",
-      self: (): MembershipUpdate => alive("ignored"),
-      members: (): readonly MembershipUpdate[] => [alive("ignored")],
-      applyLocal: (): { readonly kind: "ignored" } => ({ kind: "ignored" }),
-      aliveOrSuspectCount: (): number => 1,
-    } as unknown as MembershipView;
-    const ignoredLeave = leave({
-      view: ignoredView,
-      broadcasts: new BroadcastQueue(),
-      clock: network.clock,
-      transport,
-    });
-    await flush();
-    network.clock.advanceBy(LEAVE_DRAIN_MS);
-    await ignoredLeave;
+    const targets: readonly string[] = leaveTargets(view);
+    expect(targets).toEqual(["x", "xy", "z", "é"]);
+    await expect(fanoutLeave(transport, update, targets)).resolves.toBeUndefined();
+    expect(sent).toEqual(targets);
   });
 });

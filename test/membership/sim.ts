@@ -46,8 +46,8 @@ function validateDuration(value: number, field: string): void {
 
 /** A manually advanced monotonic clock shared by every endpoint in a simulation. */
 export class SimClock implements Clock {
-  private current = 0;
-  private sequence = 0;
+  private current: number = 0;
+  private sequence: number = 0;
   private readonly timers: SimTimer[] = [];
 
   now(): number {
@@ -100,11 +100,11 @@ export class SimClock implements Clock {
       throw new RangeError("target time must be finite and monotonic");
     }
     while (true) {
-      const next = this.nextTimer(targetTime);
+      const next: SimTimer | undefined = this.nextTimer(targetTime);
       if (next === undefined) {
         break;
       }
-      const index = this.timers.indexOf(next);
+      const index: number = this.timers.indexOf(next);
       this.timers.splice(index, 1);
       if (next.cancelled) {
         continue;
@@ -116,7 +116,7 @@ export class SimClock implements Clock {
   }
 
   runNext(): boolean {
-    const next = this.nextTimer(Number.POSITIVE_INFINITY);
+    const next: SimTimer | undefined = this.nextTimer(Number.POSITIVE_INFINITY);
     if (next === undefined) {
       return false;
     }
@@ -124,23 +124,23 @@ export class SimClock implements Clock {
     return true;
   }
 
-  runAll(limit = 10_000): void {
+  runAll(limit: number = 10_000): void {
     if (!Number.isInteger(limit) || limit <= 0) {
       throw new RangeError("run limit must be a positive integer");
     }
 
-    let count = 0;
+    let count: number = 0;
     while (this.pending > 0) {
       if (count >= limit) {
         throw new Error(`simulation exceeded ${limit} scheduled deadlines`);
       }
 
-      const next = this.nextTimer(Number.POSITIVE_INFINITY);
+      const next: SimTimer | undefined = this.nextTimer(Number.POSITIVE_INFINITY);
       if (next === undefined) {
         break;
       }
 
-      const index = this.timers.indexOf(next);
+      const index: number = this.timers.indexOf(next);
       this.timers.splice(index, 1);
       this.current = next.deadline;
       next.callback();
@@ -189,8 +189,8 @@ interface LinkState {
 }
 
 function normalizeFault(fault: LinkFault, base?: NormalizedFault): NormalizedFault {
-  const delayMs = fault.delayMs ?? base?.delayMs ?? 0;
-  const duplicates = fault.duplicates ?? base?.duplicates ?? 0;
+  const delayMs: number = fault.delayMs ?? base?.delayMs ?? 0;
+  const duplicates: number = fault.duplicates ?? base?.duplicates ?? 0;
   validateDuration(delayMs, "link delay");
   if (!Number.isInteger(duplicates) || duplicates < 0) {
     throw new RangeError("link duplicates must be a non-negative integer");
@@ -210,6 +210,15 @@ const HEALTHY_LINK: NormalizedFault = {
   partitioned: false,
 };
 
+/**
+ * Simulated dial-failure delay for an unreachable (partitioned) destination.
+ *
+ * The real carrier only discovers unreachability when its connect backstop
+ * expires, strictly after the protocol's own 1s connect deadline, so the sim
+ * must not hand senders faster knowledge than production would.
+ */
+const UNREACHABLE_REJECTION_DELAY_MS: number = 2_000;
+
 interface PendingRead {
   readonly resolve: (bytes: Uint8Array | undefined) => void;
 }
@@ -217,10 +226,10 @@ interface PendingRead {
 class SimStream implements MembershipStream {
   private readonly queued: Uint8Array[] = [];
   private readonly readers: PendingRead[] = [];
-  private ended = false;
-  private closed = false;
+  private ended: boolean = false;
+  private closed: boolean = false;
   private peer: SimStream | undefined;
-  deliveryFloor = 0;
+  deliveryFloor: number = 0;
 
   constructor(
     readonly localAddress: string,
@@ -233,7 +242,13 @@ class SimStream implements MembershipStream {
   }
 
   read(): Promise<Uint8Array | undefined> {
-    const bytes = this.queued.shift();
+    // A locally closed stream reads as ended, exactly like the TCP stream's
+    // contract, even when undelivered bytes remain queued.
+    if (this.closed) {
+      return Promise.resolve(undefined);
+    }
+
+    const bytes: Uint8Array | undefined = this.queued.shift();
     if (bytes !== undefined) {
       return Promise.resolve(bytes);
     }
@@ -251,7 +266,7 @@ class SimStream implements MembershipStream {
     if (this.closed) {
       return Promise.reject(new Error("stream is closed"));
     }
-    const peer = this.peer;
+    const peer: SimStream | undefined = this.peer;
     if (peer === undefined) {
       return Promise.reject(new Error("stream is not connected"));
     }
@@ -263,7 +278,12 @@ class SimStream implements MembershipStream {
       return;
     }
     this.closed = true;
-    const peer = this.peer;
+    // Local waiters settle immediately: a close during a pending read must not
+    // leave that read hanging past the exchange that abandoned it.
+    for (const reader of this.readers.splice(0)) {
+      reader.resolve(undefined);
+    }
+    const peer: SimStream | undefined = this.peer;
     if (peer !== undefined) {
       this.network.endStream(this, peer);
     }
@@ -273,7 +293,7 @@ class SimStream implements MembershipStream {
     if (this.ended) {
       return;
     }
-    const reader = this.readers.shift();
+    const reader: PendingRead | undefined = this.readers.shift();
     if (reader === undefined) {
       this.queued.push(bytes);
     } else {
@@ -300,6 +320,7 @@ class SimStream implements MembershipStream {
 
 class SimEndpoint implements MembershipTransport {
   private handlers: TransportHandlers | undefined;
+  private stopped: boolean = false;
 
   constructor(
     readonly address: string,
@@ -310,7 +331,15 @@ class SimEndpoint implements MembershipTransport {
     return this.handlers !== undefined;
   }
 
+  /** Whether stop has made this endpoint permanently unusable, like the TCP transport. */
+  get terminal(): boolean {
+    return this.stopped;
+  }
+
   async start(handlers: TransportHandlers): Promise<void> {
+    if (this.stopped) {
+      throw new Error(`cannot restart stopped endpoint ${this.address}`);
+    }
     if (this.handlers !== undefined) {
       throw new Error(`endpoint ${this.address} is already started`);
     }
@@ -318,6 +347,7 @@ class SimEndpoint implements MembershipTransport {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     if (this.handlers === undefined) {
       return;
     }
@@ -340,22 +370,68 @@ class SimEndpoint implements MembershipTransport {
   }
 
   deliverPacket(from: string, bytes: Uint8Array): void {
-    void this.handlers?.packet(from, bytes);
+    // Dispatch stays synchronous so handlers run at their virtual delivery
+    // time; a rejected asynchronous handler loses only its own packet, the
+    // way a real handler failure severs only its own connection.
+    const outcome: void | Promise<void> | undefined = this.handlers?.packet(from, bytes);
+    if (outcome !== undefined) {
+      void outcome.catch((): void => undefined);
+    }
   }
 
   deliverStream(from: string, stream: MembershipStream): void {
-    void this.handlers?.stream(from, stream);
+    const outcome: void | Promise<void> | undefined = this.handlers?.stream(from, stream);
+    if (outcome !== undefined) {
+      void outcome.catch((): void => undefined);
+    }
   }
+}
+
+/**
+ * Drains chained microtasks so promise reactions scheduled by protocol code
+ * observe their results before a test asserts.
+ */
+export async function flush(turns: number = 10): Promise<void> {
+  for (let turn = 0; turn < turns; turn += 1) {
+    await Promise.resolve();
+  }
+}
+
+/**
+ * Drives the simulation until `operation` settles or the turn budget runs out,
+ * alternating microtask drains with the next due virtual timer.
+ */
+export async function settle<T>(network: SimNetwork, operation: Promise<T>): Promise<T> {
+  let done: boolean = false;
+  void operation.then(
+    (): void => {
+      done = true;
+    },
+    (): void => {
+      done = true;
+    },
+  );
+  for (let turns = 0; !done && turns < 200; turns += 1) {
+    await flush();
+    if (!done) {
+      network.clock.runNext();
+    }
+  }
+
+  return operation;
 }
 
 /** A deterministic packet-and-stream network shared by a simulation. */
 export class SimNetwork {
-  readonly clock = new SimClock();
+  readonly clock: SimClock = new SimClock();
   readonly random: SeededRandom;
   readonly seed: number;
-  private readonly endpoints = new Map<string, SimEndpoint>();
-  private readonly links = new Map<string, Map<string, LinkState>>();
-  private readonly streams = new Set<SimStream>();
+  private readonly endpoints: Map<string, SimEndpoint> = new Map<string, SimEndpoint>();
+  private readonly links: Map<string, Map<string, LinkState>> = new Map<
+    string,
+    Map<string, LinkState>
+  >();
+  private readonly streams: Set<SimStream> = new Set<SimStream>();
 
   constructor(seed: number) {
     this.random = new SeededRandom(seed);
@@ -370,14 +446,18 @@ export class SimNetwork {
     if (address.length === 0) {
       throw new RangeError("endpoint address must not be empty");
     }
-    const existing = this.endpoints.get(address);
+    const existing: SimEndpoint | undefined = this.endpoints.get(address);
     if (existing !== undefined) {
       if (existing.started) {
         throw new Error(`endpoint ${address} already exists`);
       }
-      return existing;
+      // Stop is terminal, exactly as on the TCP transport: a revived node
+      // constructs a fresh transport instead of restarting the old one.
+      if (!existing.terminal) {
+        return existing;
+      }
     }
-    const endpoint = new SimEndpoint(address, this);
+    const endpoint: SimEndpoint = new SimEndpoint(address, this);
     this.endpoints.set(address, endpoint);
     return endpoint;
   }
@@ -387,30 +467,47 @@ export class SimNetwork {
   }
 
   scriptLink(from: string, to: string, faults: readonly LinkFault[]): void {
-    const link = this.link(from, to);
+    const link: LinkState = this.link(from, to);
     link.script = faults.map((fault: LinkFault): LinkFault => ({ ...fault }));
     for (const fault of link.script) {
       normalizeFault(fault, link.fault);
     }
   }
 
-  partition(from: string, to: string, partitioned = true): void {
-    const link = this.link(from, to);
+  partition(from: string, to: string, partitioned: boolean = true): void {
+    const link: LinkState = this.link(from, to);
     link.fault = { ...link.fault, partitioned };
   }
 
-  partitionBoth(first: string, second: string, partitioned = true): void {
+  partitionBoth(first: string, second: string, partitioned: boolean = true): void {
     this.partition(first, second, partitioned);
     this.partition(second, first, partitioned);
   }
 
   sendPacket(from: string, to: string, bytes: Uint8Array): Promise<void> {
-    const destination = this.startedEndpoint(to);
-    const fault = this.nextFault(from, to);
-    if (fault.partitioned || fault.drop) {
+    const fault: NormalizedFault = this.nextFault(from, to);
+    // A partitioned destination is unreachable, not known-dead: the failure
+    // surfaces only after the carrier's connect backstop, never synchronously.
+    if (fault.partitioned) {
+      return this.rejectAfter(
+        UNREACHABLE_REJECTION_DELAY_MS,
+        `packet from ${from} to ${to} was not delivered`,
+      );
+    }
+
+    const destination: SimEndpoint | undefined = this.endpoints.get(to);
+    if (destination === undefined || !destination.started) {
+      // A stopped peer refuses the dial promptly; the rejection is
+      // asynchronous, never same-tick sender knowledge.
+      return Promise.reject(new Error(`endpoint ${to} is stopped or missing`));
+    }
+
+    // Loss on a reachable path models a dropped datagram: the local write
+    // still resolves, exactly as the carrier reports only local completion.
+    if (fault.drop) {
       return Promise.resolve();
     }
-    const accepted = bytes.slice();
+    const accepted: Uint8Array = bytes.slice();
     for (let copy = 0; copy <= fault.duplicates; copy += 1) {
       this.clock.scheduleInput(fault.delayMs, (): void => {
         if (destination.started) {
@@ -422,19 +519,27 @@ export class SimNetwork {
   }
 
   openStream(from: string, to: string): Promise<MembershipStream> {
-    const destination = this.startedEndpoint(to);
-    const fault = this.nextFault(from, to);
+    const fault: NormalizedFault = this.nextFault(from, to);
     if (fault.partitioned || fault.drop) {
-      return Promise.reject(new Error(`stream from ${from} to ${to} was not delivered`));
+      return this.rejectAfter(
+        UNREACHABLE_REJECTION_DELAY_MS,
+        `stream from ${from} to ${to} was not delivered`,
+      );
     }
+
+    const destination: SimEndpoint | undefined = this.endpoints.get(to);
+    if (destination === undefined || !destination.started) {
+      return Promise.reject(new Error(`endpoint ${to} is stopped or missing`));
+    }
+
     return new Promise<MembershipStream>((resolve, reject): void => {
       this.clock.scheduleInput(fault.delayMs, (): void => {
         if (!destination.started) {
           reject(new Error(`endpoint ${to} is stopped`));
           return;
         }
-        const outgoing = new SimStream(from, to, this);
-        const incoming = new SimStream(to, from, this);
+        const outgoing: SimStream = new SimStream(from, to, this);
+        const incoming: SimStream = new SimStream(to, from, this);
         outgoing.connect(incoming);
         incoming.connect(outgoing);
         this.streams.add(outgoing);
@@ -445,14 +550,23 @@ export class SimNetwork {
     });
   }
 
+  /** Rejects after a virtual delay so senders never learn outcomes synchronously. */
+  private rejectAfter<T>(delayMs: number, message: string): Promise<T> {
+    return new Promise<T>((_resolve, reject): void => {
+      this.clock.scheduleInput(delayMs, (): void => {
+        reject(new Error(message));
+      });
+    });
+  }
+
   writeStream(from: SimStream, to: SimStream, bytes: Uint8Array): Promise<void> {
-    const fault = this.nextFault(from.localAddress, from.remoteAddress);
+    const fault: NormalizedFault = this.nextFault(from.localAddress, from.remoteAddress);
     if (fault.partitioned || fault.drop) {
       return Promise.resolve();
     }
-    const accepted = bytes.slice();
-    const requestedDeadline = this.clock.now() + fault.delayMs;
-    const deadline = Math.max(requestedDeadline, from.deliveryFloor);
+    const accepted: Uint8Array = bytes.slice();
+    const requestedDeadline: number = this.clock.now() + fault.delayMs;
+    const deadline: number = Math.max(requestedDeadline, from.deliveryFloor);
     from.deliveryFloor = deadline;
     for (let copy = 0; copy <= fault.duplicates; copy += 1) {
       this.clock.scheduleInput(deadline - this.clock.now(), (): void => {
@@ -463,7 +577,7 @@ export class SimNetwork {
   }
 
   endStream(from: SimStream, to: SimStream): void {
-    const deadline = Math.max(this.clock.now(), from.deliveryFloor);
+    const deadline: number = Math.max(this.clock.now(), from.deliveryFloor);
     this.clock.scheduleInput(deadline - this.clock.now(), (): void => {
       to.receiveEnd();
     });
@@ -478,21 +592,13 @@ export class SimNetwork {
     }
   }
 
-  private startedEndpoint(address: string): SimEndpoint {
-    const endpoint = this.endpoints.get(address);
-    if (endpoint === undefined || !endpoint.started) {
-      throw new Error(`endpoint ${address} is stopped or missing`);
-    }
-    return endpoint;
-  }
-
   private link(from: string, to: string): LinkState {
-    let destinations = this.links.get(from);
+    let destinations: Map<string, LinkState> | undefined = this.links.get(from);
     if (destinations === undefined) {
       destinations = new Map<string, LinkState>();
       this.links.set(from, destinations);
     }
-    let link = destinations.get(to);
+    let link: LinkState | undefined = destinations.get(to);
     if (link === undefined) {
       link = { fault: HEALTHY_LINK, script: [] };
       destinations.set(to, link);
@@ -501,8 +607,8 @@ export class SimNetwork {
   }
 
   private nextFault(from: string, to: string): NormalizedFault {
-    const link = this.link(from, to);
-    const scripted = link.script.shift();
+    const link: LinkState = this.link(from, to);
+    const scripted: LinkFault | undefined = link.script.shift();
     return scripted === undefined ? link.fault : normalizeFault(scripted, link.fault);
   }
 }

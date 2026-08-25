@@ -27,10 +27,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const membershipDirectory = fileURLToPath(new URL("../../src/membership", import.meta.url));
+const membershipDirectory: string = fileURLToPath(new URL("../../src/membership", import.meta.url));
 
 function documentationBefore(lines: readonly string[], exportLine: number): string {
-  let end = exportLine - 1;
+  let end: number = exportLine - 1;
   while (end >= 0 && (lines[end] as string).trim().length === 0) {
     end -= 1;
   }
@@ -39,7 +39,7 @@ function documentationBefore(lines: readonly string[], exportLine: number): stri
     return "";
   }
 
-  let start = end;
+  let start: number = end;
   while (start >= 0 && !(lines[start] as string).includes("/**")) {
     start -= 1;
   }
@@ -50,18 +50,18 @@ function documentationBefore(lines: readonly string[], exportLine: number): stri
 describe("membership declaration visibility", () => {
   it("marks every exported declaration as internal", () => {
     const failures: string[] = [];
-    const files = readdirSync(membershipDirectory).filter((name: string): boolean =>
+    const files: string[] = readdirSync(membershipDirectory).filter((name: string): boolean =>
       name.endsWith(".ts"),
     );
 
     for (const file of files) {
-      const lines = readFileSync(join(membershipDirectory, file), "utf8").split(/\r?\n/);
+      const lines: string[] = readFileSync(join(membershipDirectory, file), "utf8").split(/\r?\n/);
       for (let index = 0; index < lines.length; index += 1) {
         if (!(lines[index] as string).startsWith("export ")) {
           continue;
         }
 
-        const documentation = documentationBefore(lines, index);
+        const documentation: string = documentationBefore(lines, index);
         if (!documentation.includes("@internal")) {
           failures.push(`${file}:${index + 1}`);
         }

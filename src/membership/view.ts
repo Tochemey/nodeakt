@@ -23,6 +23,7 @@
  */
 
 import {
+  bytesEqual,
   copyMembershipUpdate,
   MAX_MEMBERS,
   type MemberState,
@@ -34,10 +35,10 @@ import {
 } from "./wire";
 
 /** Duration, in local monotonic milliseconds, that dead and left records remain retained. @internal */
-export const TERMINAL_RETENTION_MS = 30_000;
+export const TERMINAL_RETENTION_MS: number = 30_000;
 
 /** Largest unsigned 32-bit incarnation representable by the wire protocol. @internal */
-export const MAX_INCARNATION = 0xffffffff;
+export const MAX_INCARNATION: number = 0xffffffff;
 
 /**
  * Detached membership snapshot annotated with when this view accepted the truth.
@@ -232,21 +233,6 @@ function snapshot(record: StoredRecord): MemberRecord {
   };
 }
 
-/** Compares metadata by byte content without mutating either input. */
-function metadataEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
 /**
  * Compares membership truth by incarnation first, then numeric state precedence.
  *
@@ -284,7 +270,10 @@ export function isProbeEligibleState(
  * Derives a consumer-visible transition for a replacement.
  *
  * Suspect transitions and alive replacements with byte-identical metadata intentionally
- * return `undefined`; revival from dead or left is reported as `joined`.
+ * return `undefined`; revival from dead or left is reported as `joined`. A terminal
+ * replacement is observable only once per departure: terminal truth superseding truth
+ * that was already terminal, or arriving for an identity with no retained record, is
+ * silent so consumers cannot receive duplicate `dead`/`left` notifications.
  */
 function eventType(
   previous: StoredRecord | undefined,
@@ -295,19 +284,19 @@ function eventType(
       return "joined";
     }
 
-    if (previous.state === STATE_ALIVE && !metadataEqual(previous.metadata, next.metadata)) {
+    if (previous.state === STATE_ALIVE && !bytesEqual(previous.metadata, next.metadata)) {
       return "updated";
     }
 
     return undefined;
   }
 
-  if (next.state === STATE_DEAD) {
-    return "dead";
-  }
+  if (isTerminalState(next.state)) {
+    if (previous === undefined || isTerminalState(previous.state)) {
+      return undefined;
+    }
 
-  if (next.state === STATE_LEFT) {
-    return "left";
+    return next.state === STATE_DEAD ? "dead" : "left";
   }
 
   return undefined;
@@ -329,10 +318,19 @@ export class MembershipView {
   readonly #onEvent: ((event: MembershipEvent) => void) | undefined;
 
   /** View-owned truth indexed by canonical advertised member identity/address. */
-  readonly #records = new Map<string, StoredRecord>();
+  readonly #records: Map<string, StoredRecord> = new Map<string, StoredRecord>();
 
   /** Greatest local application time accepted, used to prevent timestamp regression. */
-  #lastAppliedAt = Number.NEGATIVE_INFINITY;
+  #lastAppliedAt: number = Number.NEGATIVE_INFINITY;
+
+  /**
+   * Retained alive-plus-suspect record count, maintained on every replacement.
+   *
+   * The count feeds retransmit and suspicion sizing on every applied update, so
+   * it is kept incrementally instead of scanning the table per call. Reaping
+   * removes only terminal records and therefore never changes it.
+   */
+  #eligibleCount: number = 0;
 
   /**
    * Creates an empty local view for one stable advertised identity/address.
@@ -357,7 +355,7 @@ export class MembershipView {
 
   /** Returns a detached snapshot for an advertised identity/address, or `undefined` if absent. */
   get(name: string): MemberRecord | undefined {
-    const record = this.#records.get(name);
+    const record: StoredRecord | undefined = this.#records.get(name);
     return record === undefined ? undefined : snapshot(record);
   }
 
@@ -367,7 +365,7 @@ export class MembershipView {
    * This is the cheap read for hot selection paths: no snapshot or metadata copy is made.
    */
   stateOf(name: string): { readonly state: MemberState; readonly incarnation: number } | undefined {
-    const record = this.#records.get(name);
+    const record: StoredRecord | undefined = this.#records.get(name);
     if (record === undefined) {
       return undefined;
     }
@@ -406,14 +404,7 @@ export class MembershipView {
 
   /** Counts retained alive and suspect records; dead and left records are excluded. */
   aliveOrSuspectCount(): number {
-    let count = 0;
-    for (const record of this.#records.values()) {
-      if (isProbeEligibleState(record.state)) {
-        count += 1;
-      }
-    }
-
-    return count;
+    return this.#eligibleCount;
   }
 
   /**
@@ -422,7 +413,7 @@ export class MembershipView {
    * The original reporter appears first; absent and non-suspect members return an empty array.
    */
   confirmationReporters(member: string): readonly string[] {
-    const record = this.#records.get(member);
+    const record: StoredRecord | undefined = this.#records.get(member);
     return record?.state === STATE_SUSPECT ? Array.from(record.confirmations) : [];
   }
 
@@ -433,7 +424,7 @@ export class MembershipView {
    * `appliedAt + TERMINAL_RETENTION_MS`; absence and exact expiry are false.
    */
   isGossipEligible(name: string, now: number): boolean {
-    const record = this.#records.get(name);
+    const record: StoredRecord | undefined = this.#records.get(name);
     if (record === undefined) {
       return false;
     }
@@ -448,25 +439,48 @@ export class MembershipView {
    * Reports whether `apply` would treat `update` as an applicable self-accusation and
    * answer it with a generated higher-incarnation alive defense.
    *
-   * This is the single home of the self-refutation applicability rule: non-alive truth
-   * about `selfName` whose incarnation is at least the retained one (or with no retained
-   * record). It reads no clock and never mutates the view.
+   * This is the single home of the self-refutation applicability rule. Non-alive truth
+   * about `selfName` is applicable when its incarnation is at least the retained one (or
+   * no record is retained). An alive claim about `selfName` is also an accusation when
+   * local truth is alive and the claim carries a higher incarnation, or the same
+   * incarnation with different metadata: adopting it would silently replace local self
+   * truth, so it is answered with a re-announcement instead. An equal-incarnation echo
+   * with identical metadata is not an accusation. It reads no clock and never mutates
+   * the view.
    */
   wouldRefute(update: MembershipUpdate): boolean {
-    if (update.member !== this.#selfName || update.state === STATE_ALIVE) {
+    if (update.member !== this.#selfName) {
       return false;
     }
 
-    const current = this.#records.get(update.member);
-    return current === undefined || update.incarnation >= current.incarnation;
+    const current: StoredRecord | undefined = this.#records.get(update.member);
+    if (update.state !== STATE_ALIVE) {
+      return current === undefined || update.incarnation >= current.incarnation;
+    }
+
+    if (current === undefined || current.state !== STATE_ALIVE) {
+      return false;
+    }
+
+    if (update.incarnation > current.incarnation) {
+      return true;
+    }
+
+    return (
+      update.incarnation === current.incarnation && !bytesEqual(update.metadata, current.metadata)
+    );
   }
 
   /**
    * Applies one remotely observed update under incarnation/state precedence.
    *
-   * Applicable non-alive truth about `selfName` is refuted before normal replacement. For that
-   * path, `selfStateChangeTime` becomes the generated alive record's origin timestamp. Accepted
-   * metadata is copied, `now` is clamped to the view's last application time, and observable
+   * Applicable self-accusations, including remote alive claims about `selfName` that
+   * would otherwise replace local self truth, are refuted before normal replacement. For
+   * that path, `selfStateChangeTime` becomes the generated alive record's origin
+   * timestamp. Terminal truth about an identity with no retained record is ignored: a
+   * departure for a member this view never knew, or already reaped, must not resurrect a
+   * record, restart retention, or earn fresh dissemination budget. Accepted metadata is
+   * copied, `now` is clamped to the view's last application time, and observable
    * callbacks run synchronously after mutation.
    *
    * @throws {IncarnationExhaustedError} If self-refutation cannot increment incarnation.
@@ -477,9 +491,13 @@ export class MembershipView {
     now: number,
     selfStateChangeTime: bigint = incoming.stateChangeTime,
   ): ApplyResult {
-    const current = this.#records.get(incoming.member);
+    const current: StoredRecord | undefined = this.#records.get(incoming.member);
     if (this.wouldRefute(incoming)) {
       return this.#refute(incoming, current, now, selfStateChangeTime);
+    }
+
+    if (current === undefined && isTerminalState(incoming.state)) {
+      return { kind: "ignored" };
     }
 
     if (current !== undefined && compareMembershipUpdates(incoming, current) <= 0) {
@@ -498,7 +516,7 @@ export class MembershipView {
    * @throws {MembershipCapacityError} If accepting a new identity would exceed `MAX_MEMBERS`.
    */
   applyLocal(update: MembershipUpdate, now: number): ApplyResult {
-    const current = this.#records.get(update.member);
+    const current: StoredRecord | undefined = this.#records.get(update.member);
     if (current !== undefined && compareMembershipUpdates(update, current) <= 0) {
       return this.#confirmationOrIgnored(update, current);
     }
@@ -508,7 +526,7 @@ export class MembershipView {
 
   /** Creates a guarded reap token for terminal truth, or `undefined` if absent/nonterminal. */
   reapOperation(name: string): ReapOperation | undefined {
-    const record = this.#records.get(name);
+    const record: StoredRecord | undefined = this.#records.get(name);
     if (record === undefined || !isTerminalState(record.state)) {
       return undefined;
     }
@@ -533,7 +551,7 @@ export class MembershipView {
         continue;
       }
 
-      const operation = this.reapOperation(record.member);
+      const operation: ReapOperation | undefined = this.reapOperation(record.member);
       if (operation !== undefined && now >= operation.dueAt) {
         due.push(operation);
       }
@@ -550,7 +568,7 @@ export class MembershipView {
    * emits no event; callers are responsible for invoking it no earlier than `dueAt`.
    */
   reap(operation: ReapOperation): boolean {
-    const current = this.#records.get(operation.member);
+    const current: StoredRecord | undefined = this.#records.get(operation.member);
     if (
       current === undefined ||
       current.state !== operation.state ||
@@ -575,7 +593,7 @@ export class MembershipView {
     now: number,
     stateChangeTime: bigint,
   ): ApplyResult {
-    const base = Math.max(accusation.incarnation, current?.incarnation ?? 0);
+    const base: number = Math.max(accusation.incarnation, current?.incarnation ?? 0);
     if (base >= MAX_INCARNATION) {
       throw new IncarnationExhaustedError(base);
     }
@@ -590,7 +608,7 @@ export class MembershipView {
       metadata: current?.state === STATE_ALIVE ? copyBytes(current.metadata) : new Uint8Array(0),
     };
 
-    const result = this.#replace(alive, current, now, "refuted");
+    const result: ReplacementResult<"refuted"> = this.#replace(alive, current, now, "refuted");
 
     return {
       kind: "refuted",
@@ -645,9 +663,16 @@ export class MembershipView {
       throw new MembershipCapacityError();
     }
 
-    const appliedAt = Math.max(now, this.#lastAppliedAt);
+    const previousEligible: boolean =
+      previous !== undefined && isProbeEligibleState(previous.state);
+    const nextEligible: boolean = isProbeEligibleState(incoming.state);
+    if (previousEligible !== nextEligible) {
+      this.#eligibleCount += nextEligible ? 1 : -1;
+    }
+
+    const appliedAt: number = Math.max(now, this.#lastAppliedAt);
     this.#lastAppliedAt = appliedAt;
-    const confirmations = new Set<string>();
+    const confirmations: Set<string> = new Set<string>();
     if (incoming.state === STATE_SUSPECT) {
       confirmations.add(incoming.reporter);
     }
@@ -666,9 +691,9 @@ export class MembershipView {
 
     this.#records.set(incoming.member, stored);
 
-    const record = snapshot(stored);
-    const type = eventType(previous, stored);
-    const event =
+    const record: MemberRecord = snapshot(stored);
+    const type: MembershipEventType | undefined = eventType(previous, stored);
+    const event: MembershipEvent | undefined =
       type === undefined
         ? undefined
         : {

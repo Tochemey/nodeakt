@@ -22,7 +22,7 @@
  * SOFTWARE.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -51,13 +51,13 @@ function importsOf(filePath: string): string[] {
 }
 
 function sourceFiles(directory: string): string[] {
-  if (!existsSync(directory)) {
-    return [];
-  }
-
-  return readdirSync(directory)
+  // A missing or empty package directory must fail the boundary loudly: a
+  // silent empty list would let a rename disable enforcement with a green run.
+  const files: string[] = readdirSync(directory)
     .filter((name: string): boolean => name.endsWith(".ts"))
     .map((name: string): string => join(directory, name));
+  expect(files.length, `no sources found under ${directory}`).toBeGreaterThan(0);
+  return files;
 }
 
 describe("the net boundary", () => {

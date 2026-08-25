@@ -27,10 +27,11 @@ import type { Clock, ClockTimer } from "../../src/membership/clock";
 import {
   type SuspicionExpiry,
   SuspicionManager,
+  type SuspicionStart,
   suspicionBounds,
   suspicionDeadline,
 } from "../../src/membership/suspicion";
-import { MembershipView } from "../../src/membership/view";
+import { type ApplyResult, MembershipView } from "../../src/membership/view";
 import { type MembershipUpdate, STATE_ALIVE, STATE_SUSPECT } from "../../src/membership/wire";
 import { SimClock } from "./sim";
 
@@ -60,10 +61,10 @@ function alive(member: string): MembershipUpdate {
 
 function start(
   manager: SuspicionManager,
-  incarnation = 4,
-  reporter = "original",
-  memberCount = 1,
-  effectivePeriod = 1_000,
+  incarnation: number = 4,
+  reporter: string = "original",
+  memberCount: number = 1,
+  effectivePeriod: number = 1_000,
 ): boolean {
   return manager.start({
     member: "target",
@@ -75,7 +76,7 @@ function start(
 }
 
 class InspectableClock implements Clock {
-  readonly inner = new SimClock();
+  readonly inner: SimClock = new SimClock();
   readonly callbacks: Array<() => void> = [];
 
   now(): number {
@@ -129,16 +130,16 @@ describe("suspicion arithmetic", () => {
 
 describe("suspicion confirmations", () => {
   it("composes with view confirmations and excludes duplicate and original reporters", () => {
-    const clock = new SimClock();
-    const manager = new SuspicionManager(clock, (): void => {});
-    const view = new MembershipView("self");
+    const clock: SimClock = new SimClock();
+    const manager: SuspicionManager = new SuspicionManager(clock, (): void => {});
+    const view: MembershipView = new MembershipView("self");
     view.applyLocal(alive("self"), clock.now());
     view.applyLocal(alive("peer"), clock.now());
     view.apply(suspect("target", 4, "original"), clock.now());
 
     start(manager, 4, "original", view.aliveOrSuspectCount());
     for (const reporter of ["original", "second", "second", "third"]) {
-      const result = view.apply(suspect("target", 4, reporter), clock.now());
+      const result: ApplyResult = view.apply(suspect("target", 4, reporter), clock.now());
       if (result.kind === "confirmed") {
         manager.confirm(result.member, result.incarnation, result.reporter);
       }
@@ -152,8 +153,8 @@ describe("suspicion confirmations", () => {
   });
 
   it("caps confirmations at three distinct later reporters", () => {
-    const clock = new SimClock();
-    const manager = new SuspicionManager(clock, (): void => {});
+    const clock: SimClock = new SimClock();
+    const manager: SuspicionManager = new SuspicionManager(clock, (): void => {});
     start(manager);
 
     expect(manager.confirm("target", 4, "one")).toBe(true);
@@ -169,8 +170,8 @@ describe("suspicion confirmations", () => {
   });
 
   it("reduces absolute deadlines without restarting from confirmation time", () => {
-    const clock = new SimClock();
-    const manager = new SuspicionManager(clock, (): void => {});
+    const clock: SimClock = new SimClock();
+    const manager: SuspicionManager = new SuspicionManager(clock, (): void => {});
     clock.advanceTo(100);
     start(manager);
 
@@ -184,11 +185,14 @@ describe("suspicion confirmations", () => {
   });
 
   it("expires immediately when a reduced absolute deadline is already past", () => {
-    const clock = new SimClock();
+    const clock: SimClock = new SimClock();
     const expiries: SuspicionExpiry[] = [];
-    const manager = new SuspicionManager(clock, (expiry: SuspicionExpiry): void => {
-      expiries.push(expiry);
-    });
+    const manager: SuspicionManager = new SuspicionManager(
+      clock,
+      (expiry: SuspicionExpiry): void => {
+        expiries.push(expiry);
+      },
+    );
     start(manager);
 
     clock.advanceTo(10_000);
@@ -203,11 +207,14 @@ describe("suspicion confirmations", () => {
 
 describe("suspicion lifecycle guards", () => {
   it("expires at the deterministic maximum and exposes the dead/broadcast seam", () => {
-    const clock = new SimClock();
+    const clock: SimClock = new SimClock();
     const expiries: SuspicionExpiry[] = [];
-    const manager = new SuspicionManager(clock, (expiry: SuspicionExpiry): void => {
-      expiries.push(expiry);
-    });
+    const manager: SuspicionManager = new SuspicionManager(
+      clock,
+      (expiry: SuspicionExpiry): void => {
+        expiries.push(expiry);
+      },
+    );
     start(manager);
 
     clock.advanceTo(23_999);
@@ -218,11 +225,14 @@ describe("suspicion lifecycle guards", () => {
   });
 
   it("cancels only through matching or newer superseding incarnations", () => {
-    const clock = new SimClock();
+    const clock: SimClock = new SimClock();
     const expiries: SuspicionExpiry[] = [];
-    const manager = new SuspicionManager(clock, (expiry: SuspicionExpiry): void => {
-      expiries.push(expiry);
-    });
+    const manager: SuspicionManager = new SuspicionManager(
+      clock,
+      (expiry: SuspicionExpiry): void => {
+        expiries.push(expiry);
+      },
+    );
     start(manager, 5);
 
     expect(manager.cancelThrough("target", 4)).toBe(false);
@@ -234,8 +244,8 @@ describe("suspicion lifecycle guards", () => {
   });
 
   it("replaces only with a higher incarnation and preserves equal starts", () => {
-    const clock = new SimClock();
-    const manager = new SuspicionManager(clock, (): void => {});
+    const clock: SimClock = new SimClock();
+    const manager: SuspicionManager = new SuspicionManager(clock, (): void => {});
     expect(start(manager, 4, "first")).toBe(true);
     clock.advanceTo(1_000);
     expect(start(manager, 4, "equal")).toBe(false);
@@ -262,9 +272,9 @@ describe("suspicion lifecycle guards", () => {
   });
 
   it("rejects empty member and reporter identities", () => {
-    const clock = new SimClock();
-    const manager = new SuspicionManager(clock, (): void => {});
-    const valid = {
+    const clock: SimClock = new SimClock();
+    const manager: SuspicionManager = new SuspicionManager(clock, (): void => {});
+    const valid: SuspicionStart = {
       member: "target",
       incarnation: 1,
       reporter: "reporter",
@@ -277,13 +287,16 @@ describe("suspicion lifecycle guards", () => {
   });
 
   it("ignores stale cancelled callbacks after reschedule, replacement, and cancellation", () => {
-    const clock = new InspectableClock();
+    const clock: InspectableClock = new InspectableClock();
     const expiries: SuspicionExpiry[] = [];
-    const manager = new SuspicionManager(clock, (expiry: SuspicionExpiry): void => {
-      expiries.push(expiry);
-    });
+    const manager: SuspicionManager = new SuspicionManager(
+      clock,
+      (expiry: SuspicionExpiry): void => {
+        expiries.push(expiry);
+      },
+    );
     start(manager, 4);
-    const initial = clock.callbacks[0];
+    const initial: (() => void) | undefined = clock.callbacks[0];
     if (initial === undefined) {
       throw new Error("expected initial timer callback");
     }
@@ -292,7 +305,7 @@ describe("suspicion lifecycle guards", () => {
     initial();
     expect(manager.get("target")?.incarnation).toBe(4);
 
-    const reduced = clock.callbacks[1];
+    const reduced: (() => void) | undefined = clock.callbacks[1];
     if (reduced === undefined) {
       throw new Error("expected reduced timer callback");
     }
@@ -300,7 +313,7 @@ describe("suspicion lifecycle guards", () => {
     reduced();
     expect(manager.get("target")?.incarnation).toBe(5);
 
-    const replacement = clock.callbacks[2];
+    const replacement: (() => void) | undefined = clock.callbacks[2];
     if (replacement === undefined) {
       throw new Error("expected replacement timer callback");
     }
@@ -309,9 +322,62 @@ describe("suspicion lifecycle guards", () => {
     expect(expiries).toEqual([]);
   });
 
+  it("reschedules a timer that fires before its recorded deadline", () => {
+    const clock: InspectableClock = new InspectableClock();
+    const expiries: SuspicionExpiry[] = [];
+    const manager: SuspicionManager = new SuspicionManager(
+      clock,
+      (expiry: SuspicionExpiry): void => {
+        expiries.push(expiry);
+      },
+    );
+    start(manager, 4);
+    const premature: (() => void) | undefined = clock.callbacks[0];
+    if (premature === undefined) {
+      throw new Error("expected initial timer callback");
+    }
+
+    // The host timer turn arrives before the recorded absolute deadline: the
+    // remainder must be rescheduled instead of expiring or orphaning the record.
+    premature();
+    expect(expiries).toEqual([]);
+    expect(manager.get("target")).toBeDefined();
+
+    clock.inner.advanceBy(24_000);
+    expect(expiries).toEqual([{ member: "target", incarnation: 4 }]);
+  });
+
+  it("cancels a record whose timer never armed because scheduling failed", () => {
+    const clock: InspectableClock = new InspectableClock();
+    let failNextSchedule: boolean = true;
+    const throwingClock: Clock = {
+      now: (): number => clock.now(),
+      epochMilliseconds: (): number => clock.epochMilliseconds(),
+      schedule: (delayMs: number, callback: () => void): ClockTimer => {
+        if (failNextSchedule) {
+          failNextSchedule = false;
+          throw new RangeError("host timer unavailable");
+        }
+
+        return clock.schedule(delayMs, callback);
+      },
+      cancel: (timer: ClockTimer): void => {
+        clock.cancel(timer);
+      },
+    };
+    const manager: SuspicionManager = new SuspicionManager(throwingClock, (): void => {});
+
+    expect((): void => {
+      start(manager);
+    }).toThrow("host timer unavailable");
+    expect(manager.size).toBe(1);
+    manager.cancelAll();
+    expect(manager.size).toBe(0);
+  });
+
   it("cancels every active timer idempotently", () => {
-    const clock = new SimClock();
-    const manager = new SuspicionManager(clock, (): void => {});
+    const clock: SimClock = new SimClock();
+    const manager: SuspicionManager = new SuspicionManager(clock, (): void => {});
     start(manager);
     manager.start({
       member: "other",

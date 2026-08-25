@@ -26,11 +26,11 @@ import type { Clock, ClockTimer } from "./clock";
 import { MAX_INCARNATION } from "./view";
 
 /** Lifeguard factor `α = 4` in `minimum = α × ceil(log10(n + 1)) × period`. @internal */
-export const SUSPICION_MULTIPLIER = 4;
+export const SUSPICION_MULTIPLIER: number = 4;
 /** Lifeguard factor `β = 6` in `maximum = β × minimum`. @internal */
-export const SUSPICION_MAX_MULTIPLIER = 6;
+export const SUSPICION_MAX_MULTIPLIER: number = 6;
 /** Lifeguard confirmation target `K`; the `K`th confirmation reaches `minimum`. @internal */
-export const SUSPICION_CONFIRMATION_TARGET = 3;
+export const SUSPICION_CONFIRMATION_TARGET: number = 3;
 
 /**
  * Immutable duration bounds captured when one suspicion starts.
@@ -112,8 +112,6 @@ interface StoredSuspicion extends SuspicionExpiry, SuspicionBounds {
   readonly reporter: string;
   /** Distinct accepted reporters, owned exclusively by the manager. */
   readonly confirmationReporters: Set<string>;
-  /** Cached set size, capped at the canonical confirmation target. */
-  confirmationCount: number;
   /** Current absolute clock-local deadline in milliseconds. */
   deadline: number;
   /** Generation token invalidating callbacks from cancelled or replaced timers. */
@@ -190,9 +188,9 @@ function requireSafeTime(value: number, field: string): void {
 export function suspicionBounds(memberCount: number, effectivePeriod: number): SuspicionBounds {
   requireNonNegativeSafeInteger(memberCount, "member count");
   requirePositiveSafeInteger(effectivePeriod, "effective period");
-  const count = Math.max(1, memberCount);
-  const minimum = SUSPICION_MULTIPLIER * Math.ceil(Math.log10(count + 1)) * effectivePeriod;
-  const maximum = SUSPICION_MAX_MULTIPLIER * minimum;
+  const count: number = Math.max(1, memberCount);
+  const minimum: number = SUSPICION_MULTIPLIER * Math.ceil(Math.log10(count + 1)) * effectivePeriod;
+  const maximum: number = SUSPICION_MAX_MULTIPLIER * minimum;
   requirePositiveSafeInteger(minimum, "minimum suspicion timeout");
   requirePositiveSafeInteger(maximum, "maximum suspicion timeout");
   return { minimum, maximum };
@@ -224,7 +222,7 @@ export function suspicionDeadline(
   minimum: number,
   maximum: number,
   confirmationCount: number,
-  confirmationTarget = SUSPICION_CONFIRMATION_TARGET,
+  confirmationTarget: number = SUSPICION_CONFIRMATION_TARGET,
 ): number {
   requireSafeTime(start, "start");
   requirePositiveSafeInteger(minimum, "minimum suspicion timeout");
@@ -235,22 +233,23 @@ export function suspicionDeadline(
     throw new RangeError("maximum suspicion timeout must not be less than minimum");
   }
 
-  const count = Math.min(confirmationCount, confirmationTarget);
+  const count: number = Math.min(confirmationCount, confirmationTarget);
   if (count === 0) {
-    const deadline = start + maximum;
+    const deadline: number = start + maximum;
     requireSafeTime(deadline, "suspicion deadline");
     return deadline;
   }
 
   if (count === confirmationTarget) {
-    const deadline = start + minimum;
+    const deadline: number = start + minimum;
     requireSafeTime(deadline, "suspicion deadline");
     return deadline;
   }
 
-  const decay = ((maximum - minimum) * Math.log(count + 1)) / Math.log(confirmationTarget + 1);
-  const duration = maximum - Math.floor(decay);
-  const deadline = start + duration;
+  const decay: number =
+    ((maximum - minimum) * Math.log(count + 1)) / Math.log(confirmationTarget + 1);
+  const duration: number = maximum - Math.floor(decay);
+  const deadline: number = start + duration;
   requireSafeTime(deadline, "suspicion deadline");
   return deadline;
 }
@@ -269,7 +268,7 @@ function snapshot(suspicion: StoredSuspicion): ActiveSuspicion {
     minimum: suspicion.minimum,
     maximum: suspicion.maximum,
     reporter: suspicion.reporter,
-    confirmationCount: suspicion.confirmationCount,
+    confirmationCount: suspicion.confirmationReporters.size,
     confirmationReporters: Array.from(suspicion.confirmationReporters),
   };
 }
@@ -291,7 +290,7 @@ export class SuspicionManager {
   /** Consumer callback invoked synchronously after expired state is removed. */
   readonly #onExpire: (expiry: SuspicionExpiry) => void;
   /** Manager-owned active records keyed by member identity. */
-  readonly #active = new Map<string, StoredSuspicion>();
+  readonly #active: Map<string, StoredSuspicion> = new Map<string, StoredSuspicion>();
 
   /**
    * Creates an empty manager.
@@ -321,7 +320,7 @@ export class SuspicionManager {
    * @returns A detached snapshot, or `undefined` when no suspicion is active.
    */
   get(member: string): ActiveSuspicion | undefined {
-    const active = this.#active.get(member);
+    const active: StoredSuspicion | undefined = this.#active.get(member);
     return active === undefined ? undefined : snapshot(active);
   }
 
@@ -350,14 +349,14 @@ export class SuspicionManager {
       throw new RangeError("reporter must not be empty");
     }
 
-    const current = this.#active.get(input.member);
+    const current: StoredSuspicion | undefined = this.#active.get(input.member);
     if (current !== undefined && input.incarnation <= current.incarnation) {
       return false;
     }
 
-    const start = this.#clock.now();
+    const start: number = this.#clock.now();
     requireSafeTime(start, "clock time");
-    const bounds = suspicionBounds(input.memberCount, input.effectivePeriod);
+    const bounds: SuspicionBounds = suspicionBounds(input.memberCount, input.effectivePeriod);
     const active: StoredSuspicion = {
       member: input.member,
       incarnation: input.incarnation,
@@ -365,7 +364,6 @@ export class SuspicionManager {
       start,
       minimum: bounds.minimum,
       maximum: bounds.maximum,
-      confirmationCount: 0,
       confirmationReporters: new Set<string>(),
       deadline: suspicionDeadline(start, bounds.minimum, bounds.maximum, 0),
       revision: 0,
@@ -403,24 +401,23 @@ export class SuspicionManager {
    */
   confirm(member: string, incarnation: number, reporter: string): boolean {
     requireIncarnation(incarnation);
-    const active = this.#active.get(member);
+    const active: StoredSuspicion | undefined = this.#active.get(member);
     if (
       active === undefined ||
       active.incarnation !== incarnation ||
       reporter === active.reporter ||
       active.confirmationReporters.has(reporter) ||
-      active.confirmationCount >= SUSPICION_CONFIRMATION_TARGET
+      active.confirmationReporters.size >= SUSPICION_CONFIRMATION_TARGET
     ) {
       return false;
     }
 
     active.confirmationReporters.add(reporter);
-    active.confirmationCount += 1;
     active.deadline = suspicionDeadline(
       active.start,
       active.minimum,
       active.maximum,
-      active.confirmationCount,
+      active.confirmationReporters.size,
     );
     this.#cancelTimer(active);
     active.revision += 1;
@@ -447,7 +444,7 @@ export class SuspicionManager {
    */
   cancelThrough(member: string, incarnation: number): boolean {
     requireIncarnation(incarnation);
-    const active = this.#active.get(member);
+    const active: StoredSuspicion | undefined = this.#active.get(member);
     if (active === undefined || active.incarnation > incarnation) {
       return false;
     }
@@ -480,8 +477,8 @@ export class SuspicionManager {
    * rather than faulting the packet-processing path with a negative delay.
    */
   #schedule(active: StoredSuspicion): void {
-    const revision = active.revision;
-    const delay = Math.max(0, active.deadline - this.#clock.now());
+    const revision: number = active.revision;
+    const delay: number = Math.max(0, active.deadline - this.#clock.now());
     active.timer = this.#clock.schedule(delay, (): void => {
       this.#expire(active, revision);
     });

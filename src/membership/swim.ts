@@ -24,11 +24,12 @@
 
 import { BroadcastQueue } from "./broadcast";
 import type { Clock, ClockTimer } from "./clock";
-import { Probe, type ProbeFailure } from "./probe";
+import { BASE_PROTOCOL_PERIOD_MS, Probe, type ProbeFailure } from "./probe";
 import type { Random } from "./random";
 import { type SuspicionExpiry, SuspicionManager } from "./suspicion";
 import {
   AntiEntropy,
+  applyRemoteTruth,
   cancelSupersededSuspicion,
   fanoutLeave,
   join as joinSeeds,
@@ -40,10 +41,14 @@ import {
 } from "./sync";
 import type { MembershipTransport } from "./transport";
 import {
+  type ApplyResult,
+  IncarnationExhaustedError,
   isProbeEligibleState,
   type MemberRecord,
+  MembershipCapacityError,
   type MembershipEvent,
   type MembershipView,
+  type ReapOperation,
   MembershipView as View,
 } from "./view";
 import {
@@ -101,6 +106,34 @@ export interface SwimOptions {
   readonly onEvent?: (event: MembershipEvent) => void;
 }
 
+/** Externally settled promise pair used to publish a shared lifecycle promise early. */
+interface Deferred {
+  /** Promise handed to every caller sharing the operation. */
+  readonly promise: Promise<void>;
+  /** Resolves the shared promise. */
+  readonly resolve: () => void;
+  /** Rejects the shared promise. */
+  readonly reject: (reason: unknown) => void;
+}
+
+/**
+ * Creates a promise whose settlement is owned by the caller, so the shared
+ * promise field can be installed before synchronous work that may reenter
+ * the public API through the view's synchronous event callback.
+ */
+function deferred(): Deferred {
+  let resolve!: () => void;
+  let reject!: (reason: unknown) => void;
+  const promise: Promise<void> = new Promise<void>(
+    (res: () => void, rej: (reason: unknown) => void): void => {
+      resolve = res;
+      reject = rej;
+    },
+  );
+
+  return { promise, resolve, reject };
+}
+
 /**
  * Composed membership engine and sole owner of the shared transport
  * listener. It coordinates detection, suspicion, dissemination, sync,
@@ -120,7 +153,7 @@ export class Swim {
   /** Authoritative retained membership table for this engine. */
   readonly #view: MembershipView;
   /** Shared dissemination queue for all newly accepted local knowledge. */
-  readonly #broadcasts = new BroadcastQueue();
+  readonly #broadcasts: BroadcastQueue = new BroadcastQueue();
   /** Owns suspect-to-dead timers and confirmation acceleration. */
   readonly #suspicion: SuspicionManager;
   /** Owns packet probing/gossip but not the shared transport listener. */
@@ -130,7 +163,7 @@ export class Swim {
   /** Periodic non-overlapping push-pull scheduler. */
   readonly #antiEntropy: AntiEntropy;
   /** One terminal-record retention timer per canonical member identity. */
-  readonly #reapTimers = new Map<string, ClockTimer>();
+  readonly #reapTimers: Map<string, ClockTimer> = new Map<string, ClockTimer>();
   /** Current single-use engine lifecycle. */
   #state: SwimLifecycle = "new";
   /** Promise shared by callers observing the in-progress initial start. */
@@ -142,7 +175,7 @@ export class Swim {
   /** Idempotent resolver allowing `stop` to shorten an active leave drain. */
   #finishDrain: (() => void) | undefined;
   /** Sticky marker distinguishing successful/attempted graceful leave from plain stop. */
-  #left = false;
+  #left: boolean = false;
 
   /**
    * Validates identity/metadata, defensively captures options, and wires all
@@ -193,15 +226,14 @@ export class Swim {
       outboundAllowed: (): boolean => this.#state === "started",
       inboundAllowed: (): boolean =>
         this.#state === "starting" || this.#state === "started" || this.#state === "leaving",
-      acceptUpdate: (update): boolean =>
-        !(this.#state === "leaving" && update.member === this.#address),
+      acceptUpdate: (update): boolean => !(this.#shieldsSelf() && update.member === this.#address),
       callbacks: {
-        applied: (update): void => this.#truthApplied(update),
-        cancelSuspicion: (member, incarnation): void => {
-          this.#suspicion.cancelThrough(member, incarnation);
+        applied: (update): void => {
+          this.#truthApplied(update);
+          this.#armRemoteSuspicion(update);
         },
-        confirmSuspicion: (member, incarnation, reporter): void => {
-          this.#suspicion.confirm(member, incarnation, reporter);
+        confirmSuspicion: (update): void => {
+          this.#confirmSuspicion(update);
         },
         selfRefuted: (): void => {
           this.#probe.selfRefute();
@@ -249,25 +281,36 @@ export class Swim {
       return Promise.reject(new SwimLifecycleError("start", this.#state));
     }
 
+    // The shared promise is installed before any synchronous work: the view's
+    // synchronous `joined` event fires inside applyLocal, and a reentrant
+    // start() from that callback must observe the promise, not undefined.
+    const starting: Deferred = deferred();
+    this.#startPromise = starting.promise;
     this.#state = "starting";
-    const alive: MembershipUpdate = {
-      state: STATE_ALIVE,
-      selfOriginated: true,
-      incarnation: 0,
-      stateChangeTime: this.#stateChangeTime(),
-      member: this.#address,
-      reporter: "",
-      metadata: this.#metadata,
-    };
+    try {
+      const alive: MembershipUpdate = {
+        state: STATE_ALIVE,
+        selfOriginated: true,
+        incarnation: 0,
+        stateChangeTime: this.#stateChangeTime(),
+        member: this.#address,
+        reporter: "",
+        metadata: this.#metadata,
+      };
 
-    // A retry after a failed start finds the record already installed and
-    // enqueued; only a first attempt applies and disseminates it.
-    const installed = this.#view.applyLocal(alive, this.#clock.now());
-    if (installed.kind === "applied") {
-      this.#broadcasts.enqueue(installed.record, this.#view.aliveOrSuspectCount());
+      // A retry after a failed start finds the record already installed and
+      // enqueued; only a first attempt applies and disseminates it.
+      const installed: ApplyResult = this.#view.applyLocal(alive, this.#clock.now());
+      if (installed.kind === "applied") {
+        this.#broadcasts.enqueue(installed.record, this.#view.aliveOrSuspectCount());
+      }
+    } catch (error) {
+      this.#state = "new";
+      starting.reject(error);
+      return starting.promise;
     }
 
-    const starting = this.#transport
+    this.#transport
       .start({
         packet: (from, bytes): void => {
           this.#probe.receivePacket(from, bytes);
@@ -295,9 +338,9 @@ export class Swim {
         }
 
         throw error;
-      });
-    this.#startPromise = starting;
-    return starting;
+      })
+      .then(starting.resolve, starting.reject);
+    return starting.promise;
   }
 
   /**
@@ -336,10 +379,18 @@ export class Swim {
       return Promise.reject(new SwimLifecycleError("leave", this.#state));
     }
 
-    const update = this.#beginLeave();
-    const leaving = this.#completeLeave(update);
-    this.#leavePromise = leaving;
-    return leaving;
+    // Installed before the synchronous `left` event fires inside #beginLeave,
+    // so a reentrant leave() observes the shared promise, not undefined.
+    const leaving: Deferred = deferred();
+    this.#leavePromise = leaving.promise;
+    try {
+      const update: MembershipUpdate = this.#beginLeave();
+      this.#completeLeave(update).then(leaving.resolve, leaving.reject);
+    } catch (error) {
+      leaving.reject(error);
+    }
+
+    return leaving.promise;
   }
 
   /**
@@ -356,10 +407,11 @@ export class Swim {
       return this.#stopPromise as Promise<void>;
     }
 
-    const wasLeaving = this.#state === "leaving";
-    const starting = this.#state === "starting" ? this.#startPromise : undefined;
+    const wasLeaving: boolean = this.#state === "leaving";
+    const starting: Promise<void> | undefined =
+      this.#state === "starting" ? this.#startPromise : undefined;
     this.#prepareStop();
-    const stopping = this.#completeStop(starting, wasLeaving);
+    const stopping: Promise<void> = this.#completeStop(starting, wasLeaving);
     this.#stopPromise = stopping;
     return stopping;
   }
@@ -377,7 +429,7 @@ export class Swim {
     this.#cancelReaps();
 
     // Reaching started requires the local alive record to have been installed.
-    const current = this.#view.self();
+    const current: MemberRecord | undefined = this.#view.self();
     if (current === undefined) {
       throw new Error("cannot begin leave: the local member record was never installed");
     }
@@ -413,7 +465,7 @@ export class Swim {
   #drainLeave(): Promise<void> {
     return new Promise<void>((resolve): void => {
       let timer: ClockTimer;
-      const finish = (): void => {
+      const finish: () => void = (): void => {
         this.#finishDrain = undefined;
         this.#clock.cancel(timer);
         resolve();
@@ -435,17 +487,21 @@ export class Swim {
 
   /**
    * Waits for startup cleanup or graceful-leave ownership before shutting down,
-   * then establishes the terminal `stopped` state.
+   * then establishes the terminal `stopped` state. The terminal state is set
+   * even when shutdown rejects: by then every resource has been asked to close,
+   * and a caller polling the lifecycle must never observe `stopping` forever.
    */
   async #completeStop(starting: Promise<void> | undefined, wasLeaving: boolean): Promise<void> {
-    await starting?.catch((): void => undefined);
-    if (wasLeaving) {
-      await this.#leavePromise?.catch((): void => undefined);
-    } else {
-      await this.#shutdown();
+    try {
+      await starting?.catch((): void => undefined);
+      if (wasLeaving) {
+        await this.#leavePromise?.catch((): void => undefined);
+      } else {
+        await this.#shutdown();
+      }
+    } finally {
+      this.#state = "stopped";
     }
-
-    this.#state = "stopped";
   }
 
   /**
@@ -466,6 +522,11 @@ export class Swim {
     return BigInt(this.#clock.epochMilliseconds());
   }
 
+  /** Reports whether remote truth about self must be ignored to protect terminal local truth. */
+  #shieldsSelf(): boolean {
+    return this.#state === "leaving" || this.#state === "stopping" || this.#state === "stopped";
+  }
+
   /** Applies decoded updates synchronously in wire order. */
   #applyUpdates(updates: readonly MembershipUpdate[]): void {
     for (const update of updates) {
@@ -474,36 +535,63 @@ export class Swim {
   }
 
   /**
-   * Merges one remote update, then enqueues and runs coupled state maintenance.
-   * During leave and shutdown, remote truth about self is ignored so terminal
-   * local truth cannot be disturbed or refuted after the engine stopped probing.
+   * Merges one remote update through the shared ingestion pipeline. During
+   * leave and shutdown, remote truth about self is ignored so terminal local
+   * truth cannot be disturbed or refuted after the engine stopped probing.
    */
   #applyUpdate(update: MembershipUpdate): void {
-    const shieldSelf =
-      this.#state === "leaving" || this.#state === "stopping" || this.#state === "stopped";
-    if (shieldSelf && update.member === this.#address) {
+    if (this.#shieldsSelf() && update.member === this.#address) {
       return;
     }
 
-    const result = this.#view.apply(update, this.#clock.now(), this.#stateChangeTime());
-    if (result.kind === "confirmed") {
-      this.#suspicion.confirm(result.member, result.incarnation, result.reporter);
+    try {
+      applyRemoteTruth(this.#syncOptions, update);
+    } catch (error) {
+      // A wire-legal record can still be unapplicable: a self accusation at the
+      // maximum incarnation cannot be answered, and a new identity cannot exceed
+      // table capacity. The record is dropped so one bad update cannot abort the
+      // rest of its packet or destroy the connection that carried it; the sync
+      // path rejects the same conditions during preflight instead.
+      if (error instanceof IncarnationExhaustedError || error instanceof MembershipCapacityError) {
+        return;
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Confirms an equal-incarnation suspect record from a distinct accuser and,
+   * when the local timer accepted the evidence, re-disseminates the corroborating
+   * record. Without re-dissemination the corroboration would die here: the queue
+   * rejects equal-precedence truth, remote confirmation counts would stall at the
+   * original accuser, and Lifeguard deadline decay would never engage.
+   */
+  #confirmSuspicion(update: MembershipUpdate): void {
+    if (this.#suspicion.confirm(update.member, update.incarnation, update.reporter)) {
+      this.#broadcasts.enqueueConfirmation(update, this.#view.aliveOrSuspectCount());
+    }
+  }
+
+  /**
+   * Arms a local suspicion timer for suspect truth learned from another node,
+   * so every member that knows of a suspicion owns an expiry deadline and dead
+   * declaration cannot depend on the original accuser staying alive. Locally
+   * detected failures arm their timer on the probe path with the failed
+   * probe's captured period instead.
+   */
+  #armRemoteSuspicion(update: MembershipUpdate): void {
+    if (update.state !== STATE_SUSPECT || update.member === this.#address) {
       return;
     }
 
-    if (result.kind === "ignored") {
-      return;
-    }
-
-    this.#broadcasts.enqueue(
-      result.record,
-      this.#view.aliveOrSuspectCount(),
-      result.kind === "refuted",
-    );
-    this.#truthApplied(result.record);
-    if (result.kind === "refuted") {
-      this.#probe.selfRefute();
-    }
+    this.#suspicion.start({
+      member: update.member,
+      incarnation: update.incarnation,
+      reporter: update.reporter,
+      memberCount: this.#view.aliveOrSuspectCount(),
+      effectivePeriod: BASE_PROTOCOL_PERIOD_MS * this.#probe.scale,
+    });
   }
 
   /**
@@ -518,7 +606,7 @@ export class Swim {
       return false;
     }
 
-    const current = this.#view.get(failure.target);
+    const current: MemberRecord | undefined = this.#view.get(failure.target);
     if (
       current === undefined ||
       current.incarnation !== failure.incarnation ||
@@ -537,7 +625,11 @@ export class Swim {
       metadata: new Uint8Array(0),
     };
 
-    const result = this.#view.apply(suspect, this.#clock.now(), this.#stateChangeTime());
+    const result: ApplyResult = this.#view.apply(
+      suspect,
+      this.#clock.now(),
+      this.#stateChangeTime(),
+    );
     if (result.kind === "applied") {
       this.#broadcasts.enqueue(result.record, this.#view.aliveOrSuspectCount());
       this.#truthApplied(result.record);
@@ -545,13 +637,13 @@ export class Swim {
     }
 
     if (result.kind === "confirmed") {
-      this.#suspicion.confirm(result.member, result.incarnation, result.reporter);
+      this.#confirmSuspicion(suspect);
       return true;
     }
 
     // An ignored result with retained suspect truth means this node is already
     // a recorded reporter; the local timer must still exist.
-    const retained = this.#view.get(failure.target);
+    const retained: MemberRecord | undefined = this.#view.get(failure.target);
     return retained?.state === STATE_SUSPECT && retained.incarnation === failure.incarnation;
   }
 
@@ -561,7 +653,7 @@ export class Swim {
       return;
     }
 
-    const current = this.#view.get(expiry.member);
+    const current: MemberRecord | undefined = this.#view.get(expiry.member);
     if (
       current === undefined ||
       current.state !== STATE_SUSPECT ||
@@ -588,7 +680,7 @@ export class Swim {
    * Returns `true` only when the view accepted a new record.
    */
   #applyLocalTruth(update: MembershipUpdate): boolean {
-    const result = this.#view.applyLocal(update, this.#clock.now());
+    const result: ApplyResult = this.#view.applyLocal(update, this.#clock.now());
     if (result.kind !== "applied") {
       return false;
     }
@@ -627,12 +719,12 @@ export class Swim {
   #scheduleReap(member: string): void {
     this.#cancelReap(member);
     // Terminal truth is retained before this method is called.
-    const operation = this.#view.reapOperation(member);
+    const operation: ReapOperation | undefined = this.#view.reapOperation(member);
     if (operation === undefined) {
       throw new Error(`cannot schedule a reap for ${member} without retained terminal truth`);
     }
 
-    const timer = this.#clock.schedule(
+    const timer: ClockTimer = this.#clock.schedule(
       Math.max(0, operation.dueAt - this.#clock.now()),
       (): void => {
         if (this.#reapTimers.get(member) !== timer) {
@@ -648,7 +740,7 @@ export class Swim {
 
   /** Cancels and forgets the owned retention timer for one member, if present. */
   #cancelReap(member: string): void {
-    const timer = this.#reapTimers.get(member);
+    const timer: ClockTimer | undefined = this.#reapTimers.get(member);
     if (timer !== undefined) {
       this.#clock.cancel(timer);
       this.#reapTimers.delete(member);

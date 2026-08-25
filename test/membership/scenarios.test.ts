@@ -25,32 +25,9 @@
 import { describe, expect, it } from "vitest";
 import { SeededRandom } from "../../src/membership/random";
 import { Swim } from "../../src/membership/swim";
+import type { MemberRecord } from "../../src/membership/view";
 import { STATE_ALIVE, STATE_DEAD, STATE_LEFT, STATE_SUSPECT } from "../../src/membership/wire";
-import { SimNetwork } from "./sim";
-
-async function flush(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-}
-
-async function settle<T>(network: SimNetwork, operation: Promise<T>): Promise<T> {
-  let done = false;
-  void operation.then(
-    (): void => {
-      done = true;
-    },
-    (): void => {
-      done = true;
-    },
-  );
-  for (let turn = 0; !done && turn < 200; turn += 1) {
-    await flush();
-    if (!done) {
-      network.clock.runNext();
-    }
-  }
-  return operation;
-}
+import { flush, SimNetwork, settle } from "./sim";
 
 async function advance(network: SimNetwork, milliseconds: number): Promise<void> {
   network.clock.advanceBy(milliseconds);
@@ -70,7 +47,7 @@ function node(network: SimNetwork, address: string, randomSeed: number): Swim {
 }
 
 async function started(network: SimNetwork, names: readonly string[]): Promise<Map<string, Swim>> {
-  const nodes = new Map<string, Swim>();
+  const nodes: Map<string, Swim> = new Map<string, Swim>();
   for (const [index, name] of names.entries()) {
     nodes.set(name, node(network, name, network.seed + index + 1));
   }
@@ -78,7 +55,11 @@ async function started(network: SimNetwork, names: readonly string[]): Promise<M
   return nodes;
 }
 
-async function joinAll(network: SimNetwork, nodes: Map<string, Swim>, seed = "a"): Promise<void> {
+async function joinAll(
+  network: SimNetwork,
+  nodes: Map<string, Swim>,
+  seed: string = "a",
+): Promise<void> {
   for (const [name, member] of nodes) {
     if (name !== seed) {
       await settle(network, member.join([seed]));
@@ -92,7 +73,7 @@ async function stopAll(nodes: Iterable<Swim>): Promise<void> {
 }
 
 async function scenario(seed: number, run: (network: SimNetwork) => Promise<void>): Promise<void> {
-  const network = new SimNetwork(seed);
+  const network: SimNetwork = new SimNetwork(seed);
   try {
     await run(network);
   } catch (error) {
@@ -108,7 +89,7 @@ async function scenario(seed: number, run: (network: SimNetwork) => Promise<void
 describe("deterministic SWIM scenarios", () => {
   it("disseminates joins cluster-wide", async () => {
     await scenario(201, async (network): Promise<void> => {
-      const nodes = await started(network, ["a", "b", "c"]);
+      const nodes: Map<string, Swim> = await started(network, ["a", "b", "c"]);
       await joinAll(network, nodes);
       for (const member of nodes.values()) {
         expect(member.members()).toHaveLength(3);
@@ -119,9 +100,9 @@ describe("deterministic SWIM scenarios", () => {
 
   it("declares a killed member dead within the suspicion budget", async () => {
     await scenario(202, async (network): Promise<void> => {
-      const nodes = await started(network, ["a", "b"]);
+      const nodes: Map<string, Swim> = await started(network, ["a", "b"]);
       await joinAll(network, nodes);
-      const a = nodes.get("a") as Swim;
+      const a: Swim = nodes.get("a") as Swim;
       await (nodes.get("b") as Swim).stop();
       await advance(network, 26_000);
       expect(a.members().find((member): boolean => member.member === "b")?.state).toBe(STATE_DEAD);
@@ -131,7 +112,7 @@ describe("deterministic SWIM scenarios", () => {
 
   it("reconverges after a partition heals", async () => {
     await scenario(203, async (network): Promise<void> => {
-      const nodes = await started(network, ["a", "b", "c"]);
+      const nodes: Map<string, Swim> = await started(network, ["a", "b", "c"]);
       await joinAll(network, nodes);
       for (const peer of ["b", "c"]) {
         network.partitionBoth("a", peer);
@@ -141,14 +122,16 @@ describe("deterministic SWIM scenarios", () => {
         network.partitionBoth("a", peer, false);
       }
       await advance(network, 5_000);
-      const incarnations = new Map(
+      const incarnations: Map<string, number> = new Map(
         Array.from(nodes, ([name, member]): readonly [string, number] => {
-          const self = member.members().find((record): boolean => record.member === name);
+          const self: MemberRecord | undefined = member
+            .members()
+            .find((record): boolean => record.member === name);
           return [name, self?.incarnation as number];
         }),
       );
       for (const member of nodes.values()) {
-        const records = member.members();
+        const records: readonly MemberRecord[] = member.members();
         expect(records).toHaveLength(nodes.size);
         expect(records.every((record): boolean => record.state === STATE_ALIVE)).toBe(true);
         for (const record of records) {
@@ -161,7 +144,7 @@ describe("deterministic SWIM scenarios", () => {
 
   it("lets a paused then resumed member refute suspicion and survive", async () => {
     await scenario(204, async (network): Promise<void> => {
-      const nodes = await started(network, ["a", "b"]);
+      const nodes: Map<string, Swim> = await started(network, ["a", "b"]);
       await joinAll(network, nodes);
       network.partitionBoth("a", "b");
       await advance(network, 5_000);
@@ -181,18 +164,20 @@ describe("deterministic SWIM scenarios", () => {
 
   it("restarts above an equal-incarnation obituary", async () => {
     await scenario(205, async (network): Promise<void> => {
-      const nodes = await started(network, ["a", "b"]);
+      const nodes: Map<string, Swim> = await started(network, ["a", "b"]);
       await joinAll(network, nodes);
-      const a = nodes.get("a") as Swim;
+      const a: Swim = nodes.get("a") as Swim;
       await (nodes.get("b") as Swim).stop();
       await advance(network, 26_000);
       expect(a.members().find((member): boolean => member.member === "b")?.state).toBe(STATE_DEAD);
 
-      const restarted = node(network, "b", 999);
+      const restarted: Swim = node(network, "b", 999);
       await restarted.start();
       await settle(network, restarted.join(["a"]));
       await advance(network, 2_000);
-      const revived = a.members().find((member): boolean => member.member === "b");
+      const revived: MemberRecord | undefined = a
+        .members()
+        .find((member): boolean => member.member === "b");
       expect(revived).toMatchObject({ state: STATE_ALIVE, incarnation: 1 });
       await Promise.all([a.stop(), restarted.stop()]);
     });
@@ -200,14 +185,16 @@ describe("deterministic SWIM scenarios", () => {
 
   it("keeps a lone accuser at the maximum suspicion timeout", async () => {
     await scenario(206, async (network): Promise<void> => {
-      const nodes = await started(network, ["a", "b"]);
+      const nodes: Map<string, Swim> = await started(network, ["a", "b"]);
       await joinAll(network, nodes);
-      const a = nodes.get("a") as Swim;
+      const a: Swim = nodes.get("a") as Swim;
       await (nodes.get("b") as Swim).stop();
       await advance(network, 2_000);
-      const suspected = a.members().find((member): boolean => member.member === "b");
+      const suspected: MemberRecord | undefined = a
+        .members()
+        .find((member): boolean => member.member === "b");
       expect(suspected?.state).toBe(STATE_SUSPECT);
-      const deadline = (suspected?.appliedAt as number) + 24_000;
+      const deadline: number = (suspected?.appliedAt as number) + 24_000;
       await advance(network, deadline - network.clock.now() - 1);
       expect(a.members().find((member): boolean => member.member === "b")?.state).toBe(
         STATE_SUSPECT,
@@ -220,9 +207,9 @@ describe("deterministic SWIM scenarios", () => {
 
   it("disseminates graceful leave before stopping", async () => {
     await scenario(207, async (network): Promise<void> => {
-      const nodes = await started(network, ["a", "b", "c"]);
+      const nodes: Map<string, Swim> = await started(network, ["a", "b", "c"]);
       await joinAll(network, nodes);
-      const leaving = (nodes.get("b") as Swim).leave();
+      const leaving: Promise<void> = (nodes.get("b") as Swim).leave();
       await settle(network, leaving);
       await advance(network, 1_000);
       for (const name of ["a", "c"]) {
@@ -237,7 +224,7 @@ describe("deterministic SWIM scenarios", () => {
 
   it("does not declare members dead during tolerated loss and pauses", async () => {
     await scenario(208, async (network): Promise<void> => {
-      const nodes = await started(network, ["a", "b", "c"]);
+      const nodes: Map<string, Swim> = await started(network, ["a", "b", "c"]);
       await joinAll(network, nodes);
 
       network.partitionBoth("a", "b");
@@ -263,7 +250,7 @@ describe("deterministic SWIM scenarios", () => {
   it("holds join, failure, restart, and leave invariants across a seed campaign", async () => {
     for (let seed = 1; seed <= 32; seed += 1) {
       await scenario(seed, async (network): Promise<void> => {
-        const nodes = await started(network, ["a", "b"]);
+        const nodes: Map<string, Swim> = await started(network, ["a", "b"]);
         await joinAll(network, nodes);
         for (const member of nodes.values()) {
           expect(member.members()).toHaveLength(2);
@@ -271,12 +258,12 @@ describe("deterministic SWIM scenarios", () => {
 
         await (nodes.get("b") as Swim).stop();
         await advance(network, 26_000);
-        const a = nodes.get("a") as Swim;
+        const a: Swim = nodes.get("a") as Swim;
         expect(a.members().find((member): boolean => member.member === "b")?.state).toBe(
           STATE_DEAD,
         );
 
-        const restarted = node(network, "b", (seed ^ 0xa5a5_5a5a) >>> 0);
+        const restarted: Swim = node(network, "b", (seed ^ 0xa5a5_5a5a) >>> 0);
         nodes.set("b", restarted);
         await restarted.start();
         await settle(network, restarted.join(["a"]));

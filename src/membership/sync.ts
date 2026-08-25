@@ -26,33 +26,41 @@ import type { BroadcastQueue } from "./broadcast";
 import type { Clock, ClockTimer } from "./clock";
 import type { Random } from "./random";
 import type { MembershipStream, MembershipTransport } from "./transport";
-import { isProbeEligibleState, MAX_INCARNATION, type MembershipView } from "./view";
 import {
-  decodeSyncChunks,
+  type ApplyResult,
+  isProbeEligibleState,
+  isTerminalState,
+  MAX_INCARNATION,
+  type MemberRecord,
+  type MembershipView,
+} from "./view";
+import {
+  assertSyncExchangeBudget,
+  combineSyncChunks,
   decodeSyncMessage,
   encodeMessage,
   encodeSyncChunks,
   MAX_MEMBERS,
-  MAX_SYNC_MESSAGE_BYTES,
   MESSAGE_GOSSIP,
   MESSAGE_SYNC_REQUEST,
   MESSAGE_SYNC_RESPONSE,
   type MembershipUpdate,
   ProtocolError,
   STATE_ALIVE,
-  STATE_LEFT,
   STATE_SUSPECT,
+  SyncFrameAssembler,
+  type SyncMessage,
   type SyncMessageType,
 } from "./wire";
 
 /** Maximum injected-clock duration, in milliseconds, allowed to open a sync stream. @internal */
-export const SYNC_CONNECT_TIMEOUT_MS = 1_000;
+export const SYNC_CONNECT_TIMEOUT_MS: number = 1_000;
 /** Maximum duration, in milliseconds, from first frame work through merge completion. @internal */
-export const SYNC_EXCHANGE_TIMEOUT_MS = 5_000;
+export const SYNC_EXCHANGE_TIMEOUT_MS: number = 5_000;
 /** Fixed start-to-start anti-entropy cadence, in milliseconds. @internal */
-export const ANTI_ENTROPY_INTERVAL_MS = 30_000;
+export const ANTI_ENTROPY_INTERVAL_MS: number = 30_000;
 /** Post-fanout inbound-drain duration, in milliseconds, before transport shutdown. @internal */
-export const LEAVE_DRAIN_MS = 1_000;
+export const LEAVE_DRAIN_MS: number = 1_000;
 
 /** Deadline whose expiration is represented by {@link SyncTimeoutError}. @internal */
 export type SyncTimeoutPhase = "connect" | "exchange";
@@ -107,12 +115,17 @@ export class JoinError extends Error {
  * @internal
  */
 export interface SyncCallbacks {
-  /** Runs after an applied/refuted record is enqueued, before cancellation and self-refutation hooks. */
+  /**
+   * Runs after an applied/refuted record is enqueued and owns all post-apply
+   * maintenance: suspicion supersession (see {@link cancelSupersededSuspicion}),
+   * terminal-record retention, and any timer arming.
+   */
   readonly applied?: (update: MembershipUpdate) => void;
-  /** Cancels suspicion through the inclusive incarnation supplied by merge ordering rules. */
-  readonly cancelSuspicion?: (member: string, incarnation: number) => void;
-  /** Receives equal-incarnation, distinct-reporter evidence without disseminating a new record. */
-  readonly confirmSuspicion?: (member: string, incarnation: number, reporter: string) => void;
+  /**
+   * Receives the full equal-incarnation, distinct-reporter suspect record so the owner
+   * can shorten its timer and re-disseminate the corroboration to the rest of the cluster.
+   */
+  readonly confirmSuspicion?: (update: MembershipUpdate) => void;
   /** Runs last for generated alive self-defense truth so the owner can penalize local health. */
   readonly selfRefuted?: (update: MembershipUpdate) => void;
 }
@@ -127,7 +140,7 @@ export interface SyncCallbacks {
  */
 export class SyncActivity {
   /** Number of currently unsettled outbound exchanges. */
-  #count = 0;
+  #count: number = 0;
 
   /** Whether any outbound exchange is currently unsettled. */
   get active(): boolean {
@@ -193,7 +206,7 @@ export interface JoinResult {
 
 /** Prefixes one encoded sync message with its big-endian unsigned 32-bit byte length. */
 function frame(message: Uint8Array): Uint8Array {
-  const bytes = new Uint8Array(4 + message.length);
+  const bytes: Uint8Array = new Uint8Array(4 + message.length);
   new DataView(bytes.buffer).setUint32(0, message.length);
   bytes.set(message, 4);
   return bytes;
@@ -212,82 +225,10 @@ export async function writeSyncFrames(
   exchangeId: bigint,
   updates: readonly MembershipUpdate[],
 ): Promise<void> {
-  const chunks = encodeSyncChunks(type, exchangeId, updates);
+  const chunks: readonly Uint8Array[] = encodeSyncChunks(type, exchangeId, updates);
   for (const chunk of chunks) {
     await stream.write(frame(chunk));
   }
-}
-
-/** Concatenates unread stream bytes into fresh owned storage. */
-function append(left: Uint8Array, right: Uint8Array): Uint8Array {
-  if (left.length === 0) {
-    return right.slice();
-  }
-
-  const joined = new Uint8Array(left.length + right.length);
-  joined.set(left);
-  joined.set(right, left.length);
-  return joined;
-}
-
-/** Per-exchange unread-byte ownership used to tolerate split and coalesced stream reads. */
-interface SyncFrameReader {
-  /** Bytes received from the stream but not yet consumed as a complete frame. */
-  buffered: Uint8Array<ArrayBufferLike>;
-}
-
-/**
- * Reads until at least `minimum` bytes are buffered.
- *
- * @throws {SyncExchangeError} If the stream ends before the requested byte count.
- */
-async function fillBuffer(
-  stream: MembershipStream,
-  reader: SyncFrameReader,
-  minimum: number,
-  endedMessage: string,
-): Promise<void> {
-  while (reader.buffered.length < minimum) {
-    const input = await stream.read();
-    if (input === undefined) {
-      throw new SyncExchangeError(endedMessage);
-    }
-
-    reader.buffered = append(reader.buffered, input);
-  }
-}
-
-/** Decodes and validates the current frame prefix, returning payload bytes. */
-function frameLength(reader: SyncFrameReader): number {
-  const length = new DataView(
-    reader.buffered.buffer,
-    reader.buffered.byteOffset,
-    reader.buffered.byteLength,
-  ).getUint32(0);
-  if (length < 4 || length > MAX_SYNC_MESSAGE_BYTES) {
-    throw new ProtocolError("sync stream frame length is out of range");
-  }
-
-  return length;
-}
-
-/**
- * Consumes exactly one length-prefixed frame while retaining coalesced following bytes.
- *
- * @throws {ProtocolError} For an out-of-range length.
- * @throws {SyncExchangeError} For premature stream end.
- */
-async function readSyncFrame(
-  stream: MembershipStream,
-  reader: SyncFrameReader,
-): Promise<Uint8Array> {
-  await fillBuffer(stream, reader, 4, "sync stream ended before the frame prefix");
-  const length = frameLength(reader);
-  await fillBuffer(stream, reader, 4 + length, "sync stream ended inside a frame");
-
-  const message = reader.buffered.slice(4, 4 + length);
-  reader.buffered = reader.buffered.slice(4 + length);
-  return message;
 }
 
 /**
@@ -295,13 +236,12 @@ async function readSyncFrame(
  * and the chunk-count invariant; returns the declared total chunk count.
  */
 function validateSyncChunk(
-  message: Uint8Array,
+  decoded: SyncMessage,
   chunkIndex: number,
   expectedType: SyncMessageType,
   expectedExchangeId: bigint | undefined,
   expectedChunks: number | undefined,
 ): number {
-  const decoded = decodeSyncMessage(message);
   if (decoded.type !== expectedType) {
     throw new ProtocolError("sync message type does not match exchange role");
   }
@@ -322,7 +262,9 @@ function validateSyncChunk(
 
 /**
  * Reads exactly one complete sync table. Stream reads may split or coalesce
- * frame bytes; no decoded update escapes until every canonical chunk exists.
+ * frame bytes; the wire module's shared assembler owns the framing, each chunk
+ * is decoded exactly once on arrival, and no decoded update escapes until
+ * every canonical chunk exists.
  *
  * @returns The remote address, correlation ID, and complete updates in chunk order.
  * @throws {ProtocolError} For malformed, mismatched, reordered, or trailing bytes.
@@ -334,34 +276,45 @@ export async function readSyncFrames(
   expectedType: SyncMessageType,
   expectedExchangeId?: bigint,
 ): Promise<SyncExchange> {
-  const reader: SyncFrameReader = {
-    buffered: new Uint8Array(0),
-  };
-
-  let expectedChunks: number | undefined;
+  const assembler: SyncFrameAssembler = new SyncFrameAssembler();
   const chunks: Uint8Array[] = [];
+  const decoded: SyncMessage[] = [];
+  let expectedChunks: number | undefined;
 
-  while (expectedChunks === undefined || chunks.length < expectedChunks) {
-    const message = await readSyncFrame(stream, reader);
-    expectedChunks = validateSyncChunk(
-      message,
-      chunks.length,
-      expectedType,
-      expectedExchangeId,
-      expectedChunks,
-    );
-    chunks.push(message);
+  while (expectedChunks === undefined || decoded.length < expectedChunks) {
+    const input: Uint8Array | undefined = await stream.read();
+    if (input === undefined) {
+      throw new SyncExchangeError(
+        assembler.awaitingPrefix
+          ? "sync stream ended before the frame prefix"
+          : "sync stream ended inside a frame",
+      );
+    }
+
+    for (const frame of assembler.push(input)) {
+      const message: SyncMessage = decodeSyncMessage(frame);
+      expectedChunks = validateSyncChunk(
+        message,
+        decoded.length,
+        expectedType,
+        expectedExchangeId,
+        expectedChunks,
+      );
+      chunks.push(frame);
+      decoded.push(message);
+    }
   }
 
-  if (reader.buffered.length !== 0) {
+  if (!assembler.complete) {
     throw new ProtocolError("trailing bytes after complete sync exchange");
   }
 
-  const decoded = decodeSyncChunks(chunks);
+  assertSyncExchangeBudget(chunks);
+  const exchange: ReturnType<typeof combineSyncChunks> = combineSyncChunks(chunks, decoded);
   return {
     peer: stream.remoteAddress,
-    exchangeId: decoded.exchangeId,
-    updates: decoded.updates,
+    exchangeId: exchange.exchangeId,
+    updates: exchange.updates,
   };
 }
 
@@ -377,9 +330,9 @@ function timeout<T>(
   onTimeout?: () => void,
 ): Promise<T> {
   return new Promise<T>((resolve, reject): void => {
-    let settled = false;
+    let settled: boolean = false;
     let timer: ClockTimer;
-    const finish = (action: () => void): void => {
+    const finish: (action: () => void) => void = (action: () => void): void => {
       if (settled) {
         return;
       }
@@ -408,7 +361,7 @@ function timeout<T>(
 
 /** Produces a nonzero 64-bit exchange correlation ID from two unsigned 32-bit draws. */
 function exchangeId(random: Random): bigint {
-  let value =
+  let value: bigint =
     (BigInt(random.integer(0x1_0000_0000)) << 32n) | BigInt(random.integer(0x1_0000_0000));
   if (value === 0n) {
     value = 1n;
@@ -422,10 +375,12 @@ function exchangeId(random: Random): bigint {
  * so these exchange-level failures cannot leave a partially merged table.
  */
 function preflight(view: MembershipView, updates: readonly MembershipUpdate[]): void {
-  let additions = 0;
-  let greatestSelfAccusation = -1;
+  let additions: number = 0;
+  let greatestSelfAccusation: number = -1;
   for (const incoming of updates) {
-    if (view.stateOf(incoming.member) === undefined) {
+    // Terminal truth about an unknown identity is ignored by the view, so it
+    // cannot contribute to table growth.
+    if (view.stateOf(incoming.member) === undefined && !isTerminalState(incoming.state)) {
       additions += 1;
     }
 
@@ -438,7 +393,7 @@ function preflight(view: MembershipView, updates: readonly MembershipUpdate[]): 
     throw new SyncExchangeError("merged membership table exceeds 1024 retained members");
   }
 
-  const self = view.self();
+  const self: MemberRecord | undefined = view.self();
   if (
     greatestSelfAccusation >= MAX_INCARNATION ||
     (greatestSelfAccusation >= 0 && (self?.incarnation ?? 0) >= MAX_INCARNATION)
@@ -470,9 +425,53 @@ export function cancelSupersededSuspicion(
 }
 
 /**
+ * Applies one remote update through the single shared ingestion pipeline used
+ * by both the packet piggyback path and the sync merge path: apply under
+ * precedence, route confirmations, enqueue accepted truth with self-defense
+ * priority, then run the `applied` and `selfRefuted` hooks in that order.
+ * Post-apply maintenance, such as suspicion supersession and terminal-record
+ * retention, is owned entirely by the `applied` callback so it can never run
+ * twice for one record.
+ *
+ * @returns The newly applied record, or `undefined` for confirmations and
+ * ignored truth.
+ * @throws {IncarnationExhaustedError} If self-refutation cannot increment incarnation.
+ * @throws {MembershipCapacityError} If accepting a new identity would exceed capacity.
+ * @internal
+ */
+export function applyRemoteTruth(
+  options: Pick<SyncOptions, "view" | "broadcasts" | "clock" | "callbacks" | "stateChangeTime">,
+  update: MembershipUpdate,
+): MembershipUpdate | undefined {
+  const callbacks: SyncCallbacks = options.callbacks ?? {};
+  const result: ApplyResult = options.view.apply(
+    update,
+    options.clock.now(),
+    options.stateChangeTime?.() ?? BigInt(options.clock.epochMilliseconds()),
+  );
+  if (result.kind === "confirmed") {
+    callbacks.confirmSuspicion?.(update);
+    return undefined;
+  }
+
+  if (result.kind === "ignored") {
+    return undefined;
+  }
+
+  const truth: MemberRecord = result.record;
+  options.broadcasts.enqueue(truth, options.view.aliveOrSuspectCount(), result.kind === "refuted");
+  callbacks.applied?.(truth);
+  if (result.kind === "refuted") {
+    callbacks.selfRefuted?.(truth);
+  }
+
+  return truth;
+}
+
+/**
  * Applies a fully validated remote table and disseminates every accepted truth.
- * Filtering and whole-table preflight precede mutation. For each mutation the
- * ordering is enqueue, `applied`, suspicion cancellation, then `selfRefuted`.
+ * Filtering and whole-table preflight precede mutation; each accepted record
+ * then flows through {@link applyRemoteTruth}.
  *
  * @returns Newly applied records, including generated self-refutations, in input order.
  * @throws {SyncExchangeError} Before mutation if capacity or self-incarnation would be exhausted.
@@ -485,43 +484,18 @@ export function mergeSyncTable(
   >,
   updates: readonly MembershipUpdate[],
 ): readonly MembershipUpdate[] {
-  const accepted =
+  const accepted: readonly MembershipUpdate[] =
     options.acceptUpdate === undefined
       ? updates
       : updates.filter(
           (update: MembershipUpdate): boolean => options.acceptUpdate?.(update) !== false,
         );
   preflight(options.view, accepted);
-  const callbacks = options.callbacks ?? {};
   const applied: MembershipUpdate[] = [];
   for (const update of accepted) {
-    const result = options.view.apply(
-      update,
-      options.clock.now(),
-      options.stateChangeTime?.() ?? BigInt(options.clock.epochMilliseconds()),
-    );
-    if (result.kind === "confirmed") {
-      callbacks.confirmSuspicion?.(result.member, result.incarnation, result.reporter);
-      continue;
-    }
-
-    if (result.kind === "ignored") {
-      continue;
-    }
-
-    const truth = result.record;
-    options.broadcasts.enqueue(
-      truth,
-      options.view.aliveOrSuspectCount(),
-      result.kind === "refuted",
-    );
-    applied.push(truth);
-    callbacks.applied?.(truth);
-    cancelSupersededSuspicion(truth, (member, incarnation): void => {
-      callbacks.cancelSuspicion?.(member, incarnation);
-    });
-    if (result.kind === "refuted") {
-      callbacks.selfRefuted?.(truth);
+    const truth: MembershipUpdate | undefined = applyRemoteTruth(options, update);
+    if (truth !== undefined) {
+      applied.push(truth);
     }
   }
 
@@ -546,24 +520,24 @@ export async function syncWith(options: SyncOptions, peer: string): Promise<Sync
   }
 
   let stream: MembershipStream | undefined;
-  let aborted = false;
   options.activity?.begin();
   try {
-    const opening = options.transport.stream(peer);
+    const opening: Promise<MembershipStream> = options.transport.stream(peer);
     stream = await timeout(options.clock, opening, "connect", SYNC_CONNECT_TIMEOUT_MS, (): void => {
-      aborted = true;
       void opening.then(
         (lateStream: MembershipStream): void => lateStream.close(),
         (): void => undefined,
       );
     });
 
-    aborted = false;
-    const activeStream = stream;
-    const id = exchangeId(options.random);
-    const exchanging = (async (): Promise<SyncExchange> => {
+    // A connect timeout rejects before the flag could ever be read, so only
+    // the exchange phase participates in abort tracking.
+    let aborted: boolean = false;
+    const activeStream: MembershipStream = stream;
+    const id: bigint = exchangeId(options.random);
+    const exchanging: Promise<SyncExchange> = (async (): Promise<SyncExchange> => {
       await writeSyncFrames(activeStream, MESSAGE_SYNC_REQUEST, id, options.view.updates());
-      const response = await readSyncFrames(activeStream, MESSAGE_SYNC_RESPONSE, id);
+      const response: SyncExchange = await readSyncFrames(activeStream, MESSAGE_SYNC_RESPONSE, id);
       if (aborted) {
         throw new SyncTimeoutError("exchange", SYNC_EXCHANGE_TIMEOUT_MS);
       }
@@ -601,12 +575,12 @@ export async function syncWith(options: SyncOptions, peer: string): Promise<Sync
  * @internal
  */
 export async function respondToSync(options: SyncOptions, stream: MembershipStream): Promise<void> {
-  let aborted = false;
+  let aborted: boolean = false;
   try {
     await timeout(
       options.clock,
       (async (): Promise<void> => {
-        const request = await readSyncFrames(stream, MESSAGE_SYNC_REQUEST);
+        const request: SyncExchange = await readSyncFrames(stream, MESSAGE_SYNC_REQUEST);
         if (aborted || options.inboundAllowed?.() === false) {
           return;
         }
@@ -639,7 +613,7 @@ export async function respondToSync(options: SyncOptions, stream: MembershipStre
 
 /** Removes self and duplicate seed addresses while preserving first-occurrence order. */
 function distinctSeeds(self: string, seeds: readonly string[]): string[] {
-  const seen = new Set<string>();
+  const seen: Set<string> = new Set<string>();
   const distinct: string[] = [];
   for (const seed of seeds) {
     if (seed === self || seen.has(seed)) {
@@ -662,7 +636,7 @@ function distinctSeeds(self: string, seeds: readonly string[]): string[] {
  * @internal
  */
 export async function join(options: SyncOptions, seeds: readonly string[]): Promise<JoinResult> {
-  const ordered = distinctSeeds(options.view.selfName, seeds);
+  const ordered: string[] = distinctSeeds(options.view.selfName, seeds);
   if (ordered.length === 0) {
     return { seed: undefined, succeeded: [], failed: [] };
   }
@@ -684,7 +658,7 @@ export async function join(options: SyncOptions, seeds: readonly string[]): Prom
     }
   }
 
-  const first = succeeded[0];
+  const first: string | undefined = succeeded[0];
   if (first === undefined) {
     throw new JoinError(ordered, { cause: firstError });
   }
@@ -704,11 +678,11 @@ export class AntiEntropy {
   /** Owned timer for the next cadence boundary, or `undefined` between scheduling steps. */
   #timer: ClockTimer | undefined;
   /** Whether future ticks should continue to schedule. */
-  #running = false;
+  #running: boolean = false;
   /** Whether one exchange promise is currently unsettled. */
-  #active = false;
+  #active: boolean = false;
   /** Epoch that invalidates callbacks from a prior start/stop cycle. */
-  #generation = 0;
+  #generation: number = 0;
 
   /** Captures dependencies without scheduling work or opening a stream. */
   constructor(options: SyncOptions) {
@@ -761,7 +735,7 @@ export class AntiEntropy {
         return;
       }
 
-      const peers = this.#options.view
+      const peers: string[] = this.#options.view
         .members()
         .filter(
           (member): boolean =>
@@ -785,45 +759,14 @@ export class AntiEntropy {
   }
 }
 
-/** Dependencies and lifecycle hook for the standalone graceful-leave operation. @internal */
-export interface LeaveOptions {
-  /** Mutable view that must already contain the local member record. */
-  readonly view: MembershipView;
-  /** Shared queue receiving newly applied local left truth before final fanout. */
-  readonly broadcasts: BroadcastQueue;
-  /** Injected clock used for observation time and the millisecond drain delay. */
-  readonly clock: Clock;
-  /** Transport retained for ordered final packets, inbound drain, then shutdown. */
-  readonly transport: MembershipTransport;
-  /** Optional monotonic origin timestamp source; fallback is truncated clock time. */
-  readonly stateChangeTime?: () => bigint;
-  /** Invoked first so composed components cannot race new outbound work with leave. */
-  readonly stopStarting?: () => void;
-}
-
-/** Immutable summary returned only after fanout, drain, and transport shutdown complete. @internal */
-export interface LeaveResult {
-  /** Local left record used for fanout; may be a pre-existing left record. */
-  readonly update: MembershipUpdate;
-  /** Deterministically byte-ordered eligible peer names targeted exactly once. */
-  readonly targets: readonly string[];
-}
-
-/** Resolves after an injected-clock delay measured in milliseconds. */
-function delay(clock: Clock, milliseconds: number): Promise<void> {
-  return new Promise<void>((resolve): void => {
-    clock.schedule(milliseconds, resolve);
-  });
-}
-
 /** Shared UTF-8 encoder used solely for deterministic member-name byte ordering. */
-const memberNameEncoder = new TextEncoder();
+const memberNameEncoder: TextEncoder = new TextEncoder();
 
 /** Compares two identities by their already-encoded unsigned UTF-8 bytes. */
 function compareNameBytes(left: Uint8Array, right: Uint8Array): number {
-  const length = Math.min(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    const difference = (left[index] as number) - (right[index] as number);
+  const length: number = Math.min(left.length, right.length);
+  for (let index: number = 0; index < length; index += 1) {
+    const difference: number = (left[index] as number) - (right[index] as number);
     if (difference !== 0) {
       return difference;
     }
@@ -868,7 +811,7 @@ export async function fanoutLeave(
   update: MembershipUpdate,
   targets: readonly string[],
 ): Promise<void> {
-  const bytes = encodeMessage({ type: MESSAGE_GOSSIP, updates: [update] });
+  const bytes: Uint8Array = encodeMessage({ type: MESSAGE_GOSSIP, updates: [update] });
   const sends: Promise<void>[] = [];
   for (const target of targets) {
     try {
@@ -883,48 +826,4 @@ export async function fanoutLeave(
   }
 
   await Promise.all(sends);
-}
-
-/**
- * Applies leave, fanouts deterministically, drains, then closes the transport.
- * Existing local left truth is reused; otherwise new truth is applied and
- * enqueued before any packet. Transport shutdown is skipped if an earlier
- * unexpected operation rejects.
- *
- * @returns The disseminated record and exact ordered target snapshot.
- * @throws {SyncExchangeError} If the local member has not been installed.
- * @throws Any error from the drain clock or transport shutdown.
- * @internal
- */
-export async function leave(options: LeaveOptions): Promise<LeaveResult> {
-  options.stopStarting?.();
-  const current = options.view.self();
-  if (current === undefined) {
-    throw new SyncExchangeError("cannot leave before self is installed in the membership view");
-  }
-
-  const update: MembershipUpdate =
-    current.state === STATE_LEFT
-      ? current
-      : {
-          state: STATE_LEFT,
-          selfOriginated: true,
-          incarnation: current.incarnation,
-          stateChangeTime: options.stateChangeTime?.() ?? BigInt(options.clock.epochMilliseconds()),
-          member: current.member,
-          reporter: "",
-          metadata: new Uint8Array(0),
-        };
-  if (current.state !== STATE_LEFT) {
-    const result = options.view.applyLocal(update, options.clock.now());
-    if (result.kind === "applied") {
-      options.broadcasts.enqueue(result.record, options.view.aliveOrSuspectCount());
-    }
-  }
-
-  const targets = leaveTargets(options.view);
-  await fanoutLeave(options.transport, update, targets);
-  await delay(options.clock, LEAVE_DRAIN_MS);
-  await options.transport.stop();
-  return { update, targets };
 }
