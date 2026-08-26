@@ -112,7 +112,8 @@ src/kv/
   routingtable.ts   the versioned routing table
   engine.ts         single-node operations through the per-partition pipeline
   coordinator.ts    election, table computation, push, ownership reports
-  replication.ts    the ReplicationGroup implementation, quorum acknowledgment
+  primarybackup.ts  the ReplicationGroup implementation: quorum acknowledgment, reconcile
+  replication.ts    the node router: route to primary, fragmented read gather, read repair
   antientropy.ts    digest comparison, bucketed escalation, read repair
   recovery.ts       departure, promotion, reconcile, refill, rebalance
   resolver.ts       the pure split-brain strategy: a view plus the last stable size yields a survive-or-stop verdict

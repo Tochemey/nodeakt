@@ -24,7 +24,8 @@
 
 import { describe, expect, it } from "vitest";
 import { Engine, PartitionPipeline } from "../../src/kv/engine";
-import type { WriteResult } from "../../src/kv/ports";
+import { partitionId } from "../../src/kv/hash";
+import type { Entry, WriteResult } from "../../src/kv/ports";
 
 /** A physical clock the test advances by hand. */
 function clockAt(start: number): { now: () => number; set: (value: number) => void } {
@@ -265,5 +266,50 @@ describe("Engine read", () => {
     );
     expect(sequences).toEqual([1n, 2n]);
     expect((await engine.read("k"))?.value).toEqual(bytes(2));
+  });
+});
+
+describe("Engine replica intake", () => {
+  it("merges a pre-stamped entry and reads it back without restamping", async () => {
+    const engine: Engine = newEngine();
+    const entry: Entry = {
+      key: "k",
+      value: bytes(9),
+      timestamp: { wallMs: 5_000, logical: 0, node: "peer" },
+      sequence: 42n,
+      expiresAt: undefined,
+      deleted: false,
+    };
+    engine.merge(entry);
+    const read: Entry | undefined = await engine.read("k");
+    expect(read?.value).toEqual(bytes(9));
+    expect(read?.timestamp.node).toBe("peer");
+    expect(read?.sequence).toBe(42n);
+  });
+
+  it("maps a key to the same partition as the shared hash", () => {
+    const engine: Engine = new Engine("n1", 16, (): number => 0);
+    expect(engine.partitionFor("some-key")).toBe(partitionId("some-key", 16));
+  });
+
+  it("peeks a tombstone the filtered read hides", async () => {
+    const engine: Engine = newEngine();
+    await engine.write({ kind: "put", key: "k", value: bytes(1), condition: "none" });
+    await engine.write({ kind: "delete", key: "k" });
+    expect(await engine.read("k")).toBeUndefined();
+    expect(engine.peek("k")?.deleted).toBe(true);
+  });
+
+  it("snapshots a partition's entries and reports the injected clock", async () => {
+    const engine: Engine = new Engine("n1", 1, (): number => 1_234);
+    await engine.write({ kind: "put", key: "a", value: bytes(1), condition: "none" });
+    await engine.write({ kind: "put", key: "b", value: bytes(2), condition: "none" });
+    expect(
+      engine
+        .snapshot(0)
+        .map((entry: Entry): string => entry.key)
+        .sort(),
+    ).toEqual(["a", "b"]);
+    expect(engine.now()).toBe(1_234);
   });
 });

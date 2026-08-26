@@ -160,6 +160,39 @@ export class Engine {
     return this.#store.get(key, this.#physicalNow());
   }
 
+  /** Partition id `key` maps onto, the same mapping every node uses. */
+  partitionFor(key: string): number {
+    return this.#store.partitionFor(key);
+  }
+
+  /** Current injected epoch time in milliseconds, for expiry decisions above the store. */
+  now(): number {
+    return this.#physicalNow();
+  }
+
+  /**
+   * The raw stored entry for `key`, tombstone or expired included, or
+   * `undefined`. A cross-owner read compares raw timestamps, so it peeks rather
+   * than reading and filters the winner itself.
+   */
+  peek(key: string): Entry | undefined {
+    return this.#store.peek(key);
+  }
+
+  /** Every stored entry for `partition`, tombstones included, for reconcile. */
+  snapshot(partition: number): Entry[] {
+    return this.#store.snapshot(partition);
+  }
+
+  /**
+   * Merges a peer's already-stamped entry into the local store under last write
+   * wins. This is the backup intake path: the entry keeps the timestamp and
+   * sequence the primary assigned, so it is never restamped or resequenced.
+   */
+  merge(entry: Entry): void {
+    this.#store.apply(entry);
+  }
+
   /** Submits `op` to its partition's pipeline and resolves with the outcome. */
   write(op: WriteOp): Promise<WriteResult> {
     const pipeline: PartitionPipeline = this.#pipelineFor(this.#store.partitionFor(op.key));

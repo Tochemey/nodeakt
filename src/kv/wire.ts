@@ -72,11 +72,29 @@ export const MSG_WRITE_REQUEST: number = 0x03;
 /** Write response carrying an applied entry or a condition failure. @internal */
 export const MSG_WRITE_RESPONSE: number = 0x04;
 
+/** Primary-to-backup replication of one already-stamped entry. @internal */
+export const MSG_REPLICATE: number = 0x05;
+
+/** Backup acknowledgment that a replicated entry was merged. @internal */
+export const MSG_REPLICATE_ACK: number = 0x06;
+
+/** Raw read of one key for a cross-owner gather; answered with a read response. @internal */
+export const MSG_PEEK_REQUEST: number = 0x07;
+
+/** Primary's refusal of a conditional write whose partition is fragmented. @internal */
+export const MSG_REBALANCING: number = 0x08;
+
+/** Request for a peer's entries of one partition; answered with a fragment chunk. @internal */
+export const MSG_FRAGMENT_REQUEST: number = 0x09;
+
 /** Coordinator push of the versioned routing table. @internal */
 export const MSG_TABLE: number = 0x10;
 
 /** One chunk of a fragment transfer during migration. @internal */
 export const MSG_FRAGMENT_CHUNK: number = 0x11;
+
+/** A member's reply to a table push, listing the partitions it still holds. @internal */
+export const MSG_OWNERSHIP_REPORT: number = 0x12;
 
 /** Largest value representable in an unsigned 64-bit field. */
 const MAX_U64: bigint = 0xffffffffffffffffn;
@@ -711,6 +729,20 @@ export interface FragmentChunkWire {
   readonly entries: readonly Entry[];
 }
 
+/**
+ * A member's report of which partitions it still holds entries for, sent as the
+ * response to a routing-table push. The coordinator folds these into the next
+ * table to know when a demoted owner has drained.
+ *
+ * @internal
+ */
+export interface OwnershipReportWire {
+  /** Reporting member's canonical identity. */
+  readonly node: string;
+  /** Partition ids the member still holds entries for. */
+  readonly partitions: readonly number[];
+}
+
 /** Discriminated union of every top-level message this codec round-trips. @internal */
 export type KvMessage =
   | { readonly kind: "read-request"; readonly key: string }
@@ -718,7 +750,36 @@ export type KvMessage =
   | { readonly kind: "write-request"; readonly op: WriteOp }
   | { readonly kind: "write-response"; readonly result: WriteResult }
   | { readonly kind: "table"; readonly table: RoutingTableWire }
-  | { readonly kind: "fragment-chunk"; readonly chunk: FragmentChunkWire };
+  | { readonly kind: "fragment-chunk"; readonly chunk: FragmentChunkWire }
+  | { readonly kind: "ownership-report"; readonly report: OwnershipReportWire }
+  | { readonly kind: "replicate"; readonly entry: Entry }
+  | { readonly kind: "replicate-ack" }
+  | { readonly kind: "peek-request"; readonly key: string }
+  | { readonly kind: "rebalancing"; readonly partitionId: number }
+  | { readonly kind: "fragment-request"; readonly partitionId: number };
+
+/**
+ * Named values for the {@link KvMessage} discriminants, so a construction or a
+ * match keys on one shared name rather than a bare string literal each. The
+ * union's literal tags above are the source of truth; `satisfies` validates
+ * each value against them while `as const` keeps the literal type for narrowing.
+ *
+ * @internal
+ */
+export const MessageKind = {
+  readRequest: "read-request",
+  readResponse: "read-response",
+  writeRequest: "write-request",
+  writeResponse: "write-response",
+  table: "table",
+  fragmentChunk: "fragment-chunk",
+  ownershipReport: "ownership-report",
+  replicate: "replicate",
+  replicateAck: "replicate-ack",
+  peekRequest: "peek-request",
+  rebalancing: "rebalancing",
+  fragmentRequest: "fragment-request",
+} as const satisfies Record<string, KvMessage["kind"]>;
 
 /** Writes the two-byte envelope: protocol version, then message type. */
 function writeEnvelope(writer: ByteWriter, type: number): void {
@@ -740,38 +801,75 @@ export function encodeMessage(message: KvMessage): Uint8Array {
 
 /** Writes the envelope and body for one message. */
 function encodeBody(writer: ByteWriter, message: KvMessage): void {
-  if (message.kind === "read-request") {
+  if (message.kind === MessageKind.readRequest) {
     writeEnvelope(writer, MSG_READ_REQUEST);
     writeKey(writer, message.key);
     return;
   }
 
-  if (message.kind === "read-response") {
+  if (message.kind === MessageKind.readResponse) {
     writeEnvelope(writer, MSG_READ_RESPONSE);
     writeOptionalEntry(writer, message.entry);
     return;
   }
 
-  if (message.kind === "write-request") {
+  if (message.kind === MessageKind.writeRequest) {
     writeEnvelope(writer, MSG_WRITE_REQUEST);
     writeWriteOp(writer, message.op);
     return;
   }
 
-  if (message.kind === "write-response") {
+  if (message.kind === MessageKind.writeResponse) {
     writeEnvelope(writer, MSG_WRITE_RESPONSE);
     writeWriteResult(writer, message.result);
     return;
   }
 
-  if (message.kind === "table") {
+  if (message.kind === MessageKind.table) {
     writeEnvelope(writer, MSG_TABLE);
     writeTable(writer, message.table);
     return;
   }
 
-  writeEnvelope(writer, MSG_FRAGMENT_CHUNK);
-  writeChunk(writer, message.chunk);
+  if (message.kind === MessageKind.fragmentChunk) {
+    writeEnvelope(writer, MSG_FRAGMENT_CHUNK);
+    writeChunk(writer, message.chunk);
+    return;
+  }
+
+  if (message.kind === MessageKind.ownershipReport) {
+    writeEnvelope(writer, MSG_OWNERSHIP_REPORT);
+    writeOwnershipReport(writer, message.report);
+    return;
+  }
+
+  if (message.kind === MessageKind.replicate) {
+    writeEnvelope(writer, MSG_REPLICATE);
+    writeEntry(writer, message.entry);
+    return;
+  }
+
+  if (message.kind === MessageKind.replicateAck) {
+    writeEnvelope(writer, MSG_REPLICATE_ACK);
+    return;
+  }
+
+  if (message.kind === MessageKind.peekRequest) {
+    writeEnvelope(writer, MSG_PEEK_REQUEST);
+    writeKey(writer, message.key);
+    return;
+  }
+
+  if (message.kind === MessageKind.rebalancing) {
+    writeEnvelope(writer, MSG_REBALANCING);
+    assertU32(message.partitionId, "partition id");
+    writer.u32(message.partitionId);
+    return;
+  }
+
+  writeEnvelope(writer, MSG_FRAGMENT_REQUEST);
+  assertU32(message.partitionId, "partition id");
+  writer.u32(message.partitionId);
 }
 
 /** Writes a presence byte followed by the entry when present. */
@@ -844,27 +942,51 @@ export function decodeMessage(bytes: Uint8Array): KvMessage {
 /** Reads the body for a validated message type. */
 function decodeBody(reader: ByteReader, type: number): KvMessage {
   if (type === MSG_READ_REQUEST) {
-    return { kind: "read-request", key: readKey(reader) };
+    return { kind: MessageKind.readRequest, key: readKey(reader) };
   }
 
   if (type === MSG_READ_RESPONSE) {
-    return { kind: "read-response", entry: readOptionalEntry(reader) };
+    return { kind: MessageKind.readResponse, entry: readOptionalEntry(reader) };
   }
 
   if (type === MSG_WRITE_REQUEST) {
-    return { kind: "write-request", op: readWriteOp(reader) };
+    return { kind: MessageKind.writeRequest, op: readWriteOp(reader) };
   }
 
   if (type === MSG_WRITE_RESPONSE) {
-    return { kind: "write-response", result: readWriteResult(reader) };
+    return { kind: MessageKind.writeResponse, result: readWriteResult(reader) };
   }
 
   if (type === MSG_TABLE) {
-    return { kind: "table", table: readTable(reader) };
+    return { kind: MessageKind.table, table: readTable(reader) };
   }
 
   if (type === MSG_FRAGMENT_CHUNK) {
-    return { kind: "fragment-chunk", chunk: readChunk(reader) };
+    return { kind: MessageKind.fragmentChunk, chunk: readChunk(reader) };
+  }
+
+  if (type === MSG_OWNERSHIP_REPORT) {
+    return { kind: MessageKind.ownershipReport, report: readOwnershipReport(reader) };
+  }
+
+  if (type === MSG_REPLICATE) {
+    return { kind: MessageKind.replicate, entry: readEntry(reader) };
+  }
+
+  if (type === MSG_REPLICATE_ACK) {
+    return { kind: MessageKind.replicateAck };
+  }
+
+  if (type === MSG_PEEK_REQUEST) {
+    return { kind: MessageKind.peekRequest, key: readKey(reader) };
+  }
+
+  if (type === MSG_REBALANCING) {
+    return { kind: MessageKind.rebalancing, partitionId: reader.u32() };
+  }
+
+  if (type === MSG_FRAGMENT_REQUEST) {
+    return { kind: MessageKind.fragmentRequest, partitionId: reader.u32() };
   }
 
   return fail("unknown message type");
@@ -929,4 +1051,34 @@ function readChunk(reader: ByteReader): FragmentChunkWire {
   }
 
   return { partitionId, final: finalByte === 1, entries };
+}
+
+/** Writes an ownership report: the member identity, a count, then each held id. */
+function writeOwnershipReport(writer: ByteWriter, report: OwnershipReportWire): void {
+  if (report.partitions.length > MAX_WIRE_PARTITIONS) {
+    fail("ownership report partition count is out of range");
+  }
+
+  writeName(writer, report.node, "report node");
+  writer.u32(report.partitions.length);
+  for (const id of report.partitions) {
+    assertU32(id, "report partition id");
+    writer.u32(id);
+  }
+}
+
+/** Reads an ownership report, bounding the partition count before allocating. */
+function readOwnershipReport(reader: ByteReader): OwnershipReportWire {
+  const node: string = readName(reader, "report node");
+  const count: number = reader.u32();
+  if (count > MAX_WIRE_PARTITIONS) {
+    fail("ownership report partition count is out of range");
+  }
+
+  const partitions: number[] = [];
+  for (let index = 0; index < count; index += 1) {
+    partitions.push(reader.u32());
+  }
+
+  return { node, partitions };
 }

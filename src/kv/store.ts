@@ -96,6 +96,15 @@ export class Store {
     return this.#partitions.get(this.partitionFor(key))?.peek(key);
   }
 
+  /**
+   * Every stored entry for partition `id`, tombstones included, or `[]` when the
+   * node does not hold the partition. Reconcile and fragment transfer read this.
+   */
+  snapshot(id: number): Entry[] {
+    const partition: Partition | undefined = this.#partitions.get(id);
+    return partition === undefined ? [] : [...partition.entries()];
+  }
+
   /** Merges `entry` into its partition under last write wins. See {@link Partition.apply}. */
   apply(entry: Entry): boolean {
     return this.#ensure(this.partitionFor(entry.key)).apply(entry);

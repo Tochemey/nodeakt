@@ -154,3 +154,13 @@ describe("Store iterate", () => {
     expect(whole[0]?.length).toBe(3);
   });
 });
+
+describe("Store snapshot", () => {
+  it("returns a held partition's entries and empty for an unheld one", () => {
+    const store: Store = new Store(512);
+    store.apply(value("alpha", at(1)));
+    const held: number = store.partitionFor("alpha");
+    expect(store.snapshot(held).map((entry: Entry): string => entry.key)).toEqual(["alpha"]);
+    expect(store.snapshot((held + 1) % 512)).toEqual([]);
+  });
+});
