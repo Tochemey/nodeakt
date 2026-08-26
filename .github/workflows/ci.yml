@@ -3,8 +3,8 @@ name: ci
 # The pipeline always triggers, and a first job decides whether anything
 # that follows needs to run: the build jobs are gated on an allowlist of
 # code paths, so docs, issue templates, and other non-code files can
-# never start a build or publish a nightly. An allowlist cannot rot the
-# way a blocklist does when a new non-code file type appears.
+# never start a build. An allowlist cannot rot the way a blocklist does
+# when a new non-code file type appears.
 on:
   push:
     branches: [main]
@@ -199,51 +199,3 @@ jobs:
       # these internal layers are not all part of the published surface yet.
       - name: Run source network and membership smoke tests
         run: test/smoke/net.sh ${{ matrix.runtime }}
-
-  nightly:
-    name: nightly release
-    # Every green push to main ships a prerelease to npm under the
-    # "nightly" dist-tag. The version is stamped inside the workflow run
-    # and never committed: base version plus UTC date plus short sha.
-    # Changesets play no part here; they belong to the release pipeline.
-    # A skipped quality or test job (no code changed) skips this one too.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [changes, quality, test, runtimes]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          version: 11
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-          registry-url: https://registry.npmjs.org
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Stamp nightly version
-        run: |
-          base=$(node -p "require('./package.json').version")
-          # The short sha is prefixed with "g" (the git-describe convention)
-          # so the identifier is always alphanumeric. An all-digit sha such
-          # as 0203847 would otherwise be read as a numeric identifier, which
-          # semver forbids from carrying a leading zero, failing the publish.
-          version="${base}-nightly.$(date -u +%Y%m%d).g${GITHUB_SHA::7}"
-          node -e "const fs = require('node:fs'); const pkg = require('./package.json'); pkg.version = process.argv[1]; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');" "$version"
-          echo "Publishing \`$version\`" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Publish to npm under the nightly dist-tag
-        run: pnpm publish --tag nightly --no-git-checks --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

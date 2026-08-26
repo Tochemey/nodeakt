@@ -76,5 +76,4 @@ Then head to [Getting started](https://tochemey.github.io/nodeakt/guide/) for a 
 
 ## Releases
 
-- **Stable.** A stable release is cut by pushing a version tag. The release pipeline folds the accumulated [changesets](https://github.com/changesets/changesets) into `CHANGELOG.md`, publishes to npm as `latest` with provenance, and creates the GitHub release from the changelog.
-- **Nightly.** Every green push to `main` publishes a build to npm under the `nightly` dist-tag, versioned `X.Y.Z-nightly.<date>.<sha>`. Install it with `pnpm add @tochemey/nodeakt@nightly`. Nightlies never touch `latest`.
+- **Stable.** A stable release is cut by pushing a version tag. The maintainer bumps the version in `package.json` and writes the `CHANGELOG.md` section; the release pipeline then publishes to npm as `latest` with provenance and creates the GitHub release from the changelog.
