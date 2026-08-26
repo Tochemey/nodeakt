@@ -172,7 +172,7 @@ export type WriteResult = WriteApplied | WriteRejected;
  * @internal
  */
 export interface ClusterView {
-  /** This node's canonical cluster identity, the same string membership uses. */
+  /** This node's canonical cluster identity, the address {@link KvTransport} dials. */
   readonly self: string;
 
   /**
@@ -194,7 +194,7 @@ export interface ClusterView {
  * @internal
  */
 export interface ClusterMember {
-  /** Canonical identity, the same string membership uses. */
+  /** Canonical identity, the address {@link KvTransport} dials to reach this member. */
   readonly name: string;
   /** Immutable process start time in epoch milliseconds; decides the coordinator. */
   readonly startedAt: number;

@@ -150,6 +150,20 @@ export type ApplyResult =
       readonly kind: "ignored";
     };
 
+/**
+ * The {@link ApplyResult} kinds as named values, so dissemination code keys on a
+ * shared name rather than a bare literal each. The union above keeps the
+ * literals as its source of truth; `satisfies` validates each against it.
+ *
+ * @internal
+ */
+export const ApplyKind = {
+  applied: "applied",
+  confirmed: "confirmed",
+  refuted: "refuted",
+  ignored: "ignored",
+} as const satisfies Record<string, ApplyResult["kind"]>;
+
 /** Raised when self-refutation would overflow the wire's unsigned 32-bit incarnation. @internal */
 export class IncarnationExhaustedError extends Error {
   /** Maximum of the accusation and retained incarnation that could not be incremented. */
@@ -497,14 +511,14 @@ export class MembershipView {
     }
 
     if (current === undefined && isTerminalState(incoming.state)) {
-      return { kind: "ignored" };
+      return { kind: ApplyKind.ignored };
     }
 
     if (current !== undefined && compareMembershipUpdates(incoming, current) <= 0) {
       return this.#confirmationOrIgnored(incoming, current);
     }
 
-    return this.#replace(incoming, current, now, "applied");
+    return this.#replace(incoming, current, now, ApplyKind.applied);
   }
 
   /**
@@ -521,7 +535,7 @@ export class MembershipView {
       return this.#confirmationOrIgnored(update, current);
     }
 
-    return this.#replace(update, current, now, "applied");
+    return this.#replace(update, current, now, ApplyKind.applied);
   }
 
   /** Creates a guarded reap token for terminal truth, or `undefined` if absent/nonterminal. */
@@ -608,10 +622,15 @@ export class MembershipView {
       metadata: current?.state === STATE_ALIVE ? copyBytes(current.metadata) : new Uint8Array(0),
     };
 
-    const result: ReplacementResult<"refuted"> = this.#replace(alive, current, now, "refuted");
+    const result: ReplacementResult<"refuted"> = this.#replace(
+      alive,
+      current,
+      now,
+      ApplyKind.refuted,
+    );
 
     return {
-      kind: "refuted",
+      kind: ApplyKind.refuted,
       accusation: copyMembershipUpdate(accusation),
       record: result.record,
       event: result.event,
@@ -631,13 +650,13 @@ export class MembershipView {
       incoming.incarnation !== current.incarnation ||
       current.confirmations.has(incoming.reporter)
     ) {
-      return { kind: "ignored" };
+      return { kind: ApplyKind.ignored };
     }
 
     current.confirmations.add(incoming.reporter);
 
     return {
-      kind: "confirmed",
+      kind: ApplyKind.confirmed,
       member: incoming.member,
       incarnation: incoming.incarnation,
       reporter: incoming.reporter,

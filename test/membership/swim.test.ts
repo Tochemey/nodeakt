@@ -114,6 +114,51 @@ describe("Swim lifecycle and composition", () => {
     await expect(swim.start()).rejects.toBeInstanceOf(SwimLifecycleError);
   });
 
+  it("gossips a metadata change by re-announcing at a higher incarnation", async () => {
+    const network: SimNetwork = new SimNetwork(103);
+    const events: string[] = [];
+    const swim: Swim = new Swim({
+      address: "a",
+      metadata: Uint8Array.of(1),
+      transport: network.endpoint("a"),
+      clock: network.clock,
+      random: new SeededRandom(4),
+      onEvent: (event): void => {
+        events.push(event.type);
+      },
+    });
+
+    await swim.start();
+    expect(swim.self()?.incarnation).toBe(0);
+
+    swim.updateMetadata(Uint8Array.of(9, 9));
+    expect(swim.self()?.metadata).toEqual(Uint8Array.of(9, 9));
+    expect(swim.self()?.incarnation).toBe(1);
+    expect(events).toEqual(["joined", "updated"]);
+
+    await swim.stop();
+  });
+
+  it("rejects a metadata update before start and one over the wire limit", async () => {
+    const network: SimNetwork = new SimNetwork(104);
+    const swim: Swim = new Swim({
+      address: "a",
+      metadata: new Uint8Array(0),
+      transport: network.endpoint("a"),
+      clock: network.clock,
+      random: new SeededRandom(5),
+    });
+
+    expect((): void => swim.updateMetadata(Uint8Array.of(1))).toThrow(SwimLifecycleError);
+
+    await swim.start();
+    expect((): void => swim.updateMetadata(new Uint8Array(MAX_METADATA_BYTES + 1))).toThrow(
+      RangeError,
+    );
+
+    await swim.stop();
+  });
+
   it("enforces join lifecycle and drains graceful leave while inbound stays bound", async () => {
     const network: SimNetwork = new SimNetwork(102);
     const a: Swim = new Swim({
@@ -943,6 +988,9 @@ describe("Swim defensive lifecycle and protocol paths", () => {
     // Leave without an installed self record rejects through the shared
     // promise instead of throwing past a dangling undefined.
     hideSelf = true;
+    expect((): void => swim.updateMetadata(new Uint8Array(1))).toThrow(
+      /local member record was never installed/,
+    );
     await expect(swim.leave()).rejects.toThrow(/local member record was never installed/);
     hideSelf = false;
 

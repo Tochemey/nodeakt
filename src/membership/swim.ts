@@ -41,6 +41,7 @@ import {
 } from "./sync";
 import type { MembershipTransport } from "./transport";
 import {
+  ApplyKind,
   type ApplyResult,
   IncarnationExhaustedError,
   isProbeEligibleState,
@@ -61,14 +62,35 @@ import {
 } from "./wire";
 
 /**
- * Lifecycle of one single-use engine. `new` may retry failed start; `leaving`
- * still accepts inbound packets during drain; `stopped` is terminal.
+ * Lifecycle states of one single-use engine, as named values. `new` may retry
+ * failed start; `leaving` still accepts inbound packets during drain; `stopped`
+ * is terminal.
  *
  * @internal
  */
-export type SwimLifecycle = "new" | "starting" | "started" | "leaving" | "stopping" | "stopped";
-/** Public lifecycle operation names captured by {@link SwimLifecycleError}. @internal */
-export type SwimOperation = "start" | "join" | "leave" | "stop";
+export const SwimState = {
+  new: "new",
+  starting: "starting",
+  started: "started",
+  leaving: "leaving",
+  stopping: "stopping",
+  stopped: "stopped",
+} as const;
+
+/** One of the {@link SwimState} lifecycle values. @internal */
+export type SwimLifecycle = (typeof SwimState)[keyof typeof SwimState];
+
+/** Public lifecycle operation names captured by {@link SwimLifecycleError}, as named values. @internal */
+export const SwimOp = {
+  start: "start",
+  join: "join",
+  leave: "leave",
+  stop: "stop",
+  update: "update",
+} as const;
+
+/** One of the {@link SwimOp} operation values. @internal */
+export type SwimOperation = (typeof SwimOp)[keyof typeof SwimOp];
 
 /**
  * An operation was requested from a lifecycle state where it cannot be honored.
@@ -165,7 +187,7 @@ export class Swim {
   /** One terminal-record retention timer per canonical member identity. */
   readonly #reapTimers: Map<string, ClockTimer> = new Map<string, ClockTimer>();
   /** Current single-use engine lifecycle. */
-  #state: SwimLifecycle = "new";
+  #state: SwimLifecycle = SwimState.new;
   /** Promise shared by callers observing the in-progress initial start. */
   #startPromise: Promise<void> | undefined;
   /** Promise shared by repeated leave calls through terminal completion. */
@@ -223,9 +245,11 @@ export class Swim {
       transport: options.transport,
       stateChangeTime: (): bigint => this.#stateChangeTime(),
       activity: new SyncActivity(),
-      outboundAllowed: (): boolean => this.#state === "started",
+      outboundAllowed: (): boolean => this.#state === SwimState.started,
       inboundAllowed: (): boolean =>
-        this.#state === "starting" || this.#state === "started" || this.#state === "leaving",
+        this.#state === SwimState.starting ||
+        this.#state === SwimState.started ||
+        this.#state === SwimState.leaving,
       acceptUpdate: (update): boolean => !(this.#shieldsSelf() && update.member === this.#address),
       callbacks: {
         applied: (update): void => {
@@ -269,16 +293,16 @@ export class Swim {
    * @throws Any transport or probe startup error.
    */
   start(): Promise<void> {
-    if (this.#state === "started") {
+    if (this.#state === SwimState.started) {
       return Promise.resolve();
     }
 
-    if (this.#state === "starting") {
+    if (this.#state === SwimState.starting) {
       return this.#startPromise as Promise<void>;
     }
 
-    if (this.#state !== "new") {
-      return Promise.reject(new SwimLifecycleError("start", this.#state));
+    if (this.#state !== SwimState.new) {
+      return Promise.reject(new SwimLifecycleError(SwimOp.start, this.#state));
     }
 
     // The shared promise is installed before any synchronous work: the view's
@@ -286,7 +310,7 @@ export class Swim {
     // start() from that callback must observe the promise, not undefined.
     const starting: Deferred = deferred();
     this.#startPromise = starting.promise;
-    this.#state = "starting";
+    this.#state = SwimState.starting;
     try {
       const alive: MembershipUpdate = {
         state: STATE_ALIVE,
@@ -301,11 +325,11 @@ export class Swim {
       // A retry after a failed start finds the record already installed and
       // enqueued; only a first attempt applies and disseminates it.
       const installed: ApplyResult = this.#view.applyLocal(alive, this.#clock.now());
-      if (installed.kind === "applied") {
+      if (installed.kind === ApplyKind.applied) {
         this.#broadcasts.enqueue(installed.record, this.#view.aliveOrSuspectCount());
       }
     } catch (error) {
-      this.#state = "new";
+      this.#state = SwimState.new;
       starting.reject(error);
       return starting.promise;
     }
@@ -320,21 +344,21 @@ export class Swim {
         },
       })
       .then(async (): Promise<void> => {
-        if (this.#state !== "starting") {
+        if (this.#state !== SwimState.starting) {
           return;
         }
 
         await this.#probe.start();
-        if (this.#state !== "starting") {
+        if (this.#state !== SwimState.starting) {
           return;
         }
 
         this.#antiEntropy.start();
-        this.#state = "started";
+        this.#state = SwimState.started;
       })
       .catch((error: unknown): never => {
-        if (this.#state === "starting") {
-          this.#state = "new";
+        if (this.#state === SwimState.starting) {
+          this.#state = SwimState.new;
         }
 
         throw error;
@@ -351,11 +375,53 @@ export class Swim {
    * @throws {JoinError} When every attempted seed fails.
    */
   async join(seeds: readonly string[]): Promise<void> {
-    if (this.#state !== "started") {
-      throw new SwimLifecycleError("join", this.#state);
+    if (this.#state !== SwimState.started) {
+      throw new SwimLifecycleError(SwimOp.join, this.#state);
     }
 
     await joinSeeds(this.#syncOptions, seeds);
+  }
+
+  /**
+   * Re-announces this node at a higher incarnation with new opaque metadata, so
+   * a metadata change disseminates the way a self-refutation does.
+   *
+   * An alive record carrying the same identity but new metadata does not
+   * supersede the one peers already hold unless its incarnation is higher, so
+   * this raises the incarnation by one and enqueues the result for gossip. The
+   * clustering layer calls it to flip `ready` after initial fragment intake and
+   * `draining` at the start of a graceful leave.
+   *
+   * @param metadata New opaque metadata; defensively copied and bounded by
+   * `MAX_METADATA_BYTES`.
+   * @throws {SwimLifecycleError} Unless the engine is `started`.
+   * @throws {RangeError} If `metadata` exceeds the wire limit.
+   */
+  updateMetadata(metadata: Uint8Array): void {
+    if (this.#state !== SwimState.started) {
+      throw new SwimLifecycleError(SwimOp.update, this.#state);
+    }
+
+    if (metadata.length > MAX_METADATA_BYTES) {
+      throw new RangeError(`metadata cannot exceed ${MAX_METADATA_BYTES} bytes`);
+    }
+
+    const current: MemberRecord | undefined = this.#view.self();
+    if (current === undefined) {
+      throw new Error("cannot update metadata: the local member record was never installed");
+    }
+
+    const update: MembershipUpdate = {
+      state: STATE_ALIVE,
+      selfOriginated: true,
+      incarnation: current.incarnation + 1,
+      stateChangeTime: this.#stateChangeTime(),
+      member: current.member,
+      reporter: "",
+      metadata: Uint8Array.from(metadata),
+    };
+
+    this.#applyLocalTruth(update);
   }
 
   /**
@@ -367,16 +433,16 @@ export class Swim {
    * @throws Any unexpected shutdown error; per-target fanout errors are ignored.
    */
   leave(): Promise<void> {
-    if (this.#state === "leaving") {
+    if (this.#state === SwimState.leaving) {
       return this.#leavePromise as Promise<void>;
     }
 
-    if (this.#state === "stopped" && this.#left) {
+    if (this.#state === SwimState.stopped && this.#left) {
       return this.#leavePromise as Promise<void>;
     }
 
-    if (this.#state !== "started") {
-      return Promise.reject(new SwimLifecycleError("leave", this.#state));
+    if (this.#state !== SwimState.started) {
+      return Promise.reject(new SwimLifecycleError(SwimOp.leave, this.#state));
     }
 
     // Installed before the synchronous `left` event fires inside #beginLeave,
@@ -399,17 +465,17 @@ export class Swim {
    * idempotent once stopping or stopped.
    */
   stop(): Promise<void> {
-    if (this.#state === "stopped") {
+    if (this.#state === SwimState.stopped) {
       return Promise.resolve();
     }
 
-    if (this.#state === "stopping") {
+    if (this.#state === SwimState.stopping) {
       return this.#stopPromise as Promise<void>;
     }
 
-    const wasLeaving: boolean = this.#state === "leaving";
+    const wasLeaving: boolean = this.#state === SwimState.leaving;
     const starting: Promise<void> | undefined =
-      this.#state === "starting" ? this.#startPromise : undefined;
+      this.#state === SwimState.starting ? this.#startPromise : undefined;
     this.#prepareStop();
     const stopping: Promise<void> = this.#completeStop(starting, wasLeaving);
     this.#stopPromise = stopping;
@@ -421,7 +487,7 @@ export class Swim {
    * timers stop before left truth is installed and enqueued.
    */
   #beginLeave(): MembershipUpdate {
-    this.#state = "leaving";
+    this.#state = SwimState.leaving;
     this.#left = true;
     this.#antiEntropy.stop();
     this.#probe.pause();
@@ -451,7 +517,7 @@ export class Swim {
   /** Runs ordered final fanout, optional drain, and resource shutdown for one left record. */
   async #completeLeave(update: MembershipUpdate): Promise<void> {
     await fanoutLeave(this.#transport, update, leaveTargets(this.#view));
-    if (this.#state !== "stopping") {
+    if (this.#state !== SwimState.stopping) {
       await this.#drainLeave();
     }
 
@@ -478,7 +544,7 @@ export class Swim {
 
   /** Synchronously enters `stopping`, cancels future work, and releases an active drain. */
   #prepareStop(): void {
-    this.#state = "stopping";
+    this.#state = SwimState.stopping;
     this.#antiEntropy.stop();
     this.#suspicion.cancelAll();
     this.#cancelReaps();
@@ -500,7 +566,7 @@ export class Swim {
         await this.#shutdown();
       }
     } finally {
-      this.#state = "stopped";
+      this.#state = SwimState.stopped;
     }
   }
 
@@ -514,7 +580,7 @@ export class Swim {
     await this.#transport.stop();
     this.#suspicion.cancelAll();
     this.#cancelReaps();
-    this.#state = "stopped";
+    this.#state = SwimState.stopped;
   }
 
   /** Reads the injected clock's Unix epoch milliseconds as a bigint origin time. */
@@ -524,7 +590,11 @@ export class Swim {
 
   /** Reports whether remote truth about self must be ignored to protect terminal local truth. */
   #shieldsSelf(): boolean {
-    return this.#state === "leaving" || this.#state === "stopping" || this.#state === "stopped";
+    return (
+      this.#state === SwimState.leaving ||
+      this.#state === SwimState.stopping ||
+      this.#state === SwimState.stopped
+    );
   }
 
   /** Applies decoded updates synchronously in wire order. */
@@ -602,7 +672,7 @@ export class Swim {
    * suspicion first, otherwise only the original reporter could ever expire it.
    */
   #applyProbeFailure(failure: ProbeFailure): boolean {
-    if (this.#state !== "started") {
+    if (this.#state !== SwimState.started) {
       return false;
     }
 
@@ -630,13 +700,13 @@ export class Swim {
       this.#clock.now(),
       this.#stateChangeTime(),
     );
-    if (result.kind === "applied") {
+    if (result.kind === ApplyKind.applied) {
       this.#broadcasts.enqueue(result.record, this.#view.aliveOrSuspectCount());
       this.#truthApplied(result.record);
       return true;
     }
 
-    if (result.kind === "confirmed") {
+    if (result.kind === ApplyKind.confirmed) {
       this.#confirmSuspicion(suspect);
       return true;
     }
@@ -649,7 +719,7 @@ export class Swim {
 
   /** Converts an on-time expiry for the exact current suspect incarnation into local dead truth. */
   #expireSuspicion(expiry: SuspicionExpiry): void {
-    if (this.#state !== "started") {
+    if (this.#state !== SwimState.started) {
       return;
     }
 
@@ -681,7 +751,7 @@ export class Swim {
    */
   #applyLocalTruth(update: MembershipUpdate): boolean {
     const result: ApplyResult = this.#view.applyLocal(update, this.#clock.now());
-    if (result.kind !== "applied") {
+    if (result.kind !== ApplyKind.applied) {
       return false;
     }
 

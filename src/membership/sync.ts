@@ -27,6 +27,7 @@ import type { Clock, ClockTimer } from "./clock";
 import type { Random } from "./random";
 import type { MembershipStream, MembershipTransport } from "./transport";
 import {
+  ApplyKind,
   type ApplyResult,
   isProbeEligibleState,
   isTerminalState,
@@ -449,19 +450,23 @@ export function applyRemoteTruth(
     options.clock.now(),
     options.stateChangeTime?.() ?? BigInt(options.clock.epochMilliseconds()),
   );
-  if (result.kind === "confirmed") {
+  if (result.kind === ApplyKind.confirmed) {
     callbacks.confirmSuspicion?.(update);
     return undefined;
   }
 
-  if (result.kind === "ignored") {
+  if (result.kind === ApplyKind.ignored) {
     return undefined;
   }
 
   const truth: MemberRecord = result.record;
-  options.broadcasts.enqueue(truth, options.view.aliveOrSuspectCount(), result.kind === "refuted");
+  options.broadcasts.enqueue(
+    truth,
+    options.view.aliveOrSuspectCount(),
+    result.kind === ApplyKind.refuted,
+  );
   callbacks.applied?.(truth);
-  if (result.kind === "refuted") {
+  if (result.kind === ApplyKind.refuted) {
     callbacks.selfRefuted?.(truth);
   }
 
