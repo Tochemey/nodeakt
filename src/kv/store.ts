@@ -39,7 +39,7 @@ import { JANITOR_PARTITIONS_PER_SWEEP, SCAN_YIELD_EVERY } from "./constants";
 import type { DigestLanes } from "./entry";
 import { partitionId } from "./hash";
 import { Partition } from "./partition";
-import type { Entry } from "./ports";
+import type { Entry, KeyVersion } from "./ports";
 
 /** Yields the current macrotask so a long walk never starves the event loop. */
 function yieldToEventLoop(): Promise<void> {
@@ -110,9 +110,46 @@ export class Store {
     return this.#ensure(this.partitionFor(entry.key)).apply(entry);
   }
 
+  /**
+   * Discards every entry this node holds for partition `id`, if any. A handoff
+   * that has been acknowledged drops the drained fragment, and a stale rejoin
+   * discards its fragments before re-seeding. A partition not held is a no-op.
+   */
+  drop(id: number): void {
+    this.#partitions.delete(id);
+  }
+
   /** The digest for partition `id`, or `undefined` when the node does not hold it. */
   digest(id: number): DigestLanes | undefined {
     return this.#partitions.get(id)?.digest();
+  }
+
+  /**
+   * The per-bucket digests for partition `id`, or `bucketCount` all-zero lanes
+   * when the node does not hold it, which reads as an empty fragment.
+   */
+  bucketDigests(id: number, bucketCount: number): DigestLanes[] {
+    const partition: Partition | undefined = this.#partitions.get(id);
+    if (partition !== undefined) {
+      return partition.bucketDigests(bucketCount);
+    }
+
+    const digests: DigestLanes[] = [];
+    for (let bucket: number = 0; bucket < bucketCount; bucket += 1) {
+      digests.push({ hi: 0, lo: 0 });
+    }
+
+    return digests;
+  }
+
+  /** Key versions for the given repair `buckets` of partition `id`, or `[]` when unheld. */
+  keyVersions(id: number, buckets: ReadonlySet<number>, bucketCount: number): KeyVersion[] {
+    return this.#partitions.get(id)?.keyVersions(buckets, bucketCount) ?? [];
+  }
+
+  /** The stored entries for `keys` in partition `id`, or `[]` when the node does not hold it. */
+  entriesFor(id: number, keys: ReadonlySet<string>): Entry[] {
+    return this.#partitions.get(id)?.entriesFor(keys) ?? [];
   }
 
   /**

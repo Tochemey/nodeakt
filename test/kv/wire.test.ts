@@ -29,9 +29,10 @@ import {
   MAX_NAME_BYTES,
   MAX_VALUE_BYTES,
   MAX_WIRE_PARTITIONS,
+  REPAIR_BUCKETS,
 } from "../../src/kv/constants";
 import { KvProtocolError } from "../../src/kv/errors";
-import type { Entry, HybridTime, WriteOp, WriteResult } from "../../src/kv/ports";
+import type { Entry, HybridTime, KeyVersion, WriteOp, WriteResult } from "../../src/kv/ports";
 import {
   ByteReader,
   ByteWriter,
@@ -209,19 +210,50 @@ describe("message round-trips", () => {
   it("round-trips a peek request, a rebalancing reply, and a fragment request", () => {
     const peek: KvMessage = { kind: "peek-request", key: "payments-42" };
     const rebalancing: KvMessage = { kind: "rebalancing", partitionId: 511 };
-    const fragment: KvMessage = { kind: "fragment-request", partitionId: 7 };
+    const fragment: KvMessage = { kind: "fragment-request", partitionId: 7, afterKey: undefined };
     expect(roundTrip(peek)).toEqual(peek);
     expect(roundTrip(rebalancing)).toEqual(rebalancing);
     expect(roundTrip(fragment)).toEqual(fragment);
+  });
+
+  it("round-trips a fragment request carrying a cursor key", () => {
+    const fragment: KvMessage = {
+      kind: "fragment-request",
+      partitionId: 7,
+      afterKey: "payments-42",
+    };
+    expect(roundTrip(fragment)).toEqual(fragment);
+  });
+
+  it("round-trips a fragment push chunk and its acknowledgment", () => {
+    const push: KvMessage = {
+      kind: "fragment-push",
+      chunk: { partitionId: 3, final: false, entries: [liveEntry(), liveEntry({ key: "k2" })] },
+    };
+    const ack: KvMessage = { kind: "fragment-ack" };
+    expect(roundTrip(push)).toEqual(push);
+    expect(roundTrip(ack)).toEqual(ack);
+  });
+
+  it("rejects an invalid fragment cursor flag", () => {
+    const framed: Uint8Array = encodeMessage({
+      kind: "fragment-request",
+      partitionId: 1,
+      afterKey: undefined,
+    });
+    const corrupted: Uint8Array = framed.slice();
+    corrupted[corrupted.length - 1] = 2;
+    expect((): KvMessage => decodeMessage(corrupted)).toThrow(KvProtocolError);
   });
 
   it("rejects an out-of-range partition id in a rebalancing or fragment message", () => {
     expect(
       (): Uint8Array => encodeMessage({ kind: "rebalancing", partitionId: 0x1_0000_0000 }),
     ).toThrow(KvProtocolError);
-    expect((): Uint8Array => encodeMessage({ kind: "fragment-request", partitionId: -1 })).toThrow(
-      KvProtocolError,
-    );
+    expect(
+      (): Uint8Array =>
+        encodeMessage({ kind: "fragment-request", partitionId: -1, afterKey: undefined }),
+    ).toThrow(KvProtocolError);
   });
 
   it("preserves multibyte keys and node identities as UTF-8", () => {
@@ -510,5 +542,74 @@ describe("remaining validation paths", () => {
     // version, MSG_OWNERSHIP_REPORT, node length 1 "n", then a u32 count of 0x00100001.
     const crafted: Uint8Array = new Uint8Array([1, 0x12, 1, 0x6e, 0x00, 0x10, 0x00, 0x01]);
     expect((): KvMessage => decodeMessage(crafted)).toThrow(KvProtocolError);
+  });
+
+  it("round-trips the anti-entropy messages", () => {
+    const digest: KvMessage = { kind: "sync-digest", partitionId: 5, digest: { hi: 7, lo: 9 } };
+    const buckets: KvMessage = {
+      kind: "bucket-digests",
+      partitionId: 5,
+      digests: [
+        { hi: 1, lo: 2 },
+        { hi: 3, lo: 4 },
+      ],
+    };
+    const inSync: KvMessage = { kind: "bucket-digests", partitionId: 5, digests: [] };
+    const request: KvMessage = { kind: "key-versions-request", partitionId: 5, buckets: [0, 3, 7] };
+    const versions: KvMessage = {
+      kind: "key-versions",
+      partitionId: 5,
+      versions: [{ key: "payments-42", timestamp: { wallMs: 1, logical: 2, node: "n1" } }],
+    };
+    const entries: KvMessage = { kind: "entries-request", partitionId: 5, keys: ["a", "b"] };
+    for (const message of [digest, buckets, inSync, request, versions, entries]) {
+      expect(roundTrip(message)).toEqual(message);
+    }
+  });
+
+  it("rejects anti-entropy list counts beyond their bounds on encode", () => {
+    expect(
+      (): Uint8Array =>
+        encodeMessage({
+          kind: "bucket-digests",
+          partitionId: 0,
+          digests: new Array<{ hi: number; lo: number }>(REPAIR_BUCKETS + 1),
+        }),
+    ).toThrow(KvProtocolError);
+    expect(
+      (): Uint8Array =>
+        encodeMessage({
+          kind: "key-versions-request",
+          partitionId: 0,
+          buckets: new Array<number>(REPAIR_BUCKETS + 1),
+        }),
+    ).toThrow(KvProtocolError);
+    expect(
+      (): Uint8Array =>
+        encodeMessage({
+          kind: "key-versions",
+          partitionId: 0,
+          versions: new Array<KeyVersion>(MAX_CHUNK_ENTRIES + 1),
+        }),
+    ).toThrow(KvProtocolError);
+    expect(
+      (): Uint8Array =>
+        encodeMessage({
+          kind: "entries-request",
+          partitionId: 0,
+          keys: new Array<string>(MAX_CHUNK_ENTRIES + 1),
+        }),
+    ).toThrow(KvProtocolError);
+  });
+
+  it("rejects anti-entropy list counts beyond their bounds on decode", () => {
+    // Each frame: version, type, u32 partition id 0, then an oversized u32 count.
+    const bigDigests: Uint8Array = new Uint8Array([1, 0x0d, 0, 0, 0, 0, 0, 0, 0, 0x41]);
+    const bigBuckets: Uint8Array = new Uint8Array([1, 0x0e, 0, 0, 0, 0, 0, 0, 0, 0x41]);
+    const bigVersions: Uint8Array = new Uint8Array([1, 0x0f, 0, 0, 0, 0, 0x00, 0x10, 0x00, 0x01]);
+    const bigKeys: Uint8Array = new Uint8Array([1, 0x13, 0, 0, 0, 0, 0x00, 0x10, 0x00, 0x01]);
+    for (const frame of [bigDigests, bigBuckets, bigVersions, bigKeys]) {
+      expect((): KvMessage => decodeMessage(frame)).toThrow(KvProtocolError);
+    }
   });
 });

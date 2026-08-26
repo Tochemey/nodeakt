@@ -32,11 +32,11 @@ import {
 } from "../../src/kv/errors";
 import { partitionId } from "../../src/kv/hash";
 import type { Entry, KvTransport, WriteResult } from "../../src/kv/ports";
-import { PrimaryBackup, type ReplicationMode } from "../../src/kv/primarybackup";
+import { PrimaryBackup, type ReplicationMode } from "../../src/kv/primary.backup";
 import { Replicator, type ReplicatorOptions } from "../../src/kv/replication";
 import { PartitionRing } from "../../src/kv/ring";
-import { RoutingTable } from "../../src/kv/routingtable";
-import { encodeMessage } from "../../src/kv/wire";
+import { RoutingTable } from "../../src/kv/routing.table";
+import { decodeMessage, encodeMessage } from "../../src/kv/wire";
 import { flush, SimFabric, settle } from "./sim";
 
 const PARTITIONS: number = 8;
@@ -374,6 +374,70 @@ describe("Replicator rebalance gate", () => {
   });
 });
 
+describe("Replicator recovery window", () => {
+  /** A two-node cluster where only A treats a partition as still recovering. */
+  function recoveringCluster(
+    fabric: SimFabric,
+    recovering: Set<number>,
+  ): { a: RepNode; b: RepNode; ring: PartitionRing } {
+    const ring: PartitionRing = new PartitionRing(["A", "B"], PARTITIONS);
+    const table: RoutingTable = RoutingTable.initial(ring, 1n);
+    const a: RepNode = makeNode(fabric, "A", table, ring, {
+      isRecovering: (partition: number): boolean => recovering.has(partition),
+    });
+    const b: RepNode = makeNode(fabric, "B", table, ring);
+    return { a, b, ring };
+  }
+
+  it("gathers a primary-local read across the backups while recovering", async () => {
+    const fabric: SimFabric = new SimFabric(1);
+    const recovering: Set<number> = new Set<number>();
+    const { a, b, ring } = recoveringCluster(fabric, recovering);
+    const key: string = keyFor(ring, "A");
+    const partition: number = partitionId(key, PARTITIONS);
+    b.engine.merge(entryAt(key, bytes(9), 2_000));
+
+    expect(await settle(fabric, a.replicator.read(key))).toBeUndefined();
+    recovering.add(partition);
+    expect((await settle(fabric, a.replicator.read(key)))?.value).toEqual(bytes(9));
+  });
+
+  it("gathers a forwarded read through a recovering primary", async () => {
+    const fabric: SimFabric = new SimFabric(1);
+    const recovering: Set<number> = new Set<number>();
+    const { b, ring } = recoveringCluster(fabric, recovering);
+    const key: string = keyFor(ring, "A");
+    b.engine.merge(entryAt(key, bytes(9), 2_000));
+    recovering.add(partitionId(key, PARTITIONS));
+
+    expect((await settle(fabric, b.replicator.read(key)))?.value).toEqual(bytes(9));
+  });
+
+  it("refuses a conditional write on a recovering partition", async () => {
+    const fabric: SimFabric = new SimFabric(1);
+    const recovering: Set<number> = new Set<number>();
+    const { a, ring } = recoveringCluster(fabric, recovering);
+    const key: string = keyFor(ring, "A");
+    recovering.add(partitionId(key, PARTITIONS));
+
+    await expect(
+      a.replicator.write({ kind: "put", key, value: bytes(1), condition: "nx" }),
+    ).rejects.toThrow(PartitionRebalancingError);
+  });
+
+  it("refuses a forwarded conditional write at a recovering primary", async () => {
+    const fabric: SimFabric = new SimFabric(1);
+    const recovering: Set<number> = new Set<number>();
+    const { b, ring } = recoveringCluster(fabric, recovering);
+    const key: string = keyFor(ring, "A");
+    recovering.add(partitionId(key, PARTITIONS));
+
+    await expect(
+      settle(fabric, b.replicator.write({ kind: "put", key, value: bytes(1), condition: "nx" })),
+    ).rejects.toThrow(PartitionRebalancingError);
+  });
+});
+
 describe("Replicator table changes", () => {
   it("rejects a non-positive write quorum", () => {
     const fabric: SimFabric = new SimFabric(1);
@@ -492,6 +556,23 @@ describe("Replicator primary rebalance gate", () => {
     await expect(
       settle(fabric, a.replicator.write({ kind: "put", key, value: bytes(1), condition: "nx" })),
     ).rejects.toThrow(PartitionRebalancingError);
+  });
+});
+
+describe("Replicator fragment intake", () => {
+  it("merges a pushed fragment chunk and acknowledges it", async () => {
+    const fabric: SimFabric = new SimFabric(1);
+    const { nodes } = makeCluster(fabric, ["A"]);
+    const a: RepNode = nodeOf(nodes, "A");
+    const key: string = "pushed";
+    const partition: number = partitionId(key, PARTITIONS);
+    const push: Uint8Array = encodeMessage({
+      kind: "fragment-push",
+      chunk: { partitionId: partition, final: true, entries: [entryAt(key, bytes(4), 1_000)] },
+    });
+    const response: Uint8Array = await a.replicator.receive("B", push);
+    expect(decodeMessage(response).kind).toBe("fragment-ack");
+    expect(a.engine.peek(key)?.value).toEqual(bytes(4));
   });
 });
 

@@ -81,6 +81,19 @@ describe("Store routing", () => {
   });
 });
 
+describe("Store drop", () => {
+  it("discards a held partition and is a no-op for an unheld one", () => {
+    const store: Store = new Store(1);
+    store.apply(value("k", at(1)));
+    expect(store.partitionsHeld).toBe(1);
+    store.drop(store.partitionFor("k"));
+    expect(store.partitionsHeld).toBe(0);
+    expect(store.peek("k")).toBeUndefined();
+    store.drop(store.partitionFor("k"));
+    expect(store.partitionsHeld).toBe(0);
+  });
+});
+
 describe("Store read", () => {
   it("reads a live value, hides expired, and reports absence", () => {
     const store: Store = new Store(1);

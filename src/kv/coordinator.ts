@@ -48,9 +48,14 @@
  * only the partitions that moved is a deferred optimization: the coordinator
  * runs at control-plane rate over a table of one row per partition, and a diff
  * would add base-version tracking and a full-table fallback that no benchmark
- * has yet called for. Draining-aware demotion and the not-ready read gate belong
- * to the migration and routing slices; here the ring is built from every live
- * member.
+ * has yet called for.
+ *
+ * A gracefully leaving member advertises `draining` in its membership metadata.
+ * The coordinator builds the assignment ring from the live members that are not
+ * draining, so a leaver takes no new primary or backup, but it passes the full
+ * live set to {@link RoutingTable.evolve}, so the leaver stays a previous owner
+ * and keeps answering reads until its fragments have drained and its report shows
+ * the partition empty. The not-ready read gate belongs to a later slice.
  *
  * @internal
  */
@@ -59,7 +64,7 @@ import { REQUEST_TIMEOUT_MS } from "./constants";
 import { KvProtocolError } from "./errors";
 import type { ClusterMember, ClusterView, KvTransport } from "./ports";
 import { PartitionRing } from "./ring";
-import { type OwnershipReport, RoutingTable } from "./routingtable";
+import { type OwnershipReport, RoutingTable } from "./routing.table";
 import { decodeMessage, encodeMessage, type KvMessage, MessageKind } from "./wire";
 
 /**
@@ -237,13 +242,20 @@ export class Coordinator {
    * new version only when the owners actually changed.
    */
   #recompute(members: readonly ClusterMember[]): RoutingTable {
-    const names: string[] = members.map((member: ClusterMember): string => member.name);
+    const live: Set<string> = new Set(members.map((member: ClusterMember): string => member.name));
+    const assignable: string[] = members
+      .filter((member: ClusterMember): boolean => !member.draining)
+      .map((member: ClusterMember): string => member.name);
+    // Every member draining at once leaves no node to demote onto, so the ring
+    // falls back to the full set rather than emptying and throwing.
+    const names: string[] = assignable.length > 0 ? assignable : [...live];
     const ring: PartitionRing = new PartitionRing(names, this.#partitionCount);
     const candidate: RoutingTable = RoutingTable.evolve(
       this.#table,
       ring,
       this.#reports,
       this.#maxVersion + 1n,
+      live,
     );
     if (this.#table !== undefined && sameOwners(this.#table, candidate)) {
       return this.#table;

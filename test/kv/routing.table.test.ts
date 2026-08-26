@@ -28,7 +28,7 @@ import {
   type OwnershipReport,
   type PartitionPlacement,
   RoutingTable,
-} from "../../src/kv/routingtable";
+} from "../../src/kv/routing.table";
 import type { RoutingTableWire } from "../../src/kv/wire";
 
 /** A live member that is not the primary of partition `id`. */
@@ -237,5 +237,52 @@ describe("RoutingTable.evolve", () => {
     const ring: PartitionRing = new PartitionRing(["A", "B"], 6);
     const previous: RoutingTable = new RoutingTable(1n, [["A"], ["B"]]);
     expect((): RoutingTable => RoutingTable.evolve(previous, ring, [], 2n)).toThrow(RangeError);
+  });
+});
+
+describe("RoutingTable.evolve draining retention", () => {
+  it("demotes a draining owner from the ring but keeps it as a previous owner via the live set", () => {
+    const full: PartitionRing = new PartitionRing(["A", "B", "C"], 6);
+    const leaver: string = full.primary(0);
+    const previous: RoutingTable = settledTable(full, 1n);
+    const survivors: string[] = ["A", "B", "C"].filter((name: string): boolean => name !== leaver);
+    const assignable: PartitionRing = new PartitionRing(survivors, 6);
+    const live: Set<string> = new Set(["A", "B", "C"]);
+
+    const next: RoutingTable = RoutingTable.evolve(previous, assignable, [], 2n, live);
+    expect(next.primary(0)).toBe(assignable.primary(0));
+    expect(next.primary(0)).not.toBe(leaver);
+    expect(next.owners(0)).toEqual([leaver, assignable.primary(0)]);
+    expect(next.isFragmented(0)).toBe(true);
+  });
+
+  it("prunes the demoted owner when the live set is the ring's own members", () => {
+    const full: PartitionRing = new PartitionRing(["A", "B", "C"], 6);
+    const leaver: string = full.primary(0);
+    const previous: RoutingTable = settledTable(full, 1n);
+    const survivors: string[] = ["A", "B", "C"].filter((name: string): boolean => name !== leaver);
+    const assignable: PartitionRing = new PartitionRing(survivors, 6);
+
+    const next: RoutingTable = RoutingTable.evolve(previous, assignable, [], 2n);
+    expect(next.owners(0)).toEqual([assignable.primary(0)]);
+    expect(next.owners(0)).not.toContain(leaver);
+  });
+
+  it("prunes the draining owner once its report shows the partition drained", () => {
+    const full: PartitionRing = new PartitionRing(["A", "B", "C"], 6);
+    const leaver: string = full.primary(0);
+    const survivors: string[] = ["A", "B", "C"].filter((name: string): boolean => name !== leaver);
+    const assignable: PartitionRing = new PartitionRing(survivors, 6);
+    const live: Set<string> = new Set(["A", "B", "C"]);
+    const fragmented: RoutingTable = new RoutingTable(2n, [
+      [leaver, assignable.primary(0)],
+      ...Array.from({ length: 5 }, (_unused: unknown, index: number): string[] => [
+        assignable.primary(index + 1),
+      ]),
+    ]);
+    const reports: OwnershipReport[] = [{ node: leaver, partitions: [] }];
+
+    const next: RoutingTable = RoutingTable.evolve(fragmented, assignable, reports, 3n, live);
+    expect(next.owners(0)).toEqual([assignable.primary(0)]);
   });
 });

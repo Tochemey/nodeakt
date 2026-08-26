@@ -86,6 +86,22 @@ export function isReapableTombstone(entry: Entry, nowMs: number): boolean {
   return entry.deleted && nowMs - entry.timestamp.wallMs >= TOMBSTONE_TTL_MS;
 }
 
+/** Decorrelates the repair bucket from the partition hash so the two are independent. */
+const BUCKET_SEED: number = 0x2545f491;
+
+/**
+ * The repair sub-bucket a key falls in, in `[0, bucketCount)`. Anti-entropy XORs
+ * each entry's contribution into its key's bucket, so two replicas that differ in
+ * one key differ in one bucket. A second seed decorrelates this from the
+ * partition hash, and it reads UTF-8 bytes through {@link hash32} so every node
+ * assigns a key the same bucket.
+ *
+ * @internal
+ */
+export function repairBucket(key: string, bucketCount: number): number {
+  return mix32((hash32(key) ^ BUCKET_SEED) >>> 0) % bucketCount;
+}
+
 /** Decorrelates the high lane from the low lane so they are not one permutation. */
 const HI_SEED: number = 0x9e3779b9;
 

@@ -23,8 +23,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { TOMBSTONE_TTL_MS } from "../../src/kv/constants";
-import type { DigestLanes } from "../../src/kv/entry";
+import { REPAIR_BUCKETS, TOMBSTONE_TTL_MS } from "../../src/kv/constants";
+import { type DigestLanes, repairBucket } from "../../src/kv/entry";
 import { Partition } from "../../src/kv/partition";
 import type { Entry, HybridTime } from "../../src/kv/ports";
 
@@ -164,5 +164,56 @@ describe("Partition entries", () => {
     partition.apply(tombstone("b", at(1)));
     const keys: string[] = [...partition.entries()].map((entry: Entry): string => entry.key);
     expect(keys).toEqual(["a", "b"]);
+  });
+});
+
+/** A key whose repair bucket differs from `bucket`, for splitting keys across buckets. */
+function keyOutsideBucket(bucket: number): string {
+  for (let index: number = 1; index < 10_000; index += 1) {
+    const key: string = `key-${index}`;
+    if (repairBucket(key, REPAIR_BUCKETS) !== bucket) {
+      return key;
+    }
+  }
+
+  throw new Error("no key outside the bucket");
+}
+
+describe("Partition anti-entropy", () => {
+  it("splits the digest across buckets and matches an identical fragment", () => {
+    const first: Partition = new Partition();
+    const second: Partition = new Partition();
+    first.apply(value("x", at(1)));
+    second.apply(value("x", at(1)));
+    const digests: DigestLanes[] = first.bucketDigests(REPAIR_BUCKETS);
+    expect(digests).toHaveLength(REPAIR_BUCKETS);
+    expect(digests).toEqual(second.bucketDigests(REPAIR_BUCKETS));
+
+    const bucket: number = repairBucket("x", REPAIR_BUCKETS);
+    expect(digests[bucket]).not.toEqual(ZERO);
+    const others: DigestLanes[] = digests.filter(
+      (_: DigestLanes, index: number): boolean => index !== bucket,
+    );
+    expect(others.every((lane: DigestLanes): boolean => lane.hi === 0 && lane.lo === 0)).toBe(true);
+  });
+
+  it("returns key versions only for the requested buckets", () => {
+    const partition: Partition = new Partition();
+    const held: string = "key-0";
+    const heldBucket: number = repairBucket(held, REPAIR_BUCKETS);
+    const excluded: string = keyOutsideBucket(heldBucket);
+    partition.apply(value(held, at(1)));
+    partition.apply(value(excluded, at(2)));
+    const keys: string[] = partition
+      .keyVersions(new Set([heldBucket]), REPAIR_BUCKETS)
+      .map((version): string => version.key);
+    expect(keys).toEqual([held]);
+  });
+
+  it("returns entries only for the keys it holds", () => {
+    const partition: Partition = new Partition();
+    partition.apply(value("here", at(1)));
+    const found: Entry[] = partition.entriesFor(new Set(["here", "absent"]));
+    expect(found.map((entry: Entry): string => entry.key)).toEqual(["here"]);
   });
 });

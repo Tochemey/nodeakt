@@ -46,8 +46,10 @@ import {
   MAX_VALUE_BYTES,
   MAX_WIRE_PARTITIONS,
   PROTOCOL_VERSION,
+  REPAIR_BUCKETS,
 } from "./constants";
 import { PutCondition, RejectionReason, WriteKind } from "./discriminants";
+import type { DigestLanes } from "./entry";
 import { KvProtocolError } from "./errors";
 import type {
   CompareAndSetOp,
@@ -55,6 +57,7 @@ import type {
   Entry,
   HybridTime,
   IncrementOp,
+  KeyVersion,
   PutOp,
   WriteOp,
   WriteResult,
@@ -84,8 +87,26 @@ export const MSG_PEEK_REQUEST: number = 0x07;
 /** Primary's refusal of a conditional write whose partition is fragmented. @internal */
 export const MSG_REBALANCING: number = 0x08;
 
-/** Request for a peer's entries of one partition; answered with a fragment chunk. @internal */
+/** Paged pull of a peer's entries of one partition; answered with a fragment chunk. @internal */
 export const MSG_FRAGMENT_REQUEST: number = 0x09;
+
+/** Pushed chunk of a fragment transfer during a drain or refill; answered with an ack. @internal */
+export const MSG_FRAGMENT_PUSH: number = 0x0a;
+
+/** Receiver's acknowledgment that a pushed fragment chunk was merged. @internal */
+export const MSG_FRAGMENT_ACK: number = 0x0b;
+
+/** Anti-entropy open: a partition digest, answered with in-sync or bucket digests. @internal */
+export const MSG_SYNC_DIGEST: number = 0x0c;
+
+/** Anti-entropy reply: per-bucket digests, or an empty list when the digests matched. @internal */
+export const MSG_BUCKET_DIGESTS: number = 0x0d;
+
+/** Anti-entropy request for the key versions of the given divergent buckets. @internal */
+export const MSG_KEY_VERSIONS_REQUEST: number = 0x0e;
+
+/** Anti-entropy reply: the key and last-write-wins order of each entry in those buckets. @internal */
+export const MSG_KEY_VERSIONS: number = 0x0f;
 
 /** Coordinator push of the versioned routing table. @internal */
 export const MSG_TABLE: number = 0x10;
@@ -95,6 +116,9 @@ export const MSG_FRAGMENT_CHUNK: number = 0x11;
 
 /** A member's reply to a table push, listing the partitions it still holds. @internal */
 export const MSG_OWNERSHIP_REPORT: number = 0x12;
+
+/** Anti-entropy request for specific entries by key; answered with a fragment chunk. @internal */
+export const MSG_ENTRIES_REQUEST: number = 0x13;
 
 /** Largest value representable in an unsigned 64-bit field. */
 const MAX_U64: bigint = 0xffffffffffffffffn;
@@ -756,7 +780,34 @@ export type KvMessage =
   | { readonly kind: "replicate-ack" }
   | { readonly kind: "peek-request"; readonly key: string }
   | { readonly kind: "rebalancing"; readonly partitionId: number }
-  | { readonly kind: "fragment-request"; readonly partitionId: number };
+  | {
+      readonly kind: "fragment-request";
+      readonly partitionId: number;
+      readonly afterKey: string | undefined;
+    }
+  | { readonly kind: "fragment-push"; readonly chunk: FragmentChunkWire }
+  | { readonly kind: "fragment-ack" }
+  | { readonly kind: "sync-digest"; readonly partitionId: number; readonly digest: DigestLanes }
+  | {
+      readonly kind: "bucket-digests";
+      readonly partitionId: number;
+      readonly digests: readonly DigestLanes[];
+    }
+  | {
+      readonly kind: "key-versions-request";
+      readonly partitionId: number;
+      readonly buckets: readonly number[];
+    }
+  | {
+      readonly kind: "key-versions";
+      readonly partitionId: number;
+      readonly versions: readonly KeyVersion[];
+    }
+  | {
+      readonly kind: "entries-request";
+      readonly partitionId: number;
+      readonly keys: readonly string[];
+    };
 
 /**
  * Named values for the {@link KvMessage} discriminants, so a construction or a
@@ -779,6 +830,13 @@ export const MessageKind = {
   peekRequest: "peek-request",
   rebalancing: "rebalancing",
   fragmentRequest: "fragment-request",
+  fragmentPush: "fragment-push",
+  fragmentAck: "fragment-ack",
+  syncDigest: "sync-digest",
+  bucketDigests: "bucket-digests",
+  keyVersionsRequest: "key-versions-request",
+  keyVersions: "key-versions",
+  entriesRequest: "entries-request",
 } as const satisfies Record<string, KvMessage["kind"]>;
 
 /** Writes the two-byte envelope: protocol version, then message type. */
@@ -862,14 +920,201 @@ function encodeBody(writer: ByteWriter, message: KvMessage): void {
 
   if (message.kind === MessageKind.rebalancing) {
     writeEnvelope(writer, MSG_REBALANCING);
-    assertU32(message.partitionId, "partition id");
-    writer.u32(message.partitionId);
+    writePartitionField(writer, message.partitionId);
     return;
   }
 
-  writeEnvelope(writer, MSG_FRAGMENT_REQUEST);
-  assertU32(message.partitionId, "partition id");
-  writer.u32(message.partitionId);
+  if (message.kind === MessageKind.fragmentRequest) {
+    writeEnvelope(writer, MSG_FRAGMENT_REQUEST);
+    writePartitionField(writer, message.partitionId);
+    writeOptionalKey(writer, message.afterKey);
+    return;
+  }
+
+  if (message.kind === MessageKind.fragmentPush) {
+    writeEnvelope(writer, MSG_FRAGMENT_PUSH);
+    writeChunk(writer, message.chunk);
+    return;
+  }
+
+  if (message.kind === MessageKind.fragmentAck) {
+    writeEnvelope(writer, MSG_FRAGMENT_ACK);
+    return;
+  }
+
+  if (message.kind === MessageKind.syncDigest) {
+    writeEnvelope(writer, MSG_SYNC_DIGEST);
+    writePartitionField(writer, message.partitionId);
+    writeDigest(writer, message.digest);
+    return;
+  }
+
+  if (message.kind === MessageKind.bucketDigests) {
+    writeEnvelope(writer, MSG_BUCKET_DIGESTS);
+    writePartitionField(writer, message.partitionId);
+    writeDigests(writer, message.digests);
+    return;
+  }
+
+  if (message.kind === MessageKind.keyVersionsRequest) {
+    writeEnvelope(writer, MSG_KEY_VERSIONS_REQUEST);
+    writePartitionField(writer, message.partitionId);
+    writeBuckets(writer, message.buckets);
+    return;
+  }
+
+  if (message.kind === MessageKind.keyVersions) {
+    writeEnvelope(writer, MSG_KEY_VERSIONS);
+    writePartitionField(writer, message.partitionId);
+    writeKeyVersions(writer, message.versions);
+    return;
+  }
+
+  writeEnvelope(writer, MSG_ENTRIES_REQUEST);
+  writePartitionField(writer, message.partitionId);
+  writeKeys(writer, message.keys);
+}
+
+/** Writes a partition id, validating it fits the unsigned 32-bit wire field. */
+function writePartitionField(writer: ByteWriter, partitionId: number): void {
+  assertU32(partitionId, "partition id");
+  writer.u32(partitionId);
+}
+
+/** Writes a rolling digest as two unsigned 32-bit lanes. */
+function writeDigest(writer: ByteWriter, digest: DigestLanes): void {
+  assertU32(digest.hi, "digest hi");
+  assertU32(digest.lo, "digest lo");
+  writer.u32(digest.hi);
+  writer.u32(digest.lo);
+}
+
+/** Reads a rolling digest of two unsigned 32-bit lanes. */
+function readDigest(reader: ByteReader): DigestLanes {
+  const hi: number = reader.u32();
+  const lo: number = reader.u32();
+  return { hi, lo };
+}
+
+/** Writes a per-bucket digest list, an empty list meaning the digests matched. */
+function writeDigests(writer: ByteWriter, digests: readonly DigestLanes[]): void {
+  if (digests.length > REPAIR_BUCKETS) {
+    fail("bucket digest count is out of range");
+  }
+
+  writer.u32(digests.length);
+  for (const digest of digests) {
+    writeDigest(writer, digest);
+  }
+}
+
+/** Reads a per-bucket digest list, bounding the count before allocating. */
+function readDigests(reader: ByteReader): DigestLanes[] {
+  const count: number = reader.u32();
+  if (count > REPAIR_BUCKETS) {
+    fail("bucket digest count is out of range");
+  }
+
+  const digests: DigestLanes[] = [];
+  for (let index: number = 0; index < count; index += 1) {
+    digests.push(readDigest(reader));
+  }
+
+  return digests;
+}
+
+/** Writes a list of repair bucket indices. */
+function writeBuckets(writer: ByteWriter, buckets: readonly number[]): void {
+  if (buckets.length > REPAIR_BUCKETS) {
+    fail("bucket count is out of range");
+  }
+
+  writer.u32(buckets.length);
+  for (const bucket of buckets) {
+    assertU32(bucket, "bucket index");
+    writer.u32(bucket);
+  }
+}
+
+/** Reads a list of repair bucket indices, bounding the count before allocating. */
+function readBuckets(reader: ByteReader): number[] {
+  const count: number = reader.u32();
+  if (count > REPAIR_BUCKETS) {
+    fail("bucket count is out of range");
+  }
+
+  const buckets: number[] = [];
+  for (let index: number = 0; index < count; index += 1) {
+    buckets.push(reader.u32());
+  }
+
+  return buckets;
+}
+
+/** Writes a list of key versions: each a key followed by its hybrid timestamp. */
+function writeKeyVersions(writer: ByteWriter, versions: readonly KeyVersion[]): void {
+  if (versions.length > MAX_CHUNK_ENTRIES) {
+    fail("key version count is out of range");
+  }
+
+  writer.u32(versions.length);
+  for (const version of versions) {
+    writeKey(writer, version.key);
+    writeHybridTime(writer, version.timestamp);
+  }
+}
+
+/** Reads a list of key versions, bounding the count before allocating. */
+function readKeyVersions(reader: ByteReader): KeyVersion[] {
+  const count: number = reader.u32();
+  if (count > MAX_CHUNK_ENTRIES) {
+    fail("key version count is out of range");
+  }
+
+  const versions: KeyVersion[] = [];
+  for (let index: number = 0; index < count; index += 1) {
+    versions.push({ key: readKey(reader), timestamp: readHybridTime(reader) });
+  }
+
+  return versions;
+}
+
+/** Writes a list of keys. */
+function writeKeys(writer: ByteWriter, keys: readonly string[]): void {
+  if (keys.length > MAX_CHUNK_ENTRIES) {
+    fail("key count is out of range");
+  }
+
+  writer.u32(keys.length);
+  for (const key of keys) {
+    writeKey(writer, key);
+  }
+}
+
+/** Reads a list of keys, bounding the count before allocating. */
+function readKeys(reader: ByteReader): string[] {
+  const count: number = reader.u32();
+  if (count > MAX_CHUNK_ENTRIES) {
+    fail("key count is out of range");
+  }
+
+  const keys: string[] = [];
+  for (let index: number = 0; index < count; index += 1) {
+    keys.push(readKey(reader));
+  }
+
+  return keys;
+}
+
+/** Writes a presence byte followed by the fragment cursor key when present. */
+function writeOptionalKey(writer: ByteWriter, key: string | undefined): void {
+  if (key === undefined) {
+    writer.u8(0);
+    return;
+  }
+
+  writer.u8(1);
+  writeKey(writer, key);
 }
 
 /** Writes a presence byte followed by the entry when present. */
@@ -986,10 +1231,58 @@ function decodeBody(reader: ByteReader, type: number): KvMessage {
   }
 
   if (type === MSG_FRAGMENT_REQUEST) {
-    return { kind: MessageKind.fragmentRequest, partitionId: reader.u32() };
+    const partitionId: number = reader.u32();
+    return { kind: MessageKind.fragmentRequest, partitionId, afterKey: readOptionalKey(reader) };
+  }
+
+  if (type === MSG_FRAGMENT_PUSH) {
+    return { kind: MessageKind.fragmentPush, chunk: readChunk(reader) };
+  }
+
+  if (type === MSG_FRAGMENT_ACK) {
+    return { kind: MessageKind.fragmentAck };
+  }
+
+  if (type === MSG_SYNC_DIGEST) {
+    const partitionId: number = reader.u32();
+    return { kind: MessageKind.syncDigest, partitionId, digest: readDigest(reader) };
+  }
+
+  if (type === MSG_BUCKET_DIGESTS) {
+    const partitionId: number = reader.u32();
+    return { kind: MessageKind.bucketDigests, partitionId, digests: readDigests(reader) };
+  }
+
+  if (type === MSG_KEY_VERSIONS_REQUEST) {
+    const partitionId: number = reader.u32();
+    return { kind: MessageKind.keyVersionsRequest, partitionId, buckets: readBuckets(reader) };
+  }
+
+  if (type === MSG_KEY_VERSIONS) {
+    const partitionId: number = reader.u32();
+    return { kind: MessageKind.keyVersions, partitionId, versions: readKeyVersions(reader) };
+  }
+
+  if (type === MSG_ENTRIES_REQUEST) {
+    const partitionId: number = reader.u32();
+    return { kind: MessageKind.entriesRequest, partitionId, keys: readKeys(reader) };
   }
 
   return fail("unknown message type");
+}
+
+/** Reads a presence byte and the fragment cursor key it guards. */
+function readOptionalKey(reader: ByteReader): string | undefined {
+  const present: number = reader.u8();
+  if (present === 0) {
+    return undefined;
+  }
+
+  if (present !== 1) {
+    fail("fragment cursor flag is invalid");
+  }
+
+  return readKey(reader);
 }
 
 /** Reads a presence byte and the entry it guards. */

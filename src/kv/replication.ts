@@ -43,12 +43,20 @@
  * swapping the durability implementation would not disturb them.
  *
  * An unfragmented partition is read from its single primary, which is
- * authoritative. A fragmented partition, the transient state a move or a
- * recovery produces, is read by gathering the raw version from every owner,
- * resolving last write wins across them, and repairing the stale owners off the
- * caller's path; a previous owner still serves the data a new primary has not
- * yet received. {@link PrimaryBackup.reconcile} folds a set of peers' fragments
- * into this node under the same rule, the union a promoted primary needs.
+ * authoritative. A fragmented partition, the transient state a move produces, is
+ * read by gathering the raw version from every owner, resolving last write wins
+ * across them, and repairing the stale owners off the caller's path; a previous
+ * owner still serves the data a new primary has not yet received. {@link
+ * PrimaryBackup.reconcile} folds a set of peers' fragments into this node under
+ * the same rule, the union a promoted primary needs.
+ *
+ * Crash recovery names a single surviving primary, so its partition looks
+ * unfragmented, but that primary may be missing writes that lived only on
+ * another survivor. While the recovery layer signals such a partition through
+ * `isRecovering`, this node gathers a read across itself and its backups rather
+ * than trust its local fragment, and refuses conditional writes, so no
+ * acknowledged write is missed and no duplicate is minted before the promoted
+ * primary has reconciled.
  *
  * The rebalance gate is checked twice: at the node a request enters, as a fast
  * refusal, and again at the primary against its own view, so a stale sender
@@ -62,10 +70,11 @@ import { PutCondition, WriteKind } from "./discriminants";
 import type { Engine } from "./engine";
 import { isLiveValue, supersedes } from "./entry";
 import { ClusterUnavailableError, KvProtocolError, PartitionRebalancingError } from "./errors";
+import { FragmentTransfer } from "./fragment";
 import type { Entry, KvTransport, WriteOp, WriteResult } from "./ports";
-import { PrimaryBackup, type ReplicationMode } from "./primarybackup";
+import { PrimaryBackup, type ReplicationMode } from "./primary.backup";
 import type { PartitionRing } from "./ring";
-import type { PartitionPlacement, RoutingTable } from "./routingtable";
+import type { PartitionPlacement, RoutingTable } from "./routing.table";
 import { decodeMessage, encodeMessage, type KvMessage, MessageKind } from "./wire";
 
 /** One owner's raw version for a key during a fragmented gather. */
@@ -125,6 +134,13 @@ export interface ReplicatorOptions {
   readonly writeQuorum?: number;
   /** Intended replica set size including the primary, for ring backups. */
   readonly replicaCount?: number;
+  /**
+   * Whether a partition this node primaries is still catching up after a crash
+   * promotion, so a read must gather across the backups rather than trust the
+   * local fragment and a conditional write must be refused. The recovery layer
+   * supplies this; the default reports no partition recovering.
+   */
+  readonly isRecovering?: (partition: number) => boolean;
 }
 
 /**
@@ -142,6 +158,9 @@ export class Replicator {
   /** Carrier for forwarding to a remote primary and for inbound RPCs. */
   readonly #transport: KvTransport;
 
+  /** Paged fragment transfer serving inbound fragment pulls and pushes. */
+  readonly #transfer: FragmentTransfer;
+
   /** Intended replica set size including the primary. */
   readonly #replicaCount: number;
 
@@ -150,6 +169,9 @@ export class Replicator {
 
   /** Write quorum passed to each partition group. */
   readonly #writeQuorum: number;
+
+  /** Whether a partition this node primaries is still reconciling after a promotion. */
+  readonly #isRecovering: (partition: number) => boolean;
 
   /** Replication groups for partitions this node primaries, created on first use. */
   readonly #groups: Map<number, PrimaryBackup> = new Map();
@@ -180,9 +202,11 @@ export class Replicator {
     this.#self = self;
     this.#engine = engine;
     this.#transport = transport;
+    this.#transfer = new FragmentTransfer(engine, transport);
     this.#replicaCount = options.replicaCount ?? DEFAULT_REPLICA_COUNT;
     this.#mode = options.mode ?? "sync";
     this.#writeQuorum = writeQuorum;
+    this.#isRecovering = options.isRecovering ?? ((): boolean => false);
   }
 
   /**
@@ -202,13 +226,14 @@ export class Replicator {
    * Serves a write: locally when this node is the primary, else forwarded to it.
    *
    * @throws {PartitionRebalancingError} For a conditional write whose partition
-   * has more than one owner.
+   * has more than one owner or is still reconciling after a crash promotion,
+   * since a primary that is not yet authoritative could mint a duplicate.
    * @throws {ClusterUnavailableError} Before a routing table is installed.
    */
   async write(op: WriteOp): Promise<WriteResult> {
     const partition: number = this.#engine.partitionFor(op.key);
     const placement: PartitionPlacement = this.#placementOf(partition);
-    if (isConditional(op) && placement.owners.length > 1) {
+    if (isConditional(op) && (placement.owners.length > 1 || this.#isRecovering(partition))) {
       throw new PartitionRebalancingError(partition);
     }
 
@@ -235,7 +260,7 @@ export class Replicator {
     }
 
     if (placement.primary === this.#self) {
-      return this.#groupFor(partition).read(key);
+      return this.#servePrimaryRead(partition, key);
     }
 
     return this.#forwardRead(placement.primary, key);
@@ -254,7 +279,8 @@ export class Replicator {
     }
 
     if (message.kind === MessageKind.readRequest) {
-      const entry: Entry | undefined = await this.#engine.read(message.key);
+      const partition: number = this.#engine.partitionFor(message.key);
+      const entry: Entry | undefined = await this.#servePrimaryRead(partition, message.key);
       return encodeMessage({ kind: MessageKind.readResponse, entry });
     }
 
@@ -271,9 +297,15 @@ export class Replicator {
     }
 
     if (message.kind === MessageKind.fragmentRequest) {
-      const entries: Entry[] = this.#engine.snapshot(message.partitionId);
-      const chunk = { partitionId: message.partitionId, final: true, entries };
-      return encodeMessage({ kind: MessageKind.fragmentChunk, chunk });
+      return encodeMessage({
+        kind: MessageKind.fragmentChunk,
+        chunk: this.#transfer.servePage(message.partitionId, message.afterKey),
+      });
+    }
+
+    if (message.kind === MessageKind.fragmentPush) {
+      this.#transfer.applyChunk(message.chunk);
+      return encodeMessage({ kind: MessageKind.fragmentAck });
     }
 
     throw new KvProtocolError("replication received an unexpected message");
@@ -287,7 +319,8 @@ export class Replicator {
    */
   async #serveWrite(op: WriteOp): Promise<Uint8Array> {
     const partition: number = this.#engine.partitionFor(op.key);
-    if (isConditional(op) && this.#placementOf(partition).owners.length > 1) {
+    const fragmented: boolean = this.#placementOf(partition).owners.length > 1;
+    if (isConditional(op) && (fragmented || this.#isRecovering(partition))) {
       return encodeMessage({
         kind: MessageKind.rebalancing,
         partitionId: partition,
@@ -296,6 +329,21 @@ export class Replicator {
 
     const result: WriteResult = await this.#groupFor(partition).propose(op);
     return encodeMessage({ kind: MessageKind.writeResponse, result });
+  }
+
+  /**
+   * Serves a read where this node is the sole primary: through the partition's
+   * replication group on the fast path, or, while the partition is still
+   * reconciling after a crash promotion, by gathering across this node and its
+   * backups and taking the newest live version, exactly as a fragmented read
+   * does. Once reconcile clears the flag it collapses back to the group read.
+   */
+  #servePrimaryRead(partition: number, key: string): Promise<Entry | undefined> {
+    if (this.#isRecovering(partition)) {
+      return this.#gather(key, [this.#self, ...this.#placementOf(partition).backups]);
+    }
+
+    return this.#groupFor(partition).read(key);
   }
 
   /**

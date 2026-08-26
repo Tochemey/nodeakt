@@ -109,13 +109,15 @@ src/kv/
   entry.ts          the stored value, tombstones, last-write-wins comparison
   partition.ts      one fragment: its map, its rolling digest, its TTL
   store.ts          all fragments on one node, the janitor, chunked iteration
-  routingtable.ts   the versioned routing table
+  routing.table.ts  the versioned routing table
   engine.ts         single-node operations through the per-partition pipeline
   coordinator.ts    election, table computation, push, ownership reports
-  primarybackup.ts  the ReplicationGroup implementation: quorum acknowledgment, reconcile
+  primary.backup.ts the ReplicationGroup implementation: quorum acknowledgment, reconcile
   replication.ts    the node router: route to primary, fragmented read gather, read repair
-  antientropy.ts    digest comparison, bucketed escalation, read repair
-  recovery.ts       departure, promotion, reconcile, refill, rebalance
+  fragment.ts       paged fragment transfer: the chunked move primitive, pull and push
+  anti.entropy.ts   digest comparison, bucketed escalation, entry-level convergence
+  recovery.ts       departure, promotion, reconcile, refill, drain, stale-rejoin re-seed
+  move.scheduler.ts priority queue bounding concurrent fragment moves
   resolver.ts       the pure split-brain strategy: a view plus the last stable size yields a survive-or-stop verdict
 
 test/kv/

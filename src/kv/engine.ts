@@ -40,13 +40,16 @@
  * @internal
  */
 
+import { REPAIR_BUCKETS } from "./constants";
 import { PutCondition, RejectionReason, WriteKind } from "./discriminants";
+import type { DigestLanes } from "./entry";
 import { isLiveValue } from "./entry";
 import { HybridClock } from "./hlc";
 import type {
   CompareAndSetOp,
   Entry,
   IncrementOp,
+  KeyVersion,
   PutOp,
   WriteApplied,
   WriteOp,
@@ -184,6 +187,26 @@ export class Engine {
     return this.#store.snapshot(partition);
   }
 
+  /** The rolling digest of `partition`, all-zero when this node holds no data for it. */
+  partitionDigest(partition: number): DigestLanes {
+    return this.#store.digest(partition) ?? { hi: 0, lo: 0 };
+  }
+
+  /** The per-repair-bucket digests of `partition`, for anti-entropy escalation. */
+  bucketDigests(partition: number): DigestLanes[] {
+    return this.#store.bucketDigests(partition, REPAIR_BUCKETS);
+  }
+
+  /** Key and last-write-wins order of every entry of `partition` in the given repair `buckets`. */
+  keyVersions(partition: number, buckets: ReadonlySet<number>): KeyVersion[] {
+    return this.#store.keyVersions(partition, buckets, REPAIR_BUCKETS);
+  }
+
+  /** The stored entries for `keys` in `partition`, tombstones included, for an anti-entropy pull. */
+  entriesFor(partition: number, keys: ReadonlySet<string>): Entry[] {
+    return this.#store.entriesFor(partition, keys);
+  }
+
   /**
    * Merges a peer's already-stamped entry into the local store under last write
    * wins. This is the backup intake path: the entry keeps the timestamp and
@@ -191,6 +214,14 @@ export class Engine {
    */
   merge(entry: Entry): void {
     this.#store.apply(entry);
+  }
+
+  /**
+   * Discards this node's fragment of `partition`, for a handoff the receiver has
+   * acknowledged or a stale rejoin that must re-seed. See {@link Store.drop}.
+   */
+  drop(partition: number): void {
+    this.#store.drop(partition);
   }
 
   /** Submits `op` to its partition's pipeline and resolves with the outcome. */

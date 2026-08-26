@@ -45,8 +45,9 @@
 import { REQUEST_TIMEOUT_MS } from "./constants";
 import type { Engine } from "./engine";
 import { KvQuorumError } from "./errors";
+import { FragmentTransfer } from "./fragment";
 import type { Entry, KvTransport, ReplicationGroup, WriteOp, WriteResult } from "./ports";
-import { decodeMessage, encodeMessage, type KvMessage, MessageKind } from "./wire";
+import { decodeMessage, encodeMessage, MessageKind } from "./wire";
 
 /** How far a write travels before it is acknowledged. @internal */
 export type ReplicationMode = "sync" | "async";
@@ -81,16 +82,6 @@ function isReplicateAck(bytes: Uint8Array): boolean {
   }
 }
 
-/** Decodes a fragment response into its entries, treating any other reply as empty. */
-function decodeFragment(bytes: Uint8Array): readonly Entry[] {
-  try {
-    const message: KvMessage = decodeMessage(bytes);
-    return message.kind === MessageKind.fragmentChunk ? message.chunk.entries : [];
-  } catch {
-    return [];
-  }
-}
-
 /**
  * The replication authority for one partition: the local apply followed by
  * quorum-acknowledged replication to the partition's backups.
@@ -104,8 +95,11 @@ export class PrimaryBackup implements ReplicationGroup {
   /** Local engine that stamps and stores primary writes. */
   readonly #engine: Engine;
 
-  /** Carrier for replicating a stamped entry to the backups and pulling reconciles. */
+  /** Carrier for replicating a stamped entry to the backups. */
   readonly #transport: KvTransport;
+
+  /** Paged fragment transfer, used to pull each peer's fragment during a reconcile. */
+  readonly #transfer: FragmentTransfer;
 
   /** Acknowledgments, counting the primary, that a synchronous write awaits. */
   readonly #writeQuorum: number;
@@ -129,6 +123,7 @@ export class PrimaryBackup implements ReplicationGroup {
     this.#partitionId = partitionId;
     this.#engine = engine;
     this.#transport = transport;
+    this.#transfer = new FragmentTransfer(engine, transport);
     this.#writeQuorum = writeQuorum;
     this.#mode = mode;
   }
@@ -144,20 +139,16 @@ export class PrimaryBackup implements ReplicationGroup {
   }
 
   /**
-   * Pulls each peer's fragment of this partition and merges it under last write
-   * wins, so a promoted primary gathers every write that survived a failure. An
-   * unreachable peer is skipped; the merge is idempotent, so a repeat is safe.
-   *
-   * Each peer answers in a single chunk. Paging a large fragment across bounded
-   * chunks, and the recovery that decides when to reconcile and promote, belong
-   * to the departure and recovery machinery that drives this method.
+   * Pulls each peer's fragment of this partition, page by page, and merges it
+   * under last write wins, so a promoted primary gathers every write that
+   * survived a failure. An unreachable peer is skipped; the merge is idempotent,
+   * so a repeat is safe. The recovery that decides when to reconcile and promote
+   * belongs to the machinery that drives this method.
    */
   async reconcile(peers: readonly string[]): Promise<void> {
-    const request: Uint8Array = encodeMessage({
-      kind: MessageKind.fragmentRequest,
-      partitionId: this.#partitionId,
-    });
-    await Promise.all(peers.map((peer: string): Promise<void> => this.#pullFrom(peer, request)));
+    await Promise.all(
+      peers.map((peer: string): Promise<void> => this.#transfer.pull(this.#partitionId, peer)),
+    );
   }
 
   /**
@@ -204,19 +195,5 @@ export class PrimaryBackup implements ReplicationGroup {
       (response: Uint8Array): boolean => isReplicateAck(response),
       (): boolean => false,
     );
-  }
-
-  /** Pulls one peer's fragment of this partition and merges every entry it returns. */
-  async #pullFrom(peer: string, request: Uint8Array): Promise<void> {
-    let response: Uint8Array;
-    try {
-      response = await this.#transport.request(peer, request, REQUEST_TIMEOUT_MS);
-    } catch {
-      return;
-    }
-
-    for (const entry of decodeFragment(response)) {
-      this.#engine.merge(entry);
-    }
   }
 }

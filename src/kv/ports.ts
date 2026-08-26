@@ -127,6 +127,20 @@ export interface CompareAndSetOp {
   readonly value: Uint8Array;
 }
 
+/**
+ * A key paired with the last-write-wins order of its stored entry, exchanged
+ * during anti-entropy so two replicas learn which side holds the newer version
+ * without shipping the values themselves.
+ *
+ * @internal
+ */
+export interface KeyVersion {
+  /** UTF-8 key of the entry. */
+  readonly key: string;
+  /** Last-write-wins order of the entry the holder stores for `key`. */
+  readonly timestamp: HybridTime;
+}
+
 /** Mutation submitted through {@link ReplicationGroup.propose}. @internal */
 export type WriteOp = PutOp | DeleteOp | IncrementOp | CompareAndSetOp;
 

@@ -39,6 +39,12 @@
  * report shows the partition drained. The version is a monotone counter, and
  * {@link RoutingTable.supersedes} is how a node keeps the newer of two tables.
  *
+ * A gracefully leaving member is excluded from the ring so it takes no new
+ * primary or backup, but it stays in the live set {@link RoutingTable.evolve}
+ * retains against, so it remains a previous owner and keeps answering reads until
+ * its fragments have drained. That split, ring for assignment and a wider live
+ * set for retention, is why `evolve` takes the live members separately.
+ *
  * @internal
  */
 
@@ -254,14 +260,20 @@ export class RoutingTable {
    * primary as its last owner, keeping any previous owner that is still live and
    * has not reported the partition drained.
    *
-   * A previous owner is dropped when it is no longer a ring member (it died or
-   * left) or when its report lists partitions but not this one (it drained).
-   * Absent a report, a demoted owner is kept so reads still reach its data.
+   * A previous owner is dropped when it is not in `live` (it died or was reaped)
+   * or when its report lists partitions but not this one (it drained). Absent a
+   * report, a demoted owner is kept so reads still reach its data. A draining
+   * member is absent from `ring` yet present in `live`, so it is demoted from
+   * primary but retained as a previous owner until its report shows it drained.
    *
    * @param previous The table being replaced, or `undefined` for the first one.
-   * @param ring Assignment for the new member set.
+   * @param ring Assignment for the new member set, from which draining members
+   * are already excluded so they take no new primary or backup.
    * @param reports The members' ownership reports.
    * @param version Version for the new table, above every version seen.
+   * @param live The members eligible to remain owners, which includes draining
+   * members that the ring omits. Defaults to the ring's members, so a caller that
+   * has no draining members need not pass it.
    * @throws {RangeError} If `previous` covers a different partition count.
    */
   static evolve(
@@ -269,13 +281,13 @@ export class RoutingTable {
     ring: PartitionRing,
     reports: readonly OwnershipReport[],
     version: bigint,
+    live: ReadonlySet<string> = new Set(ring.members()),
   ): RoutingTable {
     if (previous !== undefined && previous.partitionCount !== ring.partitionCount) {
       throw new RangeError("partition count must not change across table versions");
     }
 
     const held: Map<string, Set<number>> = aggregateReports(reports);
-    const live: Set<string> = new Set(ring.members());
     const owners: string[][] = new Array<string[]>(ring.partitionCount);
     for (let id: number = 0; id < ring.partitionCount; id += 1) {
       owners[id] = evolveOwners(previous, ring, held, live, id);
@@ -297,7 +309,7 @@ function evolveOwners(
   previous: RoutingTable | undefined,
   ring: PartitionRing,
   held: Map<string, Set<number>>,
-  live: Set<string>,
+  live: ReadonlySet<string>,
   id: number,
 ): string[] {
   const primary: string = ring.primary(id);
@@ -319,7 +331,7 @@ function isRetained(
   owner: string,
   primary: string,
   held: Map<string, Set<number>>,
-  live: Set<string>,
+  live: ReadonlySet<string>,
   id: number,
 ): boolean {
   if (owner === primary) {

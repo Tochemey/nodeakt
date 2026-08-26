@@ -27,7 +27,7 @@ import { Coordinator } from "../../src/kv/coordinator";
 import { KvProtocolError } from "../../src/kv/errors";
 import type { ClusterMember, KvTransport } from "../../src/kv/ports";
 import { PartitionRing } from "../../src/kv/ring";
-import { RoutingTable } from "../../src/kv/routingtable";
+import { RoutingTable } from "../../src/kv/routing.table";
 import { decodeMessage, encodeMessage, type KvMessage } from "../../src/kv/wire";
 import { member, SimCluster, SimFabric, settle } from "./sim";
 
@@ -251,6 +251,84 @@ describe("Coordinator report-driven pruning", () => {
     await settle(fabric, a.rebalance());
     await settle(fabric, a.rebalance());
     expect(a.currentTable()?.owners(fragment)).toEqual([primary]);
+  });
+});
+
+describe("Coordinator draining-aware demotion", () => {
+  it("excludes a draining member from primacy but keeps it as a previous owner", async () => {
+    const fabric: SimFabric = new SimFabric(1);
+    const nodes: Map<string, Node> = makeCluster(fabric, THREE);
+    const a: Coordinator = nodeOf(nodes, "A").coordinator;
+    await settle(fabric, a.rebalance());
+
+    const draining: ClusterMember[] = [
+      member("A", 10),
+      member("B", 20),
+      member("C", 30, { draining: true }),
+    ];
+    for (const name of ["A", "B", "C"]) {
+      nodeOf(nodes, name).view.set(draining);
+    }
+
+    await settle(fabric, a.rebalance());
+
+    const table: RoutingTable = a.currentTable() as RoutingTable;
+    let retained: number = 0;
+    for (let id: number = 0; id < PARTITIONS; id += 1) {
+      const owners: readonly string[] = table.owners(id);
+      expect(owners[owners.length - 1]).not.toBe("C");
+      if (owners.includes("C")) {
+        retained += 1;
+        expect(owners.length).toBeGreaterThan(1);
+      }
+    }
+
+    expect(retained).toBeGreaterThan(0);
+  });
+
+  it("prunes a draining member once it reports its partitions drained", async () => {
+    const fabric: SimFabric = new SimFabric(1);
+    const nodes: Map<string, Node> = makeCluster(fabric, THREE);
+    const a: Coordinator = nodeOf(nodes, "A").coordinator;
+    await settle(fabric, a.rebalance());
+
+    const draining: ClusterMember[] = [
+      member("A", 10),
+      member("B", 20),
+      member("C", 30, { draining: true }),
+    ];
+    for (const name of ["A", "B", "C"]) {
+      nodeOf(nodes, name).view.set(draining);
+    }
+
+    await settle(fabric, a.rebalance());
+    nodeOf(nodes, "C").held.clear();
+    await settle(fabric, a.rebalance());
+    await settle(fabric, a.rebalance());
+
+    const table: RoutingTable = a.currentTable() as RoutingTable;
+    for (let id: number = 0; id < PARTITIONS; id += 1) {
+      expect(table.owners(id)).not.toContain("C");
+    }
+  });
+
+  it("still assigns primaries when every member is draining", async () => {
+    const fabric: SimFabric = new SimFabric(1);
+    const everyone: ClusterMember[] = [
+      member("A", 10, { draining: true }),
+      member("B", 20, { draining: true }),
+    ];
+    const nodes: Map<string, Node> = makeCluster(fabric, everyone);
+    const a: Coordinator = nodeOf(nodes, "A").coordinator;
+    await settle(fabric, a.rebalance());
+
+    const table: RoutingTable = a.currentTable() as RoutingTable;
+    const primaries: Set<string> = new Set<string>();
+    for (let id: number = 0; id < PARTITIONS; id += 1) {
+      primaries.add(table.primary(id));
+    }
+
+    expect(primaries).toEqual(new Set(["A", "B"]));
   });
 });
 

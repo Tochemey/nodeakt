@@ -292,6 +292,14 @@ describe("Engine replica intake", () => {
     expect(engine.partitionFor("some-key")).toBe(partitionId("some-key", 16));
   });
 
+  it("drops a partition's fragment so a re-seed starts empty", async () => {
+    const engine: Engine = new Engine("n1", 1, (): number => 1_000);
+    await engine.write({ kind: "put", key: "k", value: bytes(1), condition: "none" });
+    expect(engine.peek("k")?.value).toEqual(bytes(1));
+    engine.drop(engine.partitionFor("k"));
+    expect(engine.peek("k")).toBeUndefined();
+  });
+
   it("peeks a tombstone the filtered read hides", async () => {
     const engine: Engine = newEngine();
     await engine.write({ kind: "put", key: "k", value: bytes(1), condition: "none" });

@@ -155,3 +155,12 @@ export const MAX_WIRE_PARTITIONS: number = 1_048_576;
 
 /** Maximum entries a single fragment chunk may carry. @internal */
 export const MAX_CHUNK_ENTRIES: number = 1_048_576;
+
+/**
+ * Maximum fragment moves a node runs at once, across drain, refill, and crash
+ * reconcile. Capping concurrency keeps a rebalance from saturating the link; the
+ * moves that do not fit queue and run as slots free, highest priority first.
+ *
+ * @internal
+ */
+export const MAX_CONCURRENT_MOVES: number = 4;
