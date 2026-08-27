@@ -300,7 +300,7 @@ describe("SimFabric transport", () => {
     const a: KvTransport = fabric.transport("A");
     const b: KvTransport = fabric.transport("B");
     echoIncrement(b);
-    await b.close();
+    await b.stop();
     await expect(b.request("A", bytes(1), 1_000)).rejects.toThrow(/closed/);
     await expect(settle(fabric, a.request("B", bytes(1), 1_000))).rejects.toThrow(/timed out/);
   });
@@ -309,7 +309,7 @@ describe("SimFabric transport", () => {
     const fabric: SimFabric = new SimFabric(1);
     const a: KvTransport = fabric.transport("A");
     const first: KvTransport = fabric.transport("B");
-    await first.close();
+    await first.stop();
     const second: KvTransport = fabric.transport("B");
     expect(second).not.toBe(first);
     echoIncrement(second);

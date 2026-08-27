@@ -42,7 +42,7 @@
  * the same `startedAt` and `address`.
  */
 
-/** The decoded clustering fields carried in a member's opaque metadata. */
+/** The decoded clustering fields carried in a member's opaque metadata. @internal */
 export interface NodeMetadata {
   /** Immutable process start time in epoch milliseconds; decides the coordinator. */
   readonly startedAt: number;
@@ -89,6 +89,7 @@ const UNDECODABLE: NodeMetadata = {
  *
  * @throws {RangeError} If `startedAt` is not a non-negative safe integer, or the
  * address exceeds its byte budget.
+ * @internal
  */
 export function encodeNodeMetadata(metadata: NodeMetadata): Uint8Array {
   if (!Number.isSafeInteger(metadata.startedAt) || metadata.startedAt < 0) {
@@ -118,6 +119,8 @@ export function encodeNodeMetadata(metadata: NodeMetadata): Uint8Array {
  * possible unaddressable member, so an undecodable peer can never be mistaken
  * for the oldest and made coordinator, and is dropped by the view adapter for
  * having no data endpoint.
+ *
+ * @internal
  */
 export function decodeNodeMetadata(bytes: Uint8Array): NodeMetadata {
   if (bytes.length < ADDRESS_OFFSET) {

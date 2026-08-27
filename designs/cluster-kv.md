@@ -75,7 +75,7 @@ export interface ClusterMember {
 export interface KvTransport {
   request(to: string, body: Uint8Array, deadlineMs: number): Promise<Uint8Array>;
   listen(handler: (from: string, body: Uint8Array) => Promise<Uint8Array>): void;
-  close(): Promise<void>;
+  stop(): Promise<void>;
 }
 
 /**
@@ -219,6 +219,7 @@ The partition count is the one capacity decision that must be made before the cl
 | `DEFAULT_WRITE_QUORUM`    | 2       | Acknowledge only after a second copy holds it                      |
 | `DEFAULT_READ_QUORUM`     | 1       | Primary is authoritative                                           |
 | `DEFAULT_MEMBER_QUORUM`   | 1       | 1 disables the resolver; keep-majority derives its threshold from the last stable size, not this number |
+| `STABLE_VIEW_QUIET_MS`    | 15000   | View must hold unchanged this long before its size becomes the split-brain baseline |
 | `TABLE_PUSH_INTERVAL_MS`  | 60000   | Periodic heal re-push                                              |
 | `REQUEST_TIMEOUT_MS`      | 5000    | Per RPC                                                            |
 | `BOOTSTRAP_TIMEOUT_MS`    | 10000   | Initial table plus fragment intake                                |

@@ -321,3 +321,12 @@ describe("Engine replica intake", () => {
     expect(engine.now()).toBe(1_234);
   });
 });
+
+describe("Engine held partitions", () => {
+  it("lists the ids of held partitions and nothing when empty", async () => {
+    const engine: Engine = newEngine();
+    expect(engine.heldPartitions()).toEqual([]);
+    await engine.write({ kind: "put", key: "alpha", value: bytes(1), condition: "none" });
+    expect(engine.heldPartitions()).toEqual([engine.partitionFor("alpha")]);
+  });
+});

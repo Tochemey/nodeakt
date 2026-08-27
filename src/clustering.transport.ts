@@ -57,8 +57,8 @@ const KV_INITIAL_CREDITS: number = 16 * 1024 * 1024;
 /** Concurrent large transfers a session admits. */
 const KV_MAX_LARGE_TRANSFERS: number = 4;
 
-/** Grace, in milliseconds, allowed for in-flight work to settle when closing the listener. */
-const KV_CLOSE_GRACE_MS: number = 1_000;
+/** Grace, in milliseconds, allowed for in-flight work to settle when stopping the listener. */
+const KV_STOP_GRACE_MS: number = 1_000;
 
 /** Error name reported when the store's inbound handler rejects a request. */
 const KV_HANDLER_ERROR_NAME: string = "KvHandlerError";
@@ -74,7 +74,7 @@ const KV_HANDLER_ERROR_NAME: string = "KvHandlerError";
  */
 const KV_REQUEST_KIND: number = KIND_ASK;
 
-/** Construction parameters for a {@link KvNetTransport}. */
+/** Construction parameters for a {@link KvNetTransport}. @internal */
 export interface KvNetTransportOptions {
   /** Bind host, also advertised to peers as part of this node's data endpoint. */
   readonly host: string;
@@ -103,6 +103,8 @@ export interface KvNetTransportOptions {
  * and the dialer's advertised endpoint to the store, then answers with the
  * store's response bytes, or a carrier error when the store has no handler or
  * its handler rejects.
+ *
+ * @internal
  */
 export class KvNetTransport implements KvTransport {
   /** The local carrier handshake, its port resolved to the bound one after start. */
@@ -111,12 +113,12 @@ export class KvNetTransport implements KvTransport {
   readonly #tls: TlsConfig | undefined;
   /** One pooled peer per target `host:port`, created on first use. */
   readonly #peers: Map<string, Peer> = new Map<string, Peer>();
-  /** The inbound listener, bound by start and shut down by close. */
+  /** The inbound listener, bound by start and shut down by stop. */
   #server: NetServer | undefined;
   /** The store's inbound dispatch, installed through listen. */
   #handler: ((from: string, body: Uint8Array) => Promise<Uint8Array>) | undefined;
-  /** Set by close so later requests reject instead of dialing. */
-  #closed: boolean = false;
+  /** Set by stop so later requests reject instead of dialing. */
+  #stopped: boolean = false;
 
   /** @param options The bind endpoint, optional carrier system name, and optional TLS. */
   constructor(options: KvNetTransportOptions) {
@@ -175,10 +177,16 @@ export class KvNetTransport implements KvTransport {
   /**
    * Sends `body` to the member at `to` and resolves with the reply payload, or
    * rejects when the deadline elapses or the carrier cannot deliver.
+   *
+   * `deadlineMs` bounds the wait for the reply. A request that must first dial a
+   * cold peer also waits up to the peer's dial timeout for the connection, so a
+   * fresh dial to an unresponsive host can run to the dial timeout plus the reply
+   * deadline before it rejects. The call is always bounded, never indefinite; the
+   * store's higher-level timeouts are sized with that dial headroom in mind.
    */
   async request(to: string, body: Uint8Array, deadlineMs: number): Promise<Uint8Array> {
-    if (this.#closed) {
-      throw new Error("kv transport is closed");
+    if (this.#stopped) {
+      throw new Error("kv transport is stopped");
     }
 
     // The carrier's ref slots (to, uid, sender, senderUid, typeRef) exist to
@@ -204,21 +212,28 @@ export class KvNetTransport implements KvTransport {
     this.#handler = handler;
   }
 
-  /** Closes every pooled peer and the listener; later requests reject. */
-  async close(): Promise<void> {
-    this.#closed = true;
+  /** Stops the transport: closes every pooled peer and the listener; later requests reject. */
+  async stop(): Promise<void> {
+    this.#stopped = true;
     for (const peer of this.#peers.values()) {
       peer.close();
     }
 
     this.#peers.clear();
     if (this.#server !== undefined) {
-      await this.#server.shutdown(KV_CLOSE_GRACE_MS);
+      await this.#server.shutdown(KV_STOP_GRACE_MS);
       this.#server = undefined;
     }
   }
 
-  /** Returns the pooled peer for `to`, dialing lazily on first use. */
+  /**
+   * Returns the pooled peer for `to`, dialing lazily on first use. The pool is
+   * keyed by member address and holds one peer per distinct address until the
+   * transport stops, when every peer is closed. A node keeps a stable data address
+   * for its lifetime, so the pool is bounded by the cluster's member count; only a
+   * deployment that rebinds nodes to fresh data ports on every restart would grow it
+   * over time, which the fixed data port a real deployment configures avoids.
+   */
   #peerFor(to: string): Peer {
     const existing: Peer | undefined = this.#peers.get(to);
     if (existing !== undefined) {
@@ -273,7 +288,7 @@ export class KvNetTransport implements KvTransport {
   }
 }
 
-/** Joins a host and port into `host:port`, bracketing an IPv6 literal for clarity. */
+/** Joins a host and port into `host:port`, bracketing an IPv6 literal for clarity. @internal */
 export function formatHostPort(host: string, port: number): string {
   return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
 }
@@ -282,6 +297,7 @@ export function formatHostPort(host: string, port: number): string {
  * Splits a `host:port` identity into its parts, unwrapping a bracketed IPv6 host.
  *
  * @throws {Error} If the identity has no port or the port is out of range.
+ * @internal
  */
 export function parseHostPort(address: string): { host: string; port: number } {
   const lastColon: number = address.lastIndexOf(":");

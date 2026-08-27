@@ -177,3 +177,12 @@ describe("Store snapshot", () => {
     expect(store.snapshot((held + 1) % 512)).toEqual([]);
   });
 });
+
+describe("Store held partitions", () => {
+  it("lists the ids of held partitions and nothing when empty", () => {
+    const store: Store = new Store(4);
+    expect(store.heldPartitions()).toEqual([]);
+    store.apply(value("alpha", at(1)));
+    expect(store.heldPartitions()).toEqual([store.partitionFor("alpha")]);
+  });
+});

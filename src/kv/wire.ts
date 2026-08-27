@@ -724,8 +724,8 @@ export interface PartitionOwners {
 /**
  * A versioned routing table as carried on the wire.
  *
- * The in-memory routing table of a later slice serializes into and out of this
- * shape; this codec knows only the bytes, not the table's behavior.
+ * The in-memory routing table serializes into and out of this shape; this codec
+ * knows only the bytes, not the table's behavior.
  *
  * @internal
  */
@@ -1182,6 +1182,24 @@ export function decodeMessage(bytes: Uint8Array): KvMessage {
   const message: KvMessage = decodeBody(reader, reader.u8());
   reader.end();
   return message;
+}
+
+/**
+ * Reads a message's type byte without decoding its body, so the canonical
+ * dispatch can route the raw bytes to the owning handler and each message is
+ * decoded exactly once, by that handler.
+ *
+ * @throws {KvProtocolError} For a truncated envelope or an unsupported version.
+ * @internal
+ */
+export function messageType(bytes: Uint8Array): number {
+  const reader: ByteReader = new ByteReader(bytes);
+  const version: number = reader.u8();
+  if (version !== PROTOCOL_VERSION) {
+    fail("unsupported protocol version");
+  }
+
+  return reader.u8();
 }
 
 /** Reads the body for a validated message type. */

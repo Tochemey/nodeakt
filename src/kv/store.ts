@@ -81,6 +81,11 @@ export class Store {
     return this.#partitions.size;
   }
 
+  /** The ids of the partitions this node currently holds data for. */
+  heldPartitions(): number[] {
+    return [...this.#partitions.keys()];
+  }
+
   /** Partition id a key maps onto, the same on every node. */
   partitionFor(key: string): number {
     return partitionId(key, this.#partitionCount);

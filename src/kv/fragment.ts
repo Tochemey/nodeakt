@@ -227,6 +227,40 @@ export class FragmentTransfer {
    * retry re-pulls idempotently.
    */
   async pull(partition: number, from: string): Promise<void> {
+    await this.#pages(partition, from, (chunk: FragmentChunkWire): void => {
+      this.applyChunk(chunk);
+    });
+  }
+
+  /**
+   * Reads `from`'s fragment of `partition` page by page and returns every entry
+   * it held, without merging any into the local store. A cluster-wide scan reads
+   * a partition it does not own this way, so it observes the remote state without
+   * disturbing its own. An unreachable or malformed page ends the read early,
+   * returning what arrived, the same best-effort termination {@link pull} has.
+   */
+  async collect(partition: number, from: string): Promise<Entry[]> {
+    const entries: Entry[] = [];
+    await this.#pages(partition, from, (chunk: FragmentChunkWire): void => {
+      // A push rather than a spread, so a chunk with very many entries cannot blow
+      // the call-argument limit the way spreading its entries would.
+      for (const entry of chunk.entries) {
+        entries.push(entry);
+      }
+    });
+    return entries;
+  }
+
+  /**
+   * Requests `from`'s fragment of `partition` page by page, handing each chunk to
+   * `onChunk`, until the final page, an unreachable or malformed page, or a page
+   * whose cursor fails to advance against a Byzantine peer.
+   */
+  async #pages(
+    partition: number,
+    from: string,
+    onChunk: (chunk: FragmentChunkWire) => void,
+  ): Promise<void> {
     let afterKey: string | undefined;
     while (true) {
       const chunk: FragmentChunkWire | undefined = await this.#requestPage(
@@ -238,7 +272,7 @@ export class FragmentTransfer {
         return;
       }
 
-      this.applyChunk(chunk);
+      onChunk(chunk);
       if (chunk.final) {
         return;
       }

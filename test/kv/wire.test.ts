@@ -39,6 +39,9 @@ import {
   decodeMessage,
   encodeMessage,
   type KvMessage,
+  MessageKind,
+  MSG_READ_REQUEST,
+  messageType,
   type PartitionOwners,
 } from "../../src/kv/wire";
 
@@ -611,5 +614,16 @@ describe("remaining validation paths", () => {
     for (const frame of [bigDigests, bigBuckets, bigVersions, bigKeys]) {
       expect((): KvMessage => decodeMessage(frame)).toThrow(KvProtocolError);
     }
+  });
+});
+
+describe("message type peek", () => {
+  it("reads the type byte of an encoded message without decoding its body", () => {
+    const encoded: Uint8Array = encodeMessage({ kind: MessageKind.readRequest, key: "k" });
+    expect(messageType(encoded)).toBe(MSG_READ_REQUEST);
+  });
+
+  it("rejects an unsupported protocol version", () => {
+    expect((): number => messageType(Uint8Array.of(99, MSG_READ_REQUEST))).toThrow(KvProtocolError);
   });
 });

@@ -37,6 +37,13 @@
  * keep publishing and versions never regress across a handover: a new
  * coordinator seeds its counter one above the highest version it has ever held.
  *
+ * A node that was partitioned away and resumes as coordinator may hold a table the
+ * majority has since advanced past. Its highest-ever-held version would then author
+ * a table that forks from, rather than supersedes, the one in force. To prevent that,
+ * a member answers a push it does not adopt with the table it holds instead of a
+ * report, and the pusher adopts that table and re-authors one version above it, so
+ * the cluster reconverges onto a single table rather than two at the same number.
+ *
  * This module owns neither a timer nor a membership subscription. `clustering.ts`
  * calls {@link Coordinator.rebalance} on a membership change and on the periodic
  * re-push interval, and routes an inbound table push to {@link
@@ -55,7 +62,7 @@
  * draining, so a leaver takes no new primary or backup, but it passes the full
  * live set to {@link RoutingTable.evolve}, so the leaver stays a previous owner
  * and keeps answering reads until its fragments have drained and its report shows
- * the partition empty. The not-ready read gate belongs to a later slice.
+ * the partition empty.
  *
  * @internal
  */
@@ -111,6 +118,44 @@ function decodeReport(bytes: Uint8Array): OwnershipReport | undefined {
   }
 
   return message.report;
+}
+
+/**
+ * Decodes a push response as a routing table, or `undefined` if it is not one. A
+ * member answers a push with its own table, instead of a report, when the pushed
+ * table did not supersede the one it holds, so the coordinator can catch up to it.
+ */
+function decodeTable(bytes: Uint8Array): RoutingTable | undefined {
+  let message: KvMessage;
+  try {
+    message = decodeMessage(bytes);
+  } catch {
+    return undefined;
+  }
+
+  if (message.kind !== MessageKind.table) {
+    return undefined;
+  }
+
+  return RoutingTable.fromWire(message.table);
+}
+
+/**
+ * Whether a member should answer a push with its own `held` table rather than a
+ * report. It informs the pusher when the push did not supersede what it holds and
+ * the two differ, either a higher version or the same version over different
+ * owners, so a pusher that resumed from a stale table can catch up to it.
+ */
+function informs(held: RoutingTable, pushed: RoutingTable): boolean {
+  if (pushed.supersedes(held)) {
+    return false;
+  }
+
+  if (held.supersedes(pushed)) {
+    return true;
+  }
+
+  return !sameOwners(held, pushed);
 }
 
 /**
@@ -202,7 +247,17 @@ export class Coordinator {
       throw new KvProtocolError("coordinator received a non-table message");
     }
 
-    const report: OwnershipReport = this.handleTable(from, RoutingTable.fromWire(message.table));
+    const pushed: RoutingTable = RoutingTable.fromWire(message.table);
+    const report: OwnershipReport = this.handleTable(from, pushed);
+    // When the pushed table did not supersede the one held here, the pusher is
+    // behind or has forked a divergent version at the same number. Answer with the
+    // held table so a coordinator that resumed from a stale table adopts it and
+    // re-authors above it, rather than a report it cannot yet act on.
+    const held: RoutingTable | undefined = this.#table;
+    if (held !== undefined && informs(held, pushed)) {
+      return encodeMessage({ kind: MessageKind.table, table: held.toWire() });
+    }
+
     return encodeMessage({ kind: MessageKind.ownershipReport, report });
   }
 
@@ -234,7 +289,21 @@ export class Coordinator {
     }
 
     const table: RoutingTable = this.#recompute(members);
-    await this.#push(table, members);
+    const learned: RoutingTable | undefined = await this.#push(table, members);
+    if (learned === undefined) {
+      return;
+    }
+
+    // A member revealed a table this push did not supersede, so this node authored
+    // from a stale base: it resumed as coordinator after being partitioned away
+    // while the majority advanced the table. Adopt the revealed table and re-author
+    // one version above it, so the cluster converges onto a single table instead of
+    // forking. A member only reveals a table at least as new as the one pushed, so
+    // its version never lowers the counter. A rarer residual divergence is closed by
+    // the next periodic re-push.
+    this.#table = learned;
+    this.#maxVersion = learned.version;
+    await this.#push(this.#recompute(members), members);
   }
 
   /**
@@ -266,14 +335,22 @@ export class Coordinator {
     return candidate;
   }
 
-  /** Pushes `table` to every other member and gathers their reports for next time. */
-  async #push(table: RoutingTable, members: readonly ClusterMember[]): Promise<void> {
+  /**
+   * Pushes `table` to every other member and gathers their reports for next time.
+   * Resolves with the newest table a member answered with in place of a report,
+   * signalling this node pushed from a stale base, or `undefined` when none did.
+   */
+  async #push(
+    table: RoutingTable,
+    members: readonly ClusterMember[],
+  ): Promise<RoutingTable | undefined> {
     const bytes: Uint8Array = encodeMessage({ kind: MessageKind.table, table: table.toWire() });
     const self: string = this.#view.self;
     const targets: ClusterMember[] = members.filter(
       (member: ClusterMember): boolean => member.name !== self,
     );
     const gathered: OwnershipReport[] = [this.#localReport()];
+    let learned: RoutingTable | undefined;
     const responses: PromiseSettledResult<Uint8Array>[] = await Promise.allSettled(
       targets.map(
         (member: ClusterMember): Promise<Uint8Array> =>
@@ -288,10 +365,17 @@ export class Coordinator {
       const report: OwnershipReport | undefined = decodeReport(response.value);
       if (report !== undefined) {
         gathered.push(report);
+        continue;
+      }
+
+      const peer: RoutingTable | undefined = decodeTable(response.value);
+      if (peer !== undefined && (learned === undefined || peer.supersedes(learned))) {
+        learned = peer;
       }
     }
 
     this.#reports = gathered;
+    return learned;
   }
 
   /** This node's ownership report, a snapshot of the partitions it holds. */

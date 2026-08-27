@@ -340,7 +340,7 @@ class SimTransport implements KvTransport {
     this.#handler = handler;
   }
 
-  close(): Promise<void> {
+  stop(): Promise<void> {
     this.#closed = true;
     this.#handler = undefined;
     return Promise.resolve();

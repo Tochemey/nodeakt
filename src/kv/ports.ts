@@ -163,6 +163,19 @@ export interface WriteRejected {
 export type WriteResult = WriteApplied | WriteRejected;
 
 /**
+ * One live key and its value, the shape a cluster-wide scan yields. It carries no
+ * timestamp or tombstone: a scan reports the present state, not the merge order.
+ *
+ * @internal
+ */
+export interface ScanEntry {
+  /** UTF-8 key of the live entry. */
+  readonly key: string;
+  /** The stored value bytes; never a tombstone, since a scan reports live state. */
+  readonly value: Uint8Array;
+}
+
+/**
  * What the store needs to know about who is in the cluster.
  *
  * `clustering.ts` adapts the membership engine into this view. `startedAt`,
@@ -226,7 +239,7 @@ export interface KvTransport {
   listen(handler: (from: string, body: Uint8Array) => Promise<Uint8Array>): void;
 
   /** Releases carrier resources. Subsequent requests must reject. */
-  close(): Promise<void>;
+  stop(): Promise<void>;
 }
 
 /**

@@ -52,6 +52,8 @@ import { STATE_ALIVE, STATE_SUSPECT } from "./membership/wire";
  * construction, so this adapter cannot subscribe on its own. The clustering
  * engine wires that callback to {@link publish}, which re-emits the current
  * snapshot to every {@link onChange} listener.
+ *
+ * @internal
  */
 export class SwimClusterView implements ClusterView {
   /** This node's canonical identity. */

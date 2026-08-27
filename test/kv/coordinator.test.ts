@@ -384,3 +384,78 @@ describe("Coordinator table intake", () => {
     expect(b.coordinator.currentTable()?.version).toBe(6n);
   });
 });
+
+describe("Coordinator catch-up on a stale resume", () => {
+  it("adopts a newer table a member reveals instead of forking a stale version", async () => {
+    const fabric: SimFabric = new SimFabric(4);
+    const nodes: Map<string, Node> = makeCluster(fabric, THREE);
+    const ring: PartitionRing = new PartitionRing(["A", "B", "C"], PARTITIONS);
+    // B and C already hold a newer table than A ever authored, as if A had been
+    // partitioned away while the majority advanced the table; C is a step ahead of B.
+    nodeOf(nodes, "B").coordinator.handleTable("A", RoutingTable.initial(ring, 5n));
+    nodeOf(nodes, "C").coordinator.handleTable("A", RoutingTable.initial(ring, 6n));
+
+    await settle(fabric, nodeOf(nodes, "A").coordinator.rebalance());
+
+    // A does not fork a v1: it adopts the newest revealed table and everyone agrees.
+    expect(nodeOf(nodes, "A").coordinator.currentTable()?.version).toBe(6n);
+    expect(nodeOf(nodes, "B").coordinator.currentTable()?.version).toBe(6n);
+    expect(nodeOf(nodes, "C").coordinator.currentTable()?.version).toBe(6n);
+  });
+
+  it("answers a same-version fork with its own table so the pusher converges", () => {
+    const fabric: SimFabric = new SimFabric(5);
+    const b: Node = makeNode(fabric, "B", THREE);
+    // B holds a fork at version 2: every partition owned by B, unlike the ring layout.
+    const forked: RoutingTable = new RoutingTable(
+      2n,
+      Array.from({ length: PARTITIONS }, (): string[] => ["B"]),
+    );
+    b.coordinator.handleTable("A", forked);
+    expect(b.coordinator.currentTable()?.version).toBe(2n);
+
+    // A pushes a different table at the same version; B answers with its own table,
+    // not a report, and keeps what it holds so the pusher can adopt and re-author.
+    const ring: PartitionRing = new PartitionRing(["A", "B", "C"], PARTITIONS);
+    const push: Uint8Array = encodeMessage({
+      kind: "table",
+      table: RoutingTable.initial(ring, 2n).toWire(),
+    });
+    const response: KvMessage = decodeMessage(b.coordinator.receive("A", push));
+    expect(response.kind).toBe("table");
+    expect(b.coordinator.currentTable()?.version).toBe(2n);
+  });
+
+  it("answers with a report, not its table, when the pusher is ahead but not believed", () => {
+    const fabric: SimFabric = new SimFabric(6);
+    const b: Node = makeNode(fabric, "B", THREE);
+    const ring: PartitionRing = new PartitionRing(["A", "B", "C"], PARTITIONS);
+    b.coordinator.handleTable("A", RoutingTable.initial(ring, 2n));
+
+    // C is not the believed coordinator, so its newer push is not adopted; B must
+    // not answer with its older table, which would drag a real coordinator backward.
+    const push: Uint8Array = encodeMessage({
+      kind: "table",
+      table: RoutingTable.initial(ring, 5n).toWire(),
+    });
+    const response: KvMessage = decodeMessage(b.coordinator.receive("C", push));
+    expect(response.kind).toBe("ownership-report");
+    expect(b.coordinator.currentTable()?.version).toBe(2n);
+  });
+
+  it("answers with a report when it holds no table to reveal", () => {
+    const fabric: SimFabric = new SimFabric(7);
+    const b: Node = makeNode(fabric, "B", THREE);
+    const ring: PartitionRing = new PartitionRing(["A", "B", "C"], PARTITIONS);
+
+    // A push from a node B does not believe is coordinator is not adopted, and B
+    // holds nothing to reveal, so it simply reports.
+    const push: Uint8Array = encodeMessage({
+      kind: "table",
+      table: RoutingTable.initial(ring, 4n).toWire(),
+    });
+    const response: KvMessage = decodeMessage(b.coordinator.receive("C", push));
+    expect(response.kind).toBe("ownership-report");
+    expect(b.coordinator.currentTable()).toBeUndefined();
+  });
+});

@@ -91,11 +91,11 @@ describe("kv ports", () => {
     const transport: KvTransport = {
       request: async (): Promise<Uint8Array> => new Uint8Array([0]),
       listen: (): void => undefined,
-      close: async (): Promise<void> => undefined,
+      stop: async (): Promise<void> => undefined,
     };
     transport.listen(async (_from: string, body: Uint8Array): Promise<Uint8Array> => body);
     expect(await transport.request("n2", new Uint8Array([9]), 5_000)).toEqual(new Uint8Array([0]));
-    await transport.close();
+    await transport.stop();
 
     const group: ReplicationGroup = {
       propose: async (op: WriteOp): Promise<WriteResult> => {

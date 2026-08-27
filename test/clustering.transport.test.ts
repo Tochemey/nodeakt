@@ -44,7 +44,7 @@ function track(transport: KvNetTransport): KvNetTransport {
 }
 
 afterEach(async (): Promise<void> => {
-  await Promise.all(opened.map((transport: KvNetTransport): Promise<void> => transport.close()));
+  await Promise.all(opened.map((transport: KvNetTransport): Promise<void> => transport.stop()));
   opened.length = 0;
 });
 
@@ -175,17 +175,17 @@ describe("KvNetTransport failure handling", () => {
     );
   });
 
-  it("rejects a request after close", async () => {
+  it("rejects a request after stop", async () => {
     const client: KvNetTransport = await startClient();
-    await client.close();
+    await client.stop();
     await expect(client.request("127.0.0.1:6000", Uint8Array.of(1), 5_000)).rejects.toThrow(
-      /closed/,
+      /stopped/,
     );
   });
 
-  it("closes cleanly when it was never started", async () => {
+  it("stops cleanly when it was never started", async () => {
     const transport: KvNetTransport = new KvNetTransport({ host: "127.0.0.1", port: 0 });
-    await expect(transport.close()).resolves.toBeUndefined();
+    await expect(transport.stop()).resolves.toBeUndefined();
   });
 });
 

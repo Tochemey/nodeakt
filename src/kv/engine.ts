@@ -31,8 +31,8 @@
  * the entry is merged into the store, one operation at a time. Because Node has
  * no preemption, that critical section is already atomic; the pipeline serves
  * two other ends. It orders operations on a partition so the sequence numbers
- * are monotone, and it is the structure a later slice extends to wait on backups
- * after the local decision, without holding the decision across the wait.
+ * are monotone, and it is the structure the replication layer extends to wait on
+ * backups after the local decision, without holding the decision across the wait.
  *
  * Reads take the fast path: a read is answered from the store directly, since on
  * a single node the local fragment is authoritative and already consistent.
@@ -166,6 +166,16 @@ export class Engine {
   /** Partition id `key` maps onto, the same mapping every node uses. */
   partitionFor(key: string): number {
     return this.#store.partitionFor(key);
+  }
+
+  /** The ids of the partitions this node currently holds, for its ownership report. */
+  heldPartitions(): readonly number[] {
+    return this.#store.heldPartitions();
+  }
+
+  /** Reaps expired entries across a sample of held partitions and returns the count removed. */
+  sweep(nowMs: number): number {
+    return this.#store.sweep(nowMs);
   }
 
   /** Current injected epoch time in milliseconds, for expiry decisions above the store. */

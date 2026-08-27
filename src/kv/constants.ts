@@ -82,6 +82,16 @@ export const DEFAULT_READ_QUORUM: number = 1;
 export const DEFAULT_MEMBER_QUORUM: number = 1;
 
 /**
+ * How long, in milliseconds, the membership view must hold unchanged before its
+ * size becomes the split-brain baseline. A partition is judged against the size
+ * the cluster held before it began, so the baseline advances only once a genuine,
+ * sustained topology change has settled, never off a transient flap.
+ *
+ * @internal
+ */
+export const STABLE_VIEW_QUIET_MS: number = 15_000;
+
+/**
  * Tombstone retention, in milliseconds, and the stale-rejoin cutoff. A node
  * absent longer than this must discard its fragments and re-seed rather than
  * merge, because the tombstones that would veto its stale keys are gone.
@@ -103,6 +113,9 @@ export const REPAIR_BUCKETS: number = 64;
  * @internal
  */
 export const LEAVE_DRAIN_TIMEOUT_MS: number = 30_000;
+
+/** Interval, in milliseconds, at which a graceful leave polls for its partitions to finish draining. @internal */
+export const DRAIN_POLL_INTERVAL_MS: number = 100;
 
 /** Interval, in milliseconds, between coordinator table re-pushes that heal a missed push. @internal */
 export const TABLE_PUSH_INTERVAL_MS: number = 60_000;
