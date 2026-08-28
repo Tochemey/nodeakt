@@ -3,7 +3,7 @@ layout: home
 
 hero:
   name: NodeAkt
-  text: Actor framework for Node, Bun, and Deno
+  text: Distributed Actor framework for TypeScript
   tagline: "Typed actors, supervision, behaviors, a multi-core runtime, remoting, and clustering across nodes. Zero dependencies. No locks, just messages."
   image:
     src: /logo.svg

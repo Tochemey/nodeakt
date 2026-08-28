@@ -7,7 +7,7 @@ import { defineConfig } from "vitepress";
 export default defineConfig({
   title: "NodeAkt",
   description:
-    "Zero-dependency actor framework for Node, Deno and Bun: typed actors, supervision, mailboxes, behaviors, an event stream, a multi-core runtime, remoting across nodes, and clustering with discovery, placement, singletons, and relocation",
+    "Zero-dependency distributed actor framework for TypeScript: typed actors, supervision, mailboxes, behaviors, an event stream, a multi-core runtime, remoting across nodes, and clustering with discovery, placement, singletons, and relocation",
   base: "/nodeakt/",
   cleanUrls: true,
   lastUpdated: true,

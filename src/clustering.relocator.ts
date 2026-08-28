@@ -107,7 +107,10 @@ export interface RelocatorDeps {
  * naming the dead node, so the pass is idempotent and a successor coordinator
  * resuming it collapses already-done work rather than double-building. A periodic
  * self-tick sweeps any record still naming a departed node, so a recreate that could
- * not be placed is retried until it lands.
+ * not be placed is retried until it lands. A pass that fails wholesale, a scan or a
+ * free against a cluster still converging on the departure, is absorbed for the same
+ * reason: this actor is the recovery mechanism, so it must outlive every failed pass
+ * for the sweep to retry it.
  *
  * @internal
  */
@@ -129,13 +132,26 @@ export class Relocator implements Actor {
 
     const message: unknown = ctx.message;
     if (message instanceof NodeDeparted) {
-      await this.#recover([message.address]);
+      await this.#guarded((): Promise<void> => this.#recover([message.address]));
       return;
     }
 
     if (message instanceof RelocationSweep) {
-      await this.#sweep();
+      await this.#guarded((): Promise<void> => this.#sweep());
       return;
+    }
+  }
+
+  /** Runs one recovery pass, absorbing its rejection. A scan or a free can fail
+   * while the cluster is still converging on a departure, a member already dead but
+   * not yet declared so, and a failure escaping here would fault the actor and end
+   * relocation for the life of this node; dropped instead, because the armed sweep
+   * re-runs the recovery until every orphan is re-owned. */
+  async #guarded(pass: () => Promise<void>): Promise<void> {
+    try {
+      await pass();
+    } catch {
+      // Absorbed: the next sweep tick retries the whole pass.
     }
   }
 

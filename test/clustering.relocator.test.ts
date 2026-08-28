@@ -63,6 +63,7 @@ interface Env {
     singleton: boolean,
     deadOwner: string,
   ) => Promise<boolean>;
+  scanPlacements?: () => Promise<PlacementRecord[]>;
 }
 
 const COORD: string = "coord:1";
@@ -93,7 +94,9 @@ function member(name: string, ready: boolean = true, draining: boolean = false):
 function build(env: Env): { relocator: Relocator; recorded: Recorded } {
   const recorded: Recorded = { recreated: [], freed: [], events: [] };
   const deps: RelocatorDeps = {
-    scanPlacements: (): Promise<PlacementRecord[]> => Promise.resolve(env.placements ?? []),
+    scanPlacements:
+      env.scanPlacements ??
+      ((): Promise<PlacementRecord[]> => Promise.resolve(env.placements ?? [])),
     free: (name: string): Promise<void> => {
       recorded.freed.push(name);
       return Promise.resolve();
@@ -311,6 +314,34 @@ describe("Relocator sweep", () => {
 
     expect(recorded.recreated).toEqual([]);
     expect(recorded.events).toEqual([]);
+  });
+});
+
+describe("Relocator resilience", () => {
+  it("survives a failing pass and completes the recovery on a later one", async () => {
+    // The scan rejects on the first pass, the way a read against a cluster still
+    // converging on a departure does, then serves the orphan. The failed pass must
+    // not fault the actor: the follow-up sweep is the retry that finishes recovery.
+    let scans: number = 0;
+    const { relocator, recorded } = build({
+      members: [member(COORD)],
+      scanPlacements: (): Promise<PlacementRecord[]> => {
+        scans += 1;
+        if (scans === 1) {
+          return Promise.reject(new Error("scan against a converging cluster"));
+        }
+
+        return Promise.resolve([orphan("stray", "gone:1")]);
+      },
+    });
+
+    await drive(relocator, new NodeDeparted("gone:1"));
+    expect(recorded.recreated).toEqual([]);
+
+    await drive(relocator, new RelocationSweep());
+    expect(recorded.recreated).toEqual([
+      { owner: COORD, name: "stray", singleton: false, deadOwner: "gone:1" },
+    ]);
   });
 });
 

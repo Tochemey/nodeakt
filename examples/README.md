@@ -43,3 +43,4 @@ pnpm example examples/helloworld/main.ts
 | [remoting](remoting/README.md)       | Checkout and payments on two nodes: remoting over TCP with Docker Compose   |
 | [dns-cluster](dns-cluster/README.md) | DNS-discovered three-node cluster with Docker Compose                       |
 | [dns-actors](dns-actors/README.md)   | Distributed three-node actor systems over a DNS cluster with Docker Compose |
+| [k8s](k8s/README.md)                 | The distributed-actor cluster on Kubernetes with kind, discovered over DNS  |

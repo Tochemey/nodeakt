@@ -6,7 +6,7 @@
 TSX := node_modules/.bin/tsx
 
 .DEFAULT_GOAL := help
-.PHONY: help helloworld behaviors chat supervision iot reentrancy pipeto scheduling watch stash props multicore remoting cluster bench bench-baseline
+.PHONY: help helloworld behaviors chat supervision iot reentrancy pipeto scheduling watch stash props multicore remoting cluster actors k8s bench bench-baseline
 
 help: ## list the available example targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -56,6 +56,9 @@ cluster: ## a distributed KV cluster over DNS; boot it and assert every use case
 
 actors: ## a distributed-actor cluster over DNS; boot it and assert every use case (Docker Compose)
 	@examples/dns-actors/usecases.sh
+
+k8s: ## the distributed-actor cluster on Kubernetes; boot it with kind and assert every use case
+	@examples/k8s/usecases.sh
 
 bench: ## run the full benchmark suite (see benchmark/README.md)
 	@pnpm bench

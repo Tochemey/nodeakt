@@ -56,14 +56,14 @@ new DnsDiscovery({
 });
 ```
 
-| Option | Meaning |
-| --- | --- |
-| `hostname` | The name to resolve. |
+| Option       | Meaning                                                                                                                                                                                  |
+|--------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `hostname`   | The name to resolve.                                                                                                                                                                     |
 | `recordType` | `DnsRecordType.srv` (the default) reads `SRV` records and takes host and port from each; `DnsRecordType.address` (`A`) and `DnsRecordType.address6` (`AAAA`) read IPs and attach `port`. |
-| `port` | The gossip port to attach to each address in `address`/`address6` mode; ignored for `srv`, which carries its own. |
-| `resolver` | An optional resolver to query; defaults to the platform's `node:dns`. |
+| `port`       | The gossip port to attach to each address in `address`/`address6` mode; ignored for `srv`, which carries its own.                                                                        |
+| `resolver`   | An optional resolver to query; defaults to the platform's `node:dns`.                                                                                                                    |
 
-With `SRV` records the service registers each node's gossip host and port, so no `port` is needed. With `A` records every node shares one gossip port, which is what the [example](https://github.com/Tochemey/nodeakt/blob/main/examples/dns-actors/README.md) uses: a Compose network alias resolves to all three containers.
+With `SRV` records the service registers each node's gossip host and port, so no `port` is needed. With `A` records every node shares one gossip port, which is what the [example](https://github.com/Tochemey/nodeakt/blob/main/examples/dns-actors/README.md) uses: a Compose network alias resolves to all three containers. The [Kubernetes example](https://github.com/Tochemey/nodeakt/blob/main/examples/k8s/README.md) runs the same configuration against a headless service, whose name resolves to every pod behind it.
 
 These options are the `DnsDiscoveryOptions` type, and `recordType` is a `DnsRecordTypeValue`. To point discovery at a non-default DNS source, pass a custom `resolver` implementing `DnsResolver`, whose `SRV` answers are `DnsSrvRecord`s.
 

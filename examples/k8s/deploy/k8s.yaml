@@ -1,0 +1,145 @@
+# The DNS-discovered actor cluster as a Kubernetes StatefulSet.
+#
+# The headless service is the discovery mechanism: its DNS name resolves to the
+# address of every pod behind it, so DnsDiscovery needs no Kubernetes API client
+# and no RBAC. Two settings make that work here:
+#
+# - publishNotReadyAddresses on the headless service, because a pod must be
+#   visible in DNS before it is ready: readiness here means "sees the member
+#   quorum", which needs discovery first.
+# - podManagementPolicy Parallel on the StatefulSet, because the default ordered
+#   start would wait for pod 0 to become ready before creating pod 1, and pod 0
+#   alone can never reach the quorum of two.
+
+# Headless service: the name the pods resolve to find every peer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodeakt
+  labels:
+    app.kubernetes.io/name: nodeakt
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: nodeakt
+  ports:
+    - name: remoting
+      port: 4000
+      protocol: TCP
+    - name: gossip
+      port: 7946
+      protocol: TCP
+    - name: data
+      port: 8080
+      protocol: TCP
+---
+# Ordinary ClusterIP service over the HTTP API. Kubernetes routes each request to
+# one ready pod, so any pod answers for the whole cluster; a pod that is still
+# forming, or cut off in a minority partition, reports unready and receives
+# nothing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodeakt-api
+  labels:
+    app.kubernetes.io/name: nodeakt
+spec:
+  selector:
+    app.kubernetes.io/name: nodeakt
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nodeakt
+  labels:
+    app.kubernetes.io/name: nodeakt
+spec:
+  serviceName: nodeakt
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nodeakt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nodeakt
+    spec:
+      containers:
+        - name: node
+          # Built by the example's Makefile and loaded into kind, never pulled.
+          image: nodeakt-k8s:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+            - containerPort: 4000
+              name: remoting
+              protocol: TCP
+            - containerPort: 7946
+              name: gossip
+              protocol: TCP
+            - containerPort: 8080
+              name: data
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # The advertised host is the pod's IP, not its stable DNS name,
+            # because member identity must die with the process. A replaced pod
+            # gets a fresh IP, so the survivors detect the old member's death
+            # and relocate its actors, and the replacement joins as a new
+            # member. Under the stable name a replacement would answer on the
+            # dead member's address and silently impersonate it, and no death
+            # would ever be declared.
+            - name: NODEAKT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # Fully qualified, because the discovery resolver queries DNS
+            # records directly and does not walk the resolv.conf search path.
+            - name: NODEAKT_DISCOVERY_HOSTNAME
+              value: "nodeakt.$(POD_NAMESPACE).svc.cluster.local"
+            - name: NODEAKT_REMOTING_PORT
+              value: "4000"
+            - name: NODEAKT_GOSSIP_PORT
+              value: "7946"
+            - name: NODEAKT_DATA_PORT
+              value: "8080"
+            - name: NODEAKT_HTTP_PORT
+              value: "3000"
+            - name: NODEAKT_MEMBER_QUORUM
+              value: "2"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          # Ready only once this pod sees the member quorum, so the API service
+          # routes around a pod that cannot serve the cluster yet.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
