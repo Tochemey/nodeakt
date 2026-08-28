@@ -186,7 +186,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
 const server: Server = createServer((request: IncomingMessage, response: ServerResponse): void => {
   handle(request, response).catch((error: unknown): void => {
-    json(response, 500, { error: error instanceof Error ? error.message : String(error) });
+    // The failure is logged on the node; the HTTP client gets no internal detail.
+    log(`request failed: ${error instanceof Error ? error.message : String(error)}`);
+    json(response, 500, { error: "internal error" });
   });
 });
 server.listen(httpPort, (): void => log(`http listening on :${httpPort}`));

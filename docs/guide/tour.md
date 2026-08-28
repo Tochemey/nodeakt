@@ -173,7 +173,7 @@ Core count, timings, and speedup depend on the machine. Hybrid performance/effic
 
 ## Across machines: `remoting`
 
-The capstone: a checkout node and a payments node as two Docker Compose services, each one actor system. The checkout desk resolves the payments actor with `remoteLookup`, charges through it with an `ask` piped back to its own mailbox, and `watch`es it, so the payments actor stopping, or its whole node dying, arrives as the same `Terminated` message. The desk queues orders through the outage and flushes them when the node returns.
+A checkout node and a payments node as two Docker Compose services, each one actor system. The checkout desk resolves the payments actor with `remoteLookup`, charges through it with an `ask` piped back to its own mailbox, and `watch`es it, so the payments actor stopping, or its whole node dying, arrives as the same `Terminated` message. The desk queues orders through the outage and flushes them when the node returns.
 
 [remoting/README.md](https://github.com/Tochemey/nodeakt/blob/main/examples/remoting/README.md), `make remoting`
 
@@ -187,3 +187,24 @@ checkout-1  | [checkout] flushing 3 queued order(s)
 ```
 
 This one needs Docker; the example's README also shows a two-terminal run with plain `tsx`. Kill the payments service mid-run and bring it back: the failover is the demo.
+
+## The capstone, a cluster: `dns-actors`
+
+Three nodes discover each other over DNS and form one [cluster](../clustering/index.md), each a full actor system, driven by a small HTTP API. A worker spawned on one node is reached **by name** from every other; `spawnOn` spreads workers across the cluster by strategy; a [singleton](../clustering/singletons.md) answers from the same instance everywhere. Then the node hosting a worker is killed with `SIGKILL`, no graceful goodbye, and the survivors detect the failure and [recreate the worker](../clustering/relocation.md) with its configuration intact.
+
+`make actors` boots the cluster and asserts every scenario:
+
+[dns-actors/README.md](https://github.com/Tochemey/nodeakt/blob/main/examples/dns-actors/README.md), `make actors`
+
+```text
+booting the cluster...
+PASS: three nodes formed the cluster
+PASS: a distributed actor is reached by name from every node
+PASS: spawnOn spread workers across all nodes
+PASS: a singleton is reached by the same name from every node
+hard-killing node1 (hosts orders)...
+PASS: a crashed node's actor was recreated on a survivor with its configuration intact
+all use cases passed
+```
+
+The last two lines are the point: a machine died mid-run and the actor it hosted came back on another, still answering to the same name. The example's README also walks the API by hand with `curl`, one scenario at a time, and `docker compose stop` shows the graceful leave taking the same recovery path. The [Clustering](../clustering/index.md) section documents everything this example exercises.

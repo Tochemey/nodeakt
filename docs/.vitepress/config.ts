@@ -40,14 +40,14 @@ export default defineConfig({
     ],
     sidebar: [
       {
-        text: "Guide",
+        text: "🚀 Guide",
         items: [
           { text: "Introduction", link: "/guide/" },
           { text: "Tour", link: "/guide/tour" },
         ],
       },
       {
-        text: "Actor system",
+        text: "⚙️ Actor system",
         items: [
           { text: "Overview", link: "/actor-system/" },
           { text: "Logging", link: "/actor-system/logging" },
@@ -55,7 +55,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "Actors",
+        text: "👥 Actors",
         items: [
           { text: "Overview", link: "/actor/" },
           { text: "Spawning", link: "/actor/spawning" },
@@ -74,18 +74,18 @@ export default defineConfig({
         ],
       },
       {
-        text: "Multi-core",
+        text: "⚡ Multi-core",
         items: [{ text: "Overview", link: "/multi-core/" }],
       },
       {
-        text: "Remoting",
+        text: "📡 Remoting",
         items: [
           { text: "Overview", link: "/remoting/" },
           { text: "TLS", link: "/remoting/tls" },
         ],
       },
       {
-        text: "Clustering",
+        text: "🌐 Clustering",
         items: [
           { text: "Overview", link: "/clustering/" },
           { text: "Discovery", link: "/clustering/discovery" },
@@ -98,7 +98,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "Appendix",
+        text: "📖 Appendix",
         items: [{ text: "Errors", link: "/errors" }],
       },
     ],
