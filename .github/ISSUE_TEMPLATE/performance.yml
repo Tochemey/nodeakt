@@ -43,8 +43,8 @@ body:
     id: versions
     attributes:
       label: Version(s)
-      description: For a regression, name the last fast version and the first slow one; nightly stamps narrow it to a commit.
-      placeholder: fast on 0.1.0, slow since 0.2.0-nightly.20260901.ab12cd3
+      description: For a regression, name the last fast version and the first slow one.
+      placeholder: fast on 0.1.0, slow since 0.2.0
     validations:
       required: true
   - type: dropdown

@@ -26,6 +26,22 @@ import { availableParallelism } from "node:os";
 import type { Actor } from "./actor";
 import { ActorRef, type IsolateRoute } from "./actor.ref";
 import type { ActorSystemOptions } from "./actor.system.options";
+import { translateClusterEvent } from "./cluster.events";
+import type { ClusterOptions } from "./cluster.options";
+import { CLUSTER_EVENT_TOPIC, type ClusterEvent, ClusterEventType } from "./clustering.events";
+import { ClusterNode, type ClusterNodeOptions } from "./clustering.host";
+import { ClusterPlacement } from "./clustering.placement";
+import type { RecreateRecipe } from "./clustering.recreate";
+import { ClusterRegistry, type PlacementRecord } from "./clustering.registry";
+import {
+  NodeDeparted,
+  type RelocationMember,
+  RelocationSweep,
+  Relocator,
+} from "./clustering.relocator";
+import { ClusterResolver } from "./clustering.resolver";
+import { STRATEGY_ROUND_ROBIN, selectOwner } from "./clustering.strategy";
+import { formatHostPort } from "./clustering.transport";
 import {
   DeadletterActor,
   DeadlettersCountRequest,
@@ -37,6 +53,9 @@ import {
   ActorNotFoundError,
   ErrActorAlreadyExists,
   ErrActorSystemNotStarted,
+  ErrClusteringDisabled,
+  ErrClusterRequiresRemote,
+  ErrClusterRequiresRoutableHost,
   ErrInvalidActorName,
   ErrInvalidActorSystemName,
   ErrNameRequired,
@@ -60,6 +79,7 @@ import {
   deadletterName,
   isSystemName,
   noSenderName,
+  relocatorName,
   rootGuardianName,
   systemGuardianName,
   userGuardianName,
@@ -69,7 +89,7 @@ import { createRouter } from "./router";
 import type { RouterOptions } from "./router.options";
 import type { ScheduleOptions } from "./schedule.options";
 import { Scheduler } from "./scheduler";
-import type { SpawnOptions } from "./spawn.options";
+import type { SpawnOnOptions, SpawnOptions } from "./spawn.options";
 import { SystemGuardian } from "./system.guardian";
 import { systemPlacement } from "./system.placement";
 import { UserGuardian } from "./user.guardian";
@@ -79,6 +99,78 @@ import { UserGuardian } from "./user.guardian";
  * remote endpoint, when enabled, overrides both. */
 const HOST: string = "127.0.0.1";
 const PORT: number = 0;
+
+/** The stable gossip port a clustered node uses when its cluster options name
+ * none, the shared default every node agrees on without configuration. */
+const CLUSTER_GOSSIP_PORT: number = 7946;
+
+/** How many times a singleton create re-attempts the coordinator claim when it
+ * loses the race yet cannot yet resolve the winner: the winner is momentarily gone
+ * (it stopped between the loss and the resolve) so the name is free to reclaim.
+ * A small bound, since each retry needs the state to flip again to keep failing. */
+const SINGLETON_CLAIM_ATTEMPTS: number = 3;
+
+/** How often the coordinator's relocation actor sweeps for records still naming a
+ * departed node, the backstop that retries a recreate the `NodeLeft` pass could not
+ * place. Long enough that a settled cluster's sweep is cheap. */
+const RELOCATION_SWEEP_INTERVAL_MS: number = 30_000;
+
+/** The hosts that name no dialable interface: an empty host and the IPv4 and IPv6
+ * unspecified addresses a node may bind but must not advertise, in the spellings a
+ * bracket-stripped, lower-cased host normalizes to. */
+const WILDCARD_HOSTS: ReadonlySet<string> = new Set([
+  "",
+  "0.0.0.0",
+  "::",
+  "::0",
+  "0:0:0:0:0:0:0:0",
+  "0000:0000:0000:0000:0000:0000:0000:0000",
+]);
+
+/** Whether a host is a wildcard or empty, so not an address a peer can dial back:
+ * a node that binds one must advertise a concrete address instead. It strips an
+ * IPv6 literal's brackets and lower-cases before matching, so bracketed and
+ * mixed-case spellings of the unspecified address are caught too. */
+function isWildcardHost(host: string): boolean {
+  const normalized: string = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, "$1");
+  return WILDCARD_HOSTS.has(normalized);
+}
+
+/**
+ * Builds the cluster node's options from the public cluster options, deriving the
+ * remoting address the node advertises from the bound remoting endpoint, binding
+ * the gossip and data endpoints to that same remoting host, and defaulting the
+ * gossip port. A standalone mapping so its defaulting is unit-testable without
+ * binding a socket. `remotingHost` and `remotingPort` are the system's bound
+ * remoting endpoint, so the caller passes them after remoting has started.
+ *
+ * @internal
+ */
+export function clusterNodeOptions(
+  cluster: ClusterOptions,
+  remotingHost: string,
+  remotingPort: number,
+  events: EventStream,
+): ClusterNodeOptions {
+  return {
+    discovery: cluster.discovery,
+    host: remotingHost,
+    gossipPort: cluster.gossipPort ?? CLUSTER_GOSSIP_PORT,
+    remotingAddress: formatHostPort(remotingHost, remotingPort),
+    events,
+    ...(cluster.dataPort !== undefined ? { dataPort: cluster.dataPort } : {}),
+    ...(cluster.bootstrapTimeout !== undefined ? { bootDeadlineMs: cluster.bootstrapTimeout } : {}),
+    ...(cluster.partitionCount !== undefined ? { partitionCount: cluster.partitionCount } : {}),
+    ...(cluster.replicaCount !== undefined ? { replicaCount: cluster.replicaCount } : {}),
+    ...(cluster.writeQuorum !== undefined ? { writeQuorum: cluster.writeQuorum } : {}),
+    ...(cluster.minimumMemberQuorum !== undefined
+      ? { minimumMemberQuorum: cluster.minimumMemberQuorum }
+      : {}),
+  };
+}
 
 /** The fallback ask/request deadline when a system configures none: a
  * generous default so a caller that omits its own timeout still never
@@ -176,6 +268,29 @@ export class ActorSystem {
    * or the system is stopped. */
   private _remoting: Remoting | null = null;
 
+  /** The cluster configuration, or undefined for an unclustered system. */
+  private readonly _clusterOptions: ClusterOptions | undefined;
+
+  /** The cluster node once started, or null while clustering is disabled or
+   * the system is stopped. */
+  private _clusterNode: ClusterNode | null = null;
+
+  /** The distributed registry over the cluster node, or null while clustering
+   * is disabled or the system is stopped. */
+  private _clusterRegistry: ClusterRegistry | null = null;
+
+  /** The cluster placement, typed for the chosen-node placement `spawnOn` drives,
+   * or null while clustering is disabled or the system is stopped. */
+  private _clusterPlacement: ClusterPlacement | null = null;
+
+  /** The relocation actor once clustering has started, or null otherwise; the
+   * coordinator's driver for recreating a departed node's actors. */
+  private _relocator: PID | null = null;
+
+  /** The subscriber bridging cluster runtime events onto the public stream and the
+   * relocation actor, kept to unsubscribe on stop; null while clustering is off. */
+  private _clusterBridge: StreamSubscriber | null = null;
+
   /** A worker facade's route for paths of other nodes; null on the
    * main isolate, whose remoting seam serves them instead. */
   private _foreignResolver: ((path: Path) => PID | undefined) | null = null;
@@ -208,12 +323,27 @@ export class ActorSystem {
 
     this._name = name;
     this._remoteOptions = options?.remote;
+    this._clusterOptions = options?.cluster;
+    // Clustering needs a remoting endpoint for cross-node actor messages, so a
+    // clustered system with no remote is rejected rather than silently made
+    // unreachable; the remoting host must also be a concrete peer-routable address.
+    if (this._clusterOptions !== undefined) {
+      if (this._remoteOptions === undefined) {
+        throw ErrClusterRequiresRemote;
+      }
+
+      if (isWildcardHost(this._remoteOptions.advertisedHost ?? this._remoteOptions.host)) {
+        throw ErrClusterRequiresRoutableHost;
+      }
+    }
+
     this._askTimeout = askTimeout;
     this._address = {
       system: name,
-      host: this._remoteOptions?.host ?? HOST,
+      host: this._remoteOptions?.advertisedHost ?? this._remoteOptions?.host ?? HOST,
       port: this._remoteOptions?.port ?? PORT,
     };
+
     this._logger = options?.logger ?? defaultLogger;
     this._events = new EventStream((err) => {
       this._logger.error("event subscriber failed", { error: err });
@@ -255,6 +385,24 @@ export class ActorSystem {
    */
   port(): number {
     return this._address.port;
+  }
+
+  /** The running cluster node, or null when clustering is off or the system is
+   * stopped.
+   *
+   * @internal
+   */
+  clusterNode(): ClusterNode | null {
+    return this._clusterNode;
+  }
+
+  /** The distributed cluster registry over the node, or null when clustering is
+   * off or the system is stopped.
+   *
+   * @internal
+   */
+  clusterRegistry(): ClusterRegistry | null {
+    return this._clusterRegistry;
   }
 
   /**
@@ -469,17 +617,18 @@ export class ActorSystem {
     // system provisions for every core the machine gives it.
     this._capacity = detectCapacity();
 
-    // Remoting binds its endpoint before any actor exists, so every
-    // actor's path advertises the reachable node address. An ephemeral
-    // port resolves to the bound one here. A single-node system loads
-    // the seam but binds nothing, so it pays no runtime cost. A bind
-    // failure rejects, leaving the system unstarted.
+    // Remoting binds its endpoint before any actor exists, so every actor's path
+    // advertises the reachable node address. An ephemeral port resolves to the
+    // bound one here. A single-node system loads the seam but binds nothing, so it
+    // pays no runtime cost. A bind failure rejects, leaving the system unstarted.
+    let boundRemoting: Remoting | null = null;
     if (this._remoteOptions !== undefined) {
-      this._remoting = await Remoting.start(this, this._remoteOptions);
+      boundRemoting = await Remoting.start(this, this._remoteOptions);
+      this._remoting = boundRemoting;
       this._address = {
         system: this._name,
-        host: this._remoteOptions.host,
-        port: this._remoting.port,
+        host: this._remoteOptions.advertisedHost ?? this._remoteOptions.host,
+        port: boundRemoting.port,
       };
     }
 
@@ -510,7 +659,154 @@ export class ActorSystem {
       this._rootGuardian,
     );
 
+    // Clustering starts last, once the actor machinery is attached: the ready flag
+    // a peer consults before selecting this node for a placement is gossiped only
+    // from here, so a peer can never pick a member that cannot yet host an actor.
+    // The constructor requires remoting when clustering, so the listener is bound
+    // above; a cluster boot failure releases it, since a system that never reached
+    // "started" can never close it through stop(), while the cluster node releases
+    // its own sockets as it fails.
+    if (this._clusterOptions !== undefined) {
+      await this.attachCluster(boundRemoting as Remoting);
+    }
+
     this._started = true;
+
+    // Kick the relocation actor once the system is running so it arms its recurring
+    // sweep even if no node ever departs; sent after "started" so it can schedule.
+    const relocator: PID | null = this._relocator;
+    if (relocator !== null) {
+      this.noSender().tell(relocator, new RelocationSweep());
+    }
+  }
+
+  /**
+   * Starts clustering on the bound remoting, wiring the cluster node, its registry
+   * and placement, and the relocation actor. A boot failure releases the remoting
+   * listener the constructor required, since a system that never reached "started"
+   * cannot close it through {@link stop}. Called last in {@link start}, once the
+   * actor machinery is attached, so the ready flag a peer consults before placing on
+   * this node is gossiped only when it can host an actor.
+   */
+  private async attachCluster(remoting: Remoting): Promise<void> {
+    try {
+      const clusterNode: ClusterNode = await ClusterNode.start(
+        clusterNodeOptions(
+          this._clusterOptions as ClusterOptions,
+          this.host(),
+          this.port(),
+          this._events,
+        ),
+      );
+      this._clusterNode = clusterNode;
+      const registry: ClusterRegistry = new ClusterRegistry(clusterNode);
+      this._clusterRegistry = registry;
+
+      const placement: ClusterPlacement = this.buildClusterPlacement(
+        clusterNode,
+        registry,
+        remoting,
+      );
+      this._placement = placement;
+      this._clusterPlacement = placement;
+      this._ownsPlacement = true;
+
+      await this.startRelocation(clusterNode, registry, placement);
+    } catch (error: unknown) {
+      // Only remoting is released here. The one cluster step that can fail is
+      // ClusterNode.start, which closes its own gossip and data sockets as it rejects,
+      // so a failure leaves no cluster listener bound; nothing after it, the placement
+      // wiring or the relocator spawn, throws, so the node never outlives a failed
+      // attach. A future fallible step added after the node starts must release it.
+      this._remoting = null;
+      await remoting.stop();
+      throw error;
+    }
+  }
+
+  /** Builds the cluster placement over `clusterNode`, wiring its resolver for
+   * location-transparent lookup and its remote seam for spawning and recreating on
+   * other nodes. The worker pool it wraps boots lazily on the first placement. */
+  private buildClusterPlacement(
+    clusterNode: ClusterNode,
+    registry: ClusterRegistry,
+    remoting: Remoting,
+  ): ClusterPlacement {
+    const resolver: ClusterResolver = new ClusterResolver({
+      registry,
+      handleFor: remoting.handleFor.bind(remoting),
+      remotingAddressOf: clusterNode.remotingAddressOf.bind(clusterNode),
+      self: clusterNode.address,
+      systemName: this._name,
+    });
+
+    return new ClusterPlacement({
+      registry,
+      node: clusterNode.address,
+      resolver,
+      remote: {
+        spawn: remoting.remoteSpawn.bind(remoting),
+        recreate: remoting.remoteRecreate.bind(remoting),
+        remotingAddressOf: clusterNode.remotingAddressOf.bind(clusterNode),
+      },
+      relocationDefault: (this._clusterOptions as ClusterOptions).relocation ?? true,
+      bootInner: (onRelease: (name: string) => void): Promise<Placement> =>
+        systemPlacement(this, {
+          capacity: this._capacity,
+          quiet: this._logger === discardLogger,
+          onRelease,
+        }),
+    });
+  }
+
+  /** Spawns the relocation actor as a system actor and bridges the cluster runtime's
+   * events onto the public stream and into it, so a departure the runtime reports
+   * drives the coordinator's recovery. */
+  private async startRelocation(
+    clusterNode: ClusterNode,
+    registry: ClusterRegistry,
+    placement: ClusterPlacement,
+  ): Promise<void> {
+    const relocator: Relocator = new Relocator({
+      scanPlacements: (): Promise<PlacementRecord[]> => registry.scanPlacements(),
+      free: (name: string, deadOwner: string): Promise<void> =>
+        registry.freeActorIf(name, deadOwner),
+      recreate: placement.relocateTo.bind(placement),
+      self: clusterNode.address,
+      coordinator: (): string => clusterNode.coordinator(),
+      members: (): readonly RelocationMember[] => clusterNode.members(),
+      publish: (event: unknown): void => this.publishEvent(event),
+      now: (): number => Date.now(),
+      sweepIntervalMs: RELOCATION_SWEEP_INTERVAL_MS,
+    });
+
+    const relocatorPid: PID = await this.configPID(
+      relocatorName,
+      relocator,
+      this._systemGuardian as PID,
+    );
+    this._relocator = relocatorPid;
+
+    const bridge: StreamSubscriber = this.onClusterEvent.bind(this);
+    this._clusterBridge = bridge;
+    this._events.subscribe(bridge, CLUSTER_EVENT_TOPIC);
+  }
+
+  /**
+   * Handles one cluster runtime event: re-publishes it on the public stream in its
+   * `instanceof` form, and drives the relocation actor on a departure so the
+   * coordinator recreates the departed node's actors. Subscribed to the cluster
+   * topic, and callable directly to drive a recovery in a test.
+   *
+   * @internal
+   */
+  onClusterEvent(event: unknown): void {
+    const clusterEvent: ClusterEvent = event as ClusterEvent;
+    this.publishEvent(translateClusterEvent(clusterEvent, Date.now()));
+    const relocator: PID | null = this._relocator;
+    if (clusterEvent.type === ClusterEventType.nodeLeft && relocator !== null) {
+      this.noSender().tell(relocator, new NodeDeparted(clusterEvent.address));
+    }
   }
 
   /**
@@ -535,31 +831,58 @@ export class ActorSystem {
       await remoting.stop();
     }
 
-    // The pool goes first, while this system still serves: workers
-    // drain their own actors and their final dead letters still reach
-    // this stream. A facade never owns its placement; the worker
-    // runtime tears that down.
-    const placement = this._placement;
-    this._placement = null;
-    this._placementBoot = null;
-    if (placement !== null && this._ownsPlacement) {
-      this._ownsPlacement = false;
-      await placement.stop();
+    // The cluster node leaves gracefully after remoting closes: it drains its
+    // partitions to survivors and departs membership, so a clean shutdown is not
+    // mistaken for a crash and does not churn the survivors' placement. A node
+    // alone in its view has no peer to hand off to and departs at once, so this
+    // never stalls a single-node system. The rest of teardown runs in a finally, so
+    // a drain that reports an error still tears the system down and resets its
+    // state rather than wedging it; the leave error then surfaces from stop().
+    // Detach the cluster event bridge before the node departs, so no membership
+    // event drives a relocation into a system that is tearing down. The relocation
+    // actor itself stops with the guardian hierarchy below.
+    const bridge: StreamSubscriber | null = this._clusterBridge;
+    this._clusterBridge = null;
+    this._relocator = null;
+    if (bridge !== null) {
+      this._events.unsubscribe(bridge, CLUSTER_EVENT_TOPIC);
     }
 
-    this._scheduler.stop();
-    this._passivation.stop();
-    await this._rootGuardian?.shutdown();
+    const clusterNode: ClusterNode | null = this._clusterNode;
+    this._clusterNode = null;
+    this._clusterRegistry = null;
+    this._clusterPlacement = null;
+    try {
+      if (clusterNode !== null) {
+        await clusterNode.leave();
+      }
+    } finally {
+      // The pool goes first, while this system still serves: workers drain their
+      // own actors and their final dead letters still reach this stream. A facade
+      // never owns its placement; the worker runtime tears that down.
+      const placement = this._placement;
+      this._placement = null;
+      this._placementBoot = null;
 
-    this._events.close();
-    this._tree.reset();
-    this._rootGuardian = null;
-    this._systemGuardian = null;
-    this._userGuardian = null;
-    this._noSender = null;
-    this._deadletter = null;
-    this._started = false;
-    this._stopping = false;
+      if (placement !== null && this._ownsPlacement) {
+        this._ownsPlacement = false;
+        await placement.stop();
+      }
+
+      this._scheduler.stop();
+      this._passivation.stop();
+      await this._rootGuardian?.shutdown();
+
+      this._events.close();
+      this._tree.reset();
+      this._rootGuardian = null;
+      this._systemGuardian = null;
+      this._userGuardian = null;
+      this._noSender = null;
+      this._deadletter = null;
+      this._started = false;
+      this._stopping = false;
+    }
   }
 
   /**
@@ -915,6 +1238,172 @@ export class ActorSystem {
   }
 
   /**
+   * Places an actor on a node the options' strategy selects and returns its
+   * handle: a live PID when the strategy lands on this node, a routed handle to
+   * the owning node otherwise. The name is unique cluster-wide, so a lost race is
+   * refused with {@link ErrActorAlreadyExists} rather than handed a second holder,
+   * exactly like {@link spawn}; a caller that wants the existing actor resolves it
+   * with {@link actorOf}.
+   *
+   * The strategy is a closed set, `roundRobin` by default: `roundRobin` spreads
+   * placements by a cluster-wide counter, `random` picks a uniformly random
+   * member, `local` places on the calling node, and `leastLoad` picks the member
+   * owning the fewest actors. Every strategy treats live, ready members as equal
+   * candidates and falls back to this node when no other is ready.
+   *
+   * Construction crosses as a recipe, so the actor's class must be registered
+   * with `registerActor` on every node and its `Props` arguments must be plain
+   * data, exactly as for a plain distributed spawn.
+   *
+   * @param name - The top-level name the actor holds, unique across the cluster.
+   * @param props - The actor's construction as data.
+   * @param options - The placement strategy and the data spawn options.
+   *
+   * @returns The placed actor's handle, local or routed.
+   *
+   * @throws The {@link ErrActorSystemNotStarted} sentinel when the system is not
+   * running.
+   * @throws The {@link ErrReservedName} sentinel for a reserved name, and the
+   * {@link ErrInvalidActorName} sentinel for an invalid one.
+   * @throws The {@link ErrClusteringDisabled} sentinel when this system was
+   * created without a `cluster` configuration.
+   * @throws The {@link ErrActorAlreadyExists} sentinel when the name is held
+   * anywhere in the cluster, and the remote spawn failure otherwise.
+   */
+  async spawnOn(name: string, props: Props, options?: SpawnOnOptions): Promise<PID> {
+    if (!this.isRunning() || this._userGuardian === null) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    if (isSystemName(name)) {
+      throw ErrReservedName;
+    }
+
+    if (!isValidActorName(name)) {
+      throw ErrInvalidActorName;
+    }
+
+    const placement: ClusterPlacement | null = this._clusterPlacement;
+    const clusterNode: ClusterNode | null = this._clusterNode;
+    const registry: ClusterRegistry | null = this._clusterRegistry;
+    if (placement === null || clusterNode === null || registry === null) {
+      throw ErrClusteringDisabled;
+    }
+
+    const owner: string = await selectOwner({
+      strategy: options?.strategy ?? STRATEGY_ROUND_ROBIN,
+      members: clusterNode.members(),
+      self: clusterNode.address,
+      registry,
+      random: Math.random,
+    });
+    return placement.placeOn(name, props, owner, options);
+  }
+
+  /**
+   * Creates the one cluster-wide instance of `name`, hosted on the coordinator,
+   * and returns a handle to it. Unlike {@link spawn} and {@link spawnOn}, creating
+   * a singleton is idempotent: the first caller claims the name and the actor is
+   * built on the coordinator, and every later caller, on this node or any other,
+   * receives a handle to that same instance rather than the {@link ErrActorAlreadyExists}
+   * a duplicate spawn is refused with. When callers race with different `props`, the
+   * winner's `props` win. A singleton is always relocatable, so it is recreated on a
+   * surviving node when its host departs.
+   *
+   * The coordinator is the oldest live member, the one node every view agrees on, so
+   * a singleton's location is predictable and it moves only when that node departs.
+   * At-most-one rests on the same cluster-wide name claim every spawn uses, so a
+   * `spawnSingleton(name)` and a `spawn(name)` anywhere in the cluster contend for the
+   * one name: whichever creates it first holds it, and the other is a duplicate.
+   *
+   * @param name - The top-level name the single instance holds, unique across the cluster.
+   * @param props - The actor's construction as data.
+   * @param options - The data spawn options; the relocation flag is forced on.
+   *
+   * @returns The singleton's handle, local when this node is its host, routed otherwise.
+   *
+   * @throws The {@link ErrActorSystemNotStarted} sentinel when the system is not running.
+   * @throws The {@link ErrReservedName} sentinel for a reserved name, and the
+   * {@link ErrInvalidActorName} sentinel for an invalid one.
+   * @throws The {@link ErrClusteringDisabled} sentinel when this system was created
+   * without a `cluster` configuration.
+   */
+  async spawnSingleton(name: string, props: Props, options?: SpawnOptions): Promise<PID> {
+    if (!this.isRunning() || this._userGuardian === null) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    if (isSystemName(name)) {
+      throw ErrReservedName;
+    }
+
+    if (!isValidActorName(name)) {
+      throw ErrInvalidActorName;
+    }
+
+    const placement: ClusterPlacement | null = this._clusterPlacement;
+    const clusterNode: ClusterNode | null = this._clusterNode;
+    if (placement === null || clusterNode === null || this._clusterRegistry === null) {
+      throw ErrClusteringDisabled;
+    }
+
+    const singletonOptions: SpawnOptions = {
+      ...options,
+      relocatable: true,
+      singleton: true,
+    };
+
+    for (let attempt: number = 0; attempt < SINGLETON_CLAIM_ATTEMPTS; attempt++) {
+      const coordinator: string = clusterNode.coordinator();
+      try {
+        return await placement.placeOn(name, props, coordinator, singletonOptions);
+      } catch (err: unknown) {
+        if (err !== ErrActorAlreadyExists) {
+          throw err;
+        }
+
+        // Lost the claim: a live instance already holds the name, so hand the caller
+        // a handle to it rather than the duplicate error. It is the local instance
+        // when this node hosts it, else a routed handle once the resolver view warms.
+        // A winner that vanished between the loss and the resolve leaves the name free
+        // to reclaim on the next pass.
+        const existing: PID | undefined =
+          this.actorOf(name) ?? (await placement.resolveActor(name));
+        if (existing !== undefined) {
+          return existing;
+        }
+      }
+    }
+
+    throw ErrActorAlreadyExists;
+  }
+
+  /**
+   * Recreates a departed node's actor on this node from its rebuilt `Props`, gated
+   * on the placement still naming `deadOwner`, and resolves whether this node took
+   * the name. The relocation control request lands here after rebuilding the
+   * actor's construction from the shipped recipe.
+   *
+   * @throws The {@link ErrClusteringDisabled} sentinel when this system is not
+   * clustered, so a relocate to a node without a placement is a clean failure.
+   *
+   * @internal
+   */
+  recreatePlaced(
+    name: string,
+    props: Props,
+    options: SpawnOptions,
+    deadOwner: string,
+  ): Promise<boolean> {
+    const placement: ClusterPlacement | null = this._clusterPlacement;
+    if (placement === null) {
+      return Promise.reject(ErrClusteringDisabled);
+    }
+
+    return placement.recreate(name, props, options, deadOwner);
+  }
+
+  /**
    * Boots the pool seam on first use, so a program that spawns only
    * instances never pays for workers.
    */
@@ -994,6 +1483,28 @@ export class ActorSystem {
   }
 
   /**
+   * Resolves a top-level actor by name, awaiting the cluster registry when the name
+   * lives on another node. Unlike the synchronous {@link actorOf}, which reads a warm
+   * local view and returns `undefined` for a cluster name it has not learned yet, this
+   * warms the view from the registry first, so the routed handle to a name placed
+   * anywhere in the cluster resolves on the first call rather than after a cold miss.
+   * A local actor or an unclustered system resolves without any network round trip.
+   *
+   * @param name - The actor name to look up.
+   *
+   * @returns The actor's PID, local or routed, or `undefined` when no running actor
+   * holds the name anywhere in the cluster.
+   */
+  async actorOfAsync(name: string): Promise<PID | undefined> {
+    const local: PID | undefined = this.actorOf(name);
+    if (local !== undefined) {
+      return local;
+    }
+
+    return this._clusterPlacement?.resolveActor(name);
+  }
+
+  /**
    * Resolves a top-level actor by name on the remote node at
    * `host:port` and returns its PID. The handle sends, asks, and
    * watches over the network exactly as a local PID does; liveness
@@ -1054,6 +1565,29 @@ export class ActorSystem {
     options?: SpawnOptions,
   ): Promise<PID> {
     return this.requireRemoting().remoteSpawn(host, port, name, props, options);
+  }
+
+  /**
+   * Recreates a departed node's actor on the node at `host:port` from its recipe,
+   * gated on the record still naming `deadOwner` there, resolving whether that node
+   * took the name. The runtime seam the relocation actor ships a remote recreate
+   * through; a build failure or an unclustered target settles the promise with the
+   * error.
+   *
+   * @throws The {@link ErrRemotingDisabled} sentinel when this system was created
+   * without a `remote` configuration.
+   *
+   * @internal
+   */
+  async remoteRecreate(
+    host: string,
+    port: number,
+    name: string,
+    recipe: RecreateRecipe,
+    singleton: boolean,
+    deadOwner: string,
+  ): Promise<boolean> {
+    return this.requireRemoting().remoteRecreate(host, port, name, recipe, singleton, deadOwner);
   }
 
   /**

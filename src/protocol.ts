@@ -24,6 +24,7 @@
 
 import type { MessagePort } from "node:worker_threads";
 import type { WireError, WireMessage } from "./envelope";
+import type { SerializedPassivation } from "./passivation";
 import type { Reentrancy } from "./reentrancy";
 
 /**
@@ -49,6 +50,15 @@ export interface ActorRecipe {
   /** The reentrancy configuration of the placed actor; the one spawn
    * option that is data and can cross the boundary. */
   readonly reentrancy?: Reentrancy;
+
+  /** The placed actor's passivation strategy as plain data, rebuilt on
+   * the owning isolate; omitted when the actor never passivates. */
+  readonly passivation?: SerializedPassivation;
+
+  /** Whether the placed actor is recreated on a survivor when its node
+   * departs, resolved on the calling node from the system default and
+   * the per-actor override; omitted leaves the owner's default in force. */
+  readonly relocatable?: boolean;
 }
 
 /**

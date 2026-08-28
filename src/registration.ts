@@ -29,8 +29,10 @@ import { ActorRegistry } from "./actor.registry";
 import { captureCallSites } from "./call.sites";
 import { ActorNotRegisteredError } from "./errors";
 import { type MessageClass, MessageRegistry } from "./message.registry";
+import { type PassivationStrategy, serializePassivation } from "./passivation";
 import type { ActorClass, Props } from "./props";
 import type { ActorRecipe } from "./protocol";
+import type { Reentrancy } from "./reentrancy";
 import type { SpawnOptions } from "./spawn.options";
 
 /**
@@ -159,10 +161,11 @@ function callerModule(type: ActorClass): string {
 
 /**
  * Resolves `Props` and its spawn options to a placeable recipe. The
- * one spawn option that is data, reentrancy, rides the recipe; the
- * options that are live objects (mailbox, supervisor, passivation
- * strategy) are refused for every `Props` spawn, wherever it would
- * land, so behavior never depends on placement.
+ * options that are data ride the recipe: reentrancy, the passivation
+ * strategy reduced to its plain form, and the relocation flag. The
+ * options that are live objects (mailbox, supervisor) are refused for
+ * every `Props` spawn, wherever it would land, so behavior never depends
+ * on placement.
  *
  * @throws A `TypeError` for options that cannot cross an isolate, and
  * everything {@link recipeOf} throws.
@@ -170,21 +173,25 @@ function callerModule(type: ActorClass): string {
  * @internal
  */
 export function placedRecipe(props: Props, options?: SpawnOptions): ActorRecipe {
-  if (
-    options?.mailbox !== undefined ||
-    options?.supervisor !== undefined ||
-    options?.passivationStrategy !== undefined
-  ) {
+  if (options?.mailbox !== undefined || options?.supervisor !== undefined) {
     throw new TypeError(
-      "Props spawns accept only data spawn options: mailbox, supervisor, and passivation " +
-        "strategies are live objects that cannot cross an isolate; configure them in the " +
-        "actor's own module",
+      "Props spawns accept only data spawn options: a mailbox and a supervisor are live " +
+        "objects that cannot cross an isolate; configure them in the actor's own module",
     );
   }
 
-  const recipe = recipeOf(props);
-  const reentrancy = options?.reentrancy;
-  return reentrancy === undefined ? recipe : { ...recipe, reentrancy };
+  const recipe: ActorRecipe = recipeOf(props);
+  const reentrancy: Reentrancy | undefined = options?.reentrancy;
+  const passivationStrategy: PassivationStrategy | undefined = options?.passivationStrategy;
+  const relocatable: boolean | undefined = options?.relocatable;
+  return {
+    ...recipe,
+    ...(reentrancy !== undefined ? { reentrancy } : {}),
+    ...(passivationStrategy !== undefined
+      ? { passivation: serializePassivation(passivationStrategy) }
+      : {}),
+    ...(relocatable !== undefined ? { relocatable } : {}),
+  };
 }
 
 /**

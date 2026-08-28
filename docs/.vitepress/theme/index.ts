@@ -1,20 +1,12 @@
 /// <reference path="../env.d.ts" />
 import type { Theme } from "vitepress";
 import DefaultTheme from "vitepress/theme";
-import { MermaidRenderer } from "vitepress-mermaid-renderer";
 import "./custom.css";
 import Layout from "./Layout.vue";
 
-// Render ```mermaid fenced blocks client-side. The renderer imports mermaid
-// at runtime and self-injects its styles, so no build-time plugin or CSS
-// import is needed. Guarded to the browser: enhanceApp also runs during the
-// SSR build, where there is no DOM to observe.
+// The custom Layout adds the home page's feature bands; diagrams are inline SVGs
+// in the markdown pages themselves, so the theme wires no diagram renderer.
 export default {
   extends: DefaultTheme,
   Layout,
-  enhanceApp() {
-    if (typeof window !== "undefined") {
-      MermaidRenderer.getInstance();
-    }
-  },
 } satisfies Theme;

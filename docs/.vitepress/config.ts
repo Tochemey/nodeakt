@@ -1,12 +1,13 @@
 import { defineConfig } from "vitepress";
 
 // The site is served from GitHub Pages under /nodeakt/.
-// Mermaid diagrams are rendered client-side by the theme (see theme/index.ts),
-// which imports mermaid at runtime, so no build-time plugin is needed.
+// Diagrams are hand-authored inline SVGs in the markdown pages, colored with the
+// theme's CSS variables (falling back to a light palette outside the site), so no
+// diagram library or renderer is involved.
 export default defineConfig({
   title: "NodeAkt",
   description:
-    "Zero-dependency actor framework for Node, Deno and Bun: typed actors, supervision, mailboxes, behaviors, an event stream, a multi-core runtime, and remoting across nodes",
+    "Zero-dependency actor framework for Node, Deno and Bun: typed actors, supervision, mailboxes, behaviors, an event stream, a multi-core runtime, remoting across nodes, and clustering with discovery, placement, singletons, and relocation",
   base: "/nodeakt/",
   cleanUrls: true,
   lastUpdated: true,
@@ -39,14 +40,14 @@ export default defineConfig({
     ],
     sidebar: [
       {
-        text: "Guide",
+        text: "🚀 Guide",
         items: [
           { text: "Introduction", link: "/guide/" },
           { text: "Tour", link: "/guide/tour" },
         ],
       },
       {
-        text: "Actor system",
+        text: "⚙️ Actor system",
         items: [
           { text: "Overview", link: "/actor-system/" },
           { text: "Logging", link: "/actor-system/logging" },
@@ -54,7 +55,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "Actors",
+        text: "👥 Actors",
         items: [
           { text: "Overview", link: "/actor/" },
           { text: "Spawning", link: "/actor/spawning" },
@@ -73,18 +74,31 @@ export default defineConfig({
         ],
       },
       {
-        text: "Multi-core",
+        text: "⚡ Multi-core",
         items: [{ text: "Overview", link: "/multi-core/" }],
       },
       {
-        text: "Remoting",
+        text: "📡 Remoting",
         items: [
           { text: "Overview", link: "/remoting/" },
           { text: "TLS", link: "/remoting/tls" },
         ],
       },
       {
-        text: "Appendix",
+        text: "🌐 Clustering",
+        items: [
+          { text: "Overview", link: "/clustering/" },
+          { text: "Discovery", link: "/clustering/discovery" },
+          { text: "Membership", link: "/clustering/membership" },
+          { text: "Placement", link: "/clustering/placement" },
+          { text: "Singletons", link: "/clustering/singletons" },
+          { text: "Messaging", link: "/clustering/messaging" },
+          { text: "Relocation", link: "/clustering/relocation" },
+          { text: "Events", link: "/clustering/events" },
+        ],
+      },
+      {
+        text: "📖 Appendix",
         items: [{ text: "Errors", link: "/errors" }],
       },
     ],

@@ -76,14 +76,8 @@ Examples: `feat: add priority mailbox`, `fix(supervision): reset retry budget on
 
 Keep a PR to one logical change. The CI gate is typecheck, lint, and the test matrix on Node 22, 24, and 26; all of it must be green.
 
-## Changesets
+## Releases
 
-User-visible changes (features, fixes, behavior or API changes) include a changeset so the release notes write themselves:
+Releases are cut by maintainers. A stable release happens when a version tag is pushed: the maintainer bumps the version in `package.json`, writes the matching `CHANGELOG.md` section, commits that release, and pushes a `vX.Y.Z` tag. The pipeline verifies the version matches the tag, publishes to npm, and creates the GitHub release from the changelog. The full procedure is the release runbook in [MAINTAINERS.md](MAINTAINERS.md).
 
-```sh
-pnpm changeset
-```
-
-Pick the bump (`patch` for fixes, `minor` for features; `major` is a maintainer decision) and write the summary for a reader of the changelog, not for the reviewer. Internal-only changes (docs, CI, refactors with no observable effect) do not need one.
-
-Releases are cut by maintainers: every green push to `main` publishes a `nightly` dist-tag build automatically, and a stable release happens when a version tag is pushed, which folds the accumulated changesets into `CHANGELOG.md`.
+Contributors do not need to do anything special for releases. Keep your PR to one logical change with a clear title and description; the maintainer summarizes it in the changelog at release time.

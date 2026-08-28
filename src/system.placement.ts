@@ -43,6 +43,12 @@ import { WorkerPool } from "./worker.pool";
 export interface SystemPlacementOptions {
   readonly capacity: number;
   readonly quiet: boolean;
+
+  /** Forwarded to the pool as {@link WorkerPoolOptions.onRelease}: called
+   * with a top-level name each time the pool frees it, so the cluster
+   * placement wrapping this one can delete the freed actor's registry
+   * record. Omitted by a plain single-node system, which mirrors nothing. */
+  readonly onRelease?: (name: string) => void;
 }
 
 /**
@@ -70,6 +76,7 @@ export async function systemPlacement(
     size,
     entry: workerEntry(),
     quiet: options.quiet,
+    ...(options.onRelease !== undefined ? { onRelease: options.onRelease } : {}),
   });
 
   await pool.start();

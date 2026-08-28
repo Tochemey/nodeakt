@@ -67,6 +67,34 @@ defineProps<{ name: string }>();
       <rect x="5" y="7" width="14" height="11" rx="2" />
       <path d="M8.5 7V6a3.5 3.5 0 0 1 7 0v1" />
     </template>
+    <!-- Clustering: three connected nodes. -->
+    <template v-else-if="name === 'cluster'">
+      <circle cx="6" cy="7.5" r="2.1" />
+      <circle cx="18" cy="7.5" r="2.1" />
+      <circle cx="12" cy="17" r="2.1" />
+      <path d="M8.1 7.5h7.8M7.7 9.3 10.6 15M16.3 9.3 13.4 15" />
+    </template>
+
+    <!-- Discovery: a magnifier over the network. -->
+    <template v-else-if="name === 'discovery'">
+      <circle cx="11" cy="11" r="5.5" />
+      <path d="M15 15 19.5 19.5" />
+    </template>
+
+    <!-- Placement: a grid with a chosen cell. -->
+    <template v-else-if="name === 'placement'">
+      <rect x="4.5" y="4.5" width="15" height="15" rx="2" />
+      <path d="M4.5 12h15M12 4.5v15" opacity="0.45" />
+      <circle cx="15.75" cy="15.75" r="1.6" fill="currentColor" stroke="none" />
+    </template>
+
+    <!-- Relocation: an actor moving between nodes. -->
+    <template v-else-if="name === 'relocation'">
+      <circle cx="6" cy="12" r="2.2" opacity="0.4" />
+      <circle cx="18" cy="12" r="2.2" />
+      <path d="M8.4 12h5.4M12 9l3 3-3 3" />
+    </template>
+
     <!-- One package: a single box. -->
     <template v-else-if="name === 'deps'">
       <rect x="6" y="6" width="12" height="12" rx="2" />

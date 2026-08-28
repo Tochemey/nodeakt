@@ -61,6 +61,8 @@ describe("WorkerPool", () => {
   describe("with a running pool", () => {
     let system: ActorSystem;
     let pool: WorkerPool;
+    /** Top-level names the pool reported freed, so a test can see a crash release. */
+    const released: string[] = [];
 
     beforeAll(async () => {
       system = new ActorSystem("sys", { logger: discardLogger });
@@ -69,6 +71,9 @@ describe("WorkerPool", () => {
         size: 2,
         entry,
         quiet: true,
+        onRelease: (name: string): void => {
+          released.push(name);
+        },
       });
       await pool.start();
     }, 60_000);
@@ -196,6 +201,10 @@ describe("WorkerPool", () => {
       const slowRef = await slowPending;
       expect(slowRef.workerId()).toBe(survivor);
       await expect(slowRef.ask("hello", 5000)).resolves.toBe("slow:hello");
+
+      // The crashed isolate's freed name is reported through onRelease, so a
+      // layer above the pool can clear it just as an explicit release would.
+      expect(released).toContain(dead.path().name());
     });
   });
 

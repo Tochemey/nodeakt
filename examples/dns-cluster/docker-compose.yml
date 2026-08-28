@@ -1,0 +1,58 @@
+# A three-node cluster discovered over DNS.
+#
+# Every service runs the same image and shares the network alias "nodeakt", so an
+# A-record lookup of that name returns all three container IPs. Each node resolves
+# it at boot to find its peers, exactly the way a headless service exposes its pods
+# in a container orchestrator. Each node also advertises its own service name, which
+# resolves to that one container, so peers dial it directly after they join.
+
+name: nodeakt-dns-cluster
+
+x-node: &node
+  build:
+    context: ../..
+    dockerfile: examples/dns-cluster/Dockerfile
+  networks:
+    default:
+      aliases:
+        - nodeakt
+  restart: unless-stopped
+
+x-env: &node-env
+  NODEAKT_DISCOVERY_HOSTNAME: nodeakt
+  NODEAKT_GOSSIP_PORT: "7946"
+  NODEAKT_DATA_PORT: "8080"
+  NODEAKT_HTTP_PORT: "3000"
+  NODEAKT_MEMBER_QUORUM: "2"
+
+services:
+  node1:
+    <<: *node
+    hostname: node1
+    environment:
+      <<: *node-env
+      NODEAKT_HOST: node1
+    ports:
+      - "3001:3000"
+
+  node2:
+    <<: *node
+    hostname: node2
+    environment:
+      <<: *node-env
+      NODEAKT_HOST: node2
+    ports:
+      - "3002:3000"
+
+  node3:
+    <<: *node
+    hostname: node3
+    environment:
+      <<: *node-env
+      NODEAKT_HOST: node3
+    ports:
+      - "3003:3000"
+
+networks:
+  default:
+    driver: bridge

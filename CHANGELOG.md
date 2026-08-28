@@ -1,5 +1,27 @@
 # @tochemey/nodeakt
 
+## [Unreleased]
+
+### Features
+
+- **Clustering.** Turn a set of single-node systems into one cluster: actors spawn, are addressed, and are messaged by name across nodes, without a caller knowing which machine an actor runs on. Enable it with `{ cluster: { discovery } }`; `remote` is required on the same node (`ErrClusterRequiresRemote`), and a wildcard remoting host that peers cannot dial back is refused (`ErrClusterRequiresRoutableHost`). A system without a `cluster` option keeps its exact single-node behavior. Built on gossip-based membership, a distributed name registry, and the existing remoting transport.
+
+  **Discovery.** How a node finds its seed peers at boot, consulted once and never again. `DnsDiscovery` resolves a hostname over `SRV`, `A`, or `AAAA` records, ideal for a headless service; `StaticDiscovery` takes a fixed `host:port` list; a custom `DiscoveryProvider` pulls seeds from any registry. All exported from the package.
+
+  **Membership.** Every node keeps a live view of the cluster over a gossip protocol with failure detection: a member that misses its probes is suspected, corroborated, and confirmed dead, or revived if it answers again. The oldest live member is the coordinator, the deterministic single driver of cluster-wide work. `minimumMemberQuorum` enables the split-brain resolver so a minority half of a partition stops rather than minting duplicates.
+
+  **Placement.** Top-level names are unique cluster-wide; a duplicate `spawn` is refused with `ErrActorAlreadyExists`. `spawn` keeps an actor local; `spawnOn(name, props, { strategy })` places it on the node a strategy chooses (`roundRobin` default, `random`, `local`, `leastLoad`) and returns a routed handle. The owning node performs the single name claim, so racing callers never double-write a record.
+
+  **Singletons.** `spawnSingleton(name, props)` gives a name exactly one live instance cluster-wide, hosted on the coordinator and idempotent to create: a losing caller receives a handle to the existing instance rather than an error. At-most-one rests on the same name claim as every spawn, no lease or renewal clock, and depends on the split-brain resolver being on.
+
+  **Location-transparent messaging.** `actorOf(name)` stays synchronous and non-blocking, returning a local or already-known routed handle, or `undefined`. `actorOfAsync(name)` awaits a single registry read to resolve a name owned anywhere in the cluster, the lookup application code uses to reach a cross-node actor on the first call. Routed handles keep every remoting contract: per-actor ordering, `ask`/`request` replies, cross-node `watch`, and re-resolution after a move.
+
+  **Relocation and recovery.** When a node departs, gracefully via `stop()` or by crash, the coordinator recreates its relocatable actors on the survivors from their stored recipes, spread by a deterministic balanced fill. Recovery is idempotent and resumable: every recreate is a compare-and-set gated on the record still naming the dead node, a build that fails is retried rather than lost, and a periodic orphan sweep backstops the pass. A relocated actor is a fresh start that recovers its own state in `preStart`; messages in flight during a move are lost, by design. Relocation is on by default, opt out system-wide with `cluster.relocation: false` or per actor with `relocatable: false`.
+
+  **Cluster events.** `subscribe` delivers `NodeJoined`, `NodeLeft`, `CoordinatorChanged`, `RebalanceStarted`, `RebalanceCompleted`, `RelocationStarted`, `RelocationCompleted`, and `RelocationFailed`, narrowed with `instanceof` like every other stream event.
+
+  **Trust model.** As with remoting, a cluster is a private network whose nodes trust each other. Do not expose a gossip, data, or remoting port to an untrusted network.
+
 ## 0.1.0
 
 ### Minor Changes

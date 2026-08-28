@@ -42,8 +42,9 @@ import { PeerError, type Session } from "../../src/net/session";
 import { ByteReader, ByteWriter, decodeValue, encodeValue } from "../../src/net/values";
 import type { PID } from "../../src/pid";
 import type { ReceiveContext } from "../../src/receive.context";
-import { registerMessage } from "../../src/registration";
+import { registerActor, registerMessage } from "../../src/registration";
 import { decodeFailure } from "../../src/remoting.codec";
+import { Registered } from "../fixtures/registered.actor.mjs";
 import { cleanupNet, dialSession, hello, startServer } from "../net/helpers";
 import { remoteSystem, until } from "./helpers";
 
@@ -52,6 +53,11 @@ class Probe {
 }
 
 registerMessage(Probe);
+
+/** A registered actor, so a control spawn gets past class resolution to the
+ * option-rebuild step a malformed passivation must fail at. */
+const registeredModule: string = new URL("../fixtures/registered.actor.mjs", import.meta.url).href;
+registerActor(Registered, registeredModule);
 
 /** Records every delivery with its sender for later assertions. */
 class Collector implements Actor {
@@ -162,6 +168,65 @@ describe("the control endpoint", () => {
       await expect(rejection).rejects.toSatisfy((err: unknown): boolean => {
         return err instanceof PeerError && err.code === ERROR_BAD_REQUEST;
       });
+    } finally {
+      await system.stop();
+    }
+  });
+
+  it("answers a control spawn carrying a malformed passivation with an error", async () => {
+    const system: ActorSystem = remoteSystem("beta");
+    await system.start();
+
+    try {
+      const session: Session = await dialSession(system.port());
+      const rejection: Promise<ReplyEnvelope> = session.ask(
+        envelope({
+          kind: KIND_ASK,
+          typeRef: "nodeakt.remote.spawn",
+          payload: payloadOf({
+            name: "corrupt",
+            actor: "Registered",
+            args: ["p"],
+            passivation: { kind: "bogus" },
+          }),
+        }),
+        2000,
+      );
+
+      // The class resolves, so the request reaches the option rebuild, where the
+      // unknown passivation kind is answered as an error rather than crashing the
+      // endpoint or hanging the caller.
+      await expect(rejection).rejects.toThrow('unknown passivation strategy kind "bogus"');
+    } finally {
+      await system.stop();
+    }
+  });
+
+  it("answers malformed relocate requests with an error", async () => {
+    const system: ActorSystem = remoteSystem("beta");
+    await system.start();
+
+    try {
+      const session: Session = await dialSession(system.port());
+      const relocate = (payload: unknown): Promise<ReplyEnvelope> =>
+        session.ask(
+          envelope({
+            kind: KIND_ASK,
+            typeRef: "nodeakt.remote.relocate",
+            payload: payloadOf(payload),
+          }),
+          2000,
+        );
+
+      // A payload that is not an object, one missing a string field, and one whose
+      // args are not an array are each a bad request rather than a build.
+      await expect(relocate(42)).rejects.toThrow("malformed relocate request");
+      await expect(relocate({ name: "x", actor: "Registered" })).rejects.toThrow(
+        "malformed relocate request",
+      );
+      await expect(
+        relocate({ name: "x", actor: "Registered", deadOwner: "d", args: 5 }),
+      ).rejects.toThrow("malformed relocate request");
     } finally {
       await system.stop();
     }

@@ -32,10 +32,12 @@ import {
   ActorNotRegisteredError,
   ErrActorAlreadyExists,
   ErrActorSystemNotStarted,
+  ErrClusteringDisabled,
   ErrDead,
   ErrRemotingDisabled,
 } from "../../src/errors";
 import { Terminated } from "../../src/messages";
+import { TimeBasedStrategy } from "../../src/passivation";
 import { newPath } from "../../src/path";
 import type { PID } from "../../src/pid";
 import { Props } from "../../src/props";
@@ -129,6 +131,54 @@ describe("remoteSpawn", () => {
     });
   });
 
+  it("carries the passivation strategy so a remote actor still passivates", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const pid: PID = await a.remoteSpawn(
+        b.host(),
+        b.port(),
+        "idler",
+        Props.create(Registered, "id"),
+        { passivationStrategy: new TimeBasedStrategy(100) },
+      );
+      expect(await a.noSender().ask(pid, "hi", 2000)).toBe("id:hi");
+
+      // The strategy crossed and applies: idle past its window the actor
+      // passivates, freeing its name on the node it lives on. Were the strategy
+      // dropped in transit the actor would live on and this would time out.
+      await until("the remote actor to passivate", (): boolean => b.actorOf("idler") === undefined);
+    });
+  });
+
+  it("carries the relocation flag across without disturbing the spawn", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const pid: PID = await a.remoteSpawn(
+        b.host(),
+        b.port(),
+        "movable",
+        Props.create(Registered, "mv"),
+        { relocatable: true },
+      );
+
+      expect(pid.path().name()).toBe("movable");
+      expect(b.actorOf("movable")).toBeDefined();
+    });
+  });
+
+  it("carries the singleton marker across without disturbing the spawn", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const pid: PID = await a.remoteSpawn(
+        b.host(),
+        b.port(),
+        "the-one",
+        Props.create(Registered, "one"),
+        { singleton: true },
+      );
+
+      expect(pid.path().name()).toBe("the-one");
+      expect(b.actorOf("the-one")).toBeDefined();
+    });
+  });
+
   it("rejects a held name with the identical sentinel", async () => {
     await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
       await b.spawn("greeter", new Registered("en"));
@@ -178,6 +228,41 @@ describe("remoteSpawn", () => {
         { mailbox: new BoundedMailbox(1) },
       );
       await expect(rejection).rejects.toBeInstanceOf(TypeError);
+    });
+  });
+});
+
+describe("remoteRecreate", () => {
+  it("rejects a recreate on a node without clustering", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const rejection: Promise<boolean> = a.remoteRecreate(
+        b.host(),
+        b.port(),
+        "moved",
+        { actor: "Registered", args: ["f"] },
+        false,
+        "dead:1",
+      );
+
+      // The failure crosses the wire by message, not the sentinel's identity.
+      await expect(rejection).rejects.toThrow(ErrClusteringDisabled.message);
+    });
+  });
+
+  it("rejects a recreate whose class is not registered on the far node", async () => {
+    await withSystems(async (a: ActorSystem, b: ActorSystem): Promise<void> => {
+      const rejection: Promise<boolean> = a.remoteRecreate(
+        b.host(),
+        b.port(),
+        "moved",
+        { actor: "Ghostly" },
+        false,
+        "dead:1",
+      );
+
+      await expect(rejection).rejects.toSatisfy(
+        (err: unknown): boolean => err instanceof Error && err.name === "ActorNotRegisteredError",
+      );
     });
   });
 });

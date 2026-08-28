@@ -4,25 +4,40 @@ An actor moves through a small, fixed set of phases: it is constructed, started,
 
 ## At a glance
 
-```mermaid
-flowchart TD
-    C["new Actor()"]
-    P["preStart(ctx)"]
-    PS["PostStart<br/>(first message)"]
-    R["receive(ctx)…<br/>one at a time"]
-    Stop["postStop(ctx)"]
-    Dead(["stopped<br/>PID is dead"])
-    Sup{"supervisor"}
-
-    C -->|"spawn / spawnChild"| P
-    P -->|"registered in the tree"| PS
-    PS --> R
-    R -->|"shutdown() · PoisonPill<br/>passivation · parent stops"| Stop
-    Stop -->|"watchers get Terminated"| Dead
-    R -.->|"throws"| Sup
-    Sup -.->|"resume / restart / suspend"| R
-    Sup -.->|"stop"| Stop
-```
+<svg role="img" aria-label="Lifecycle: construction, preStart, receive one message at a time, postStop, stopped; a throwing receive asks the supervisor" viewBox="0 0 720 276" style="width:100%;max-width:720px;height:auto;display:block;margin:24px auto;font-family:inherit">
+  <defs>
+    <marker id="act-lc" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="var(--vp-c-text-3, #929295)"/>
+    </marker>
+  </defs>
+  <rect x="16" y="24" width="150" height="64" rx="8" fill="var(--vp-c-bg-soft, #f6f6f7)" stroke="var(--vp-c-divider, #c9c9cc)" stroke-width="1.5"/>
+  <text x="91" y="61" text-anchor="middle" font-size="13.5" font-family="var(--vp-font-family-mono, ui-monospace, monospace)" fill="var(--vp-c-text-1, #3c3c43)">new Actor()</text>
+  <rect x="226" y="24" width="160" height="64" rx="8" fill="var(--vp-c-bg-soft, #f6f6f7)" stroke="var(--vp-c-divider, #c9c9cc)" stroke-width="1.5"/>
+  <text x="306" y="61" text-anchor="middle" font-size="13.5" font-family="var(--vp-font-family-mono, ui-monospace, monospace)" fill="var(--vp-c-text-1, #3c3c43)">preStart(ctx)</text>
+  <rect x="446" y="24" width="180" height="64" rx="8" fill="var(--vp-c-brand-soft, #e8ebf8)" stroke="var(--vp-c-brand-1, #3451b2)" stroke-width="1.5"/>
+  <text x="536" y="50" text-anchor="middle" font-size="13.5" font-family="var(--vp-font-family-mono, ui-monospace, monospace)" fill="var(--vp-c-text-1, #3c3c43)">receive(ctx)</text>
+  <text x="536" y="72" text-anchor="middle" font-size="12.5" fill="var(--vp-c-text-2, #67676c)">one per message</text>
+  <path d="M166 56 H222" fill="none" stroke="var(--vp-c-text-3, #929295)" stroke-width="1.5" marker-end="url(#act-lc)"/>
+  <text x="194" y="16" text-anchor="middle" font-size="11.5" fill="var(--vp-c-text-2, #67676c)">spawn</text>
+  <path d="M386 56 H442" fill="none" stroke="var(--vp-c-text-3, #929295)" stroke-width="1.5" marker-end="url(#act-lc)"/>
+  <text x="414" y="16" text-anchor="middle" font-size="11.5" fill="var(--vp-c-text-2, #67676c)">PostStart</text>
+  <rect x="446" y="200" width="180" height="44" rx="8" fill="var(--vp-c-bg-soft, #f6f6f7)" stroke="var(--vp-c-divider, #c9c9cc)" stroke-width="1.5"/>
+  <text x="536" y="227" text-anchor="middle" font-size="14" font-weight="500" fill="var(--vp-c-text-1, #3c3c43)">supervisor</text>
+  <path d="M506 88 V196" fill="none" stroke="var(--vp-c-text-3, #929295)" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#act-lc)"/>
+  <text x="498" y="166" text-anchor="end" font-size="11.5" fill="var(--vp-c-text-2, #67676c)">throws</text>
+  <path d="M566 196 V92" fill="none" stroke="var(--vp-c-text-3, #929295)" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#act-lc)"/>
+  <text x="574" y="166" font-size="11.5" fill="var(--vp-c-text-2, #67676c)">resume / restart</text>
+  <rect x="226" y="200" width="160" height="44" rx="8" fill="var(--vp-c-bg-soft, #f6f6f7)" stroke="var(--vp-c-divider, #c9c9cc)" stroke-width="1.5"/>
+  <text x="306" y="227" text-anchor="middle" font-size="13.5" font-family="var(--vp-font-family-mono, ui-monospace, monospace)" fill="var(--vp-c-text-1, #3c3c43)">postStop(ctx)</text>
+  <path d="M442 222 H390" fill="none" stroke="var(--vp-c-text-3, #929295)" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#act-lc)"/>
+  <text x="416" y="214" text-anchor="middle" font-size="11.5" fill="var(--vp-c-text-2, #67676c)">stop</text>
+  <path d="M470 88 V130 H306 V196" fill="none" stroke="var(--vp-c-text-3, #929295)" stroke-width="1.5" marker-end="url(#act-lc)"/>
+  <text x="380" y="118" text-anchor="middle" font-size="11" fill="var(--vp-c-text-2, #67676c)">shutdown / PoisonPill / passivation</text>
+  <rect x="16" y="200" width="150" height="44" rx="22" fill="var(--vp-c-bg-soft, #f6f6f7)" stroke="var(--vp-c-divider, #c9c9cc)" stroke-width="1.5"/>
+  <text x="91" y="227" text-anchor="middle" font-size="14" font-weight="500" fill="var(--vp-c-text-1, #3c3c43)">stopped</text>
+  <path d="M222 222 H170" fill="none" stroke="var(--vp-c-text-3, #929295)" stroke-width="1.5" marker-end="url(#act-lc)"/>
+  <text x="196" y="262" text-anchor="middle" font-size="11.5" fill="var(--vp-c-text-2, #67676c)">watchers get Terminated</text>
+</svg>
 
 A failure branches off this path: a throw from `receive` engages the actor's [supervisor](supervision.md), which may **resume**, **restart**, or **suspend** the actor rather than stop it (the dotted edges), instead of letting it run to `postStop`.
 

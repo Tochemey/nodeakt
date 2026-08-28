@@ -93,6 +93,12 @@ export interface WorkerPoolOptions {
   /** How long a stop waits for a worker's graceful exit before
    * terminating it, in milliseconds; defaults to 5000. */
   readonly stopTimeout?: number;
+
+  /** Called with a top-level name each time it is freed pool-wide, so a
+   * layer above the pool can mirror the release: the cluster placement
+   * deletes the freed actor's registry record through it. Fires for an
+   * explicit release, a placed actor stopping, and a failed placement. */
+  readonly onRelease?: (name: string) => void;
 }
 
 /** A spawn reply's payload: where the placed actor lives. */
@@ -235,10 +241,12 @@ export class WorkerPool {
   }
 
   /** Releases a claimed or placed top-level name everywhere; unknown
-   * names are a no-op. */
+   * names are a no-op. Notifies {@link WorkerPoolOptions.onRelease} last,
+   * so a layer above the pool sees every release the pool performs. */
   release(name: string): void {
     this._plane.free(name);
     this.broadcast({ kind: CONTROL_NAME_FREED, name });
+    this._options.onRelease?.(name);
   }
 
   /** Posts one control message to every live worker. */
@@ -649,6 +657,10 @@ export class WorkerPool {
 
       for (const name of freed) {
         this.broadcast({ kind: CONTROL_NAME_FREED, name });
+        // A crashed isolate frees its names as an explicit release does, so the
+        // layer above the pool learns of it too and clears the freed name's
+        // registry record instead of leaving it pointing at a gone actor.
+        this._options.onRelease?.(name);
       }
     }
   }

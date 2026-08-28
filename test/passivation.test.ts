@@ -27,9 +27,14 @@ import type { Actor } from "../src/actor";
 import { ActorSystem } from "../src/actor.system";
 import { ErrDead } from "../src/errors";
 import {
+  deserializePassivation,
   LongLivedStrategy,
   MessagesCountBasedStrategy,
+  PASSIVATION_COUNT_BASED,
+  PASSIVATION_LONG_LIVED,
+  PASSIVATION_TIME_BASED,
   type PassivationStrategy,
+  serializePassivation,
   TimeBasedStrategy,
 } from "../src/passivation";
 import { PassivationManager } from "../src/passivation.manager";
@@ -81,6 +86,39 @@ describe("passivation strategies", () => {
     expect(() => new TimeBasedStrategy(-5)).toThrow(RangeError);
     expect(() => new MessagesCountBasedStrategy(0)).toThrow(RangeError);
     expect(() => new MessagesCountBasedStrategy(1.5)).toThrow(RangeError);
+  });
+
+  it("reduce to plain data and rebuild the same strategy", () => {
+    const time: TimeBasedStrategy = new TimeBasedStrategy(3000);
+    const count: MessagesCountBasedStrategy = new MessagesCountBasedStrategy(50);
+    const longLived: LongLivedStrategy = new LongLivedStrategy();
+
+    expect(serializePassivation(time)).toEqual({ kind: PASSIVATION_TIME_BASED, timeout: 3000 });
+    expect(serializePassivation(count)).toEqual({
+      kind: PASSIVATION_COUNT_BASED,
+      maxMessages: 50,
+    });
+    expect(serializePassivation(longLived)).toEqual({ kind: PASSIVATION_LONG_LIVED });
+
+    const rebuiltTime: PassivationStrategy = deserializePassivation(serializePassivation(time));
+    const rebuiltCount: PassivationStrategy = deserializePassivation(serializePassivation(count));
+    const rebuiltLongLived: PassivationStrategy = deserializePassivation(
+      serializePassivation(longLived),
+    );
+
+    expect(rebuiltTime).toBeInstanceOf(TimeBasedStrategy);
+    expect((rebuiltTime as TimeBasedStrategy).timeout).toBe(3000);
+    expect(rebuiltCount).toBeInstanceOf(MessagesCountBasedStrategy);
+    expect((rebuiltCount as MessagesCountBasedStrategy).maxMessages).toBe(50);
+    expect(rebuiltLongLived).toBeInstanceOf(LongLivedStrategy);
+  });
+
+  it("refuses to rebuild an unknown serialized kind", () => {
+    expect(() =>
+      deserializePassivation({ kind: "mystery" } as unknown as ReturnType<
+        typeof serializePassivation
+      >),
+    ).toThrow('unknown passivation strategy kind "mystery"');
   });
 });
 

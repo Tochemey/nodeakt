@@ -22,6 +22,7 @@
  * SOFTWARE.
  */
 
+import type { PlacementStrategy } from "./clustering.strategy";
 import type { Mailbox } from "./mailbox";
 import type { PassivationStrategy } from "./passivation";
 import type { Reentrancy } from "./reentrancy";
@@ -48,4 +49,29 @@ export interface SpawnOptions {
    * are in flight. Requests are disabled when omitted.
    */
   reentrancy?: Reentrancy;
+
+  /**
+   * On a clustered node, whether this actor is recreated on a surviving
+   * node when its host departs. Overrides the system's relocation
+   * default for this one actor. Ignored on a system without clustering.
+   */
+  relocatable?: boolean;
+
+  /**
+   * Marks this actor a cluster singleton, so its companion record recovers it
+   * onto the coordinator rather than by the balanced fill. Set only by
+   * `spawnSingleton`; never part of an ordinary spawn.
+   *
+   * @internal
+   */
+  singleton?: boolean;
+}
+
+/**
+ * Options for placing an actor on a node the caller chooses by strategy, the
+ * extra a clustered `spawnOn` accepts over a plain spawn.
+ */
+export interface SpawnOnOptions extends SpawnOptions {
+  /** The strategy selecting the owning node; `roundRobin` when omitted. */
+  strategy?: PlacementStrategy;
 }
