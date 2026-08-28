@@ -1,6 +1,6 @@
 {
   "name": "@tochemey/nodeakt",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Distributed actor framework for TypeScript: typed actors, supervision, mailboxes, behaviors, an event stream, and a multi-core runtime",
   "keywords": [
     "actor",
