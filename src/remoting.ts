@@ -326,7 +326,7 @@ function buildHello(systemName: string, options: RemoteOptions): Hello {
   return {
     revision: CAPABILITY_REVISION,
     systemName,
-    host: options.host,
+    host: options.advertisedHost ?? options.host,
     port: options.port,
     lane: LANE_CONTROL,
     compression: 0,

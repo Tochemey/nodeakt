@@ -129,6 +129,18 @@ describe("ClusterNode over real sockets", () => {
     });
   }, 20_000);
 
+  it("advertises its remoting endpoint and resolves a member's data address to it", async (): Promise<void> => {
+    const node: ClusterNode = await ClusterNode.start({
+      discovery: new StaticDiscovery([]),
+      remotingAddress: "127.0.0.1:2552",
+      bootDeadlineMs: 0,
+    });
+    running.push(node);
+
+    expect(node.remotingAddressOf(node.address)).toBe("127.0.0.1:2552");
+    expect(node.remotingAddressOf("127.0.0.1:0")).toBeUndefined();
+  }, 20_000);
+
   it("hands off its partitions on a graceful leave and the survivor keeps serving", async (): Promise<void> => {
     const anchor: ClusterNode = await ClusterNode.start({
       discovery: new StaticDiscovery([]),

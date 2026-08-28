@@ -26,6 +26,10 @@ import { availableParallelism } from "node:os";
 import type { Actor } from "./actor";
 import { ActorRef, type IsolateRoute } from "./actor.ref";
 import type { ActorSystemOptions } from "./actor.system.options";
+import type { ClusterOptions } from "./cluster.options";
+import { ClusterNode, type ClusterNodeOptions } from "./clustering.node";
+import { ClusterRegistry } from "./clustering.registry";
+import { formatHostPort } from "./clustering.transport";
 import {
   DeadletterActor,
   DeadlettersCountRequest,
@@ -37,6 +41,8 @@ import {
   ActorNotFoundError,
   ErrActorAlreadyExists,
   ErrActorSystemNotStarted,
+  ErrClusterRequiresRemote,
+  ErrClusterRequiresRoutableHost,
   ErrInvalidActorName,
   ErrInvalidActorSystemName,
   ErrNameRequired,
@@ -79,6 +85,67 @@ import { UserGuardian } from "./user.guardian";
  * remote endpoint, when enabled, overrides both. */
 const HOST: string = "127.0.0.1";
 const PORT: number = 0;
+
+/** The stable gossip port a clustered node uses when its cluster options name
+ * none, the shared default every node agrees on without configuration. */
+const CLUSTER_GOSSIP_PORT: number = 7946;
+
+/** The hosts that name no dialable interface: an empty host and the IPv4 and IPv6
+ * unspecified addresses a node may bind but must not advertise, in the spellings a
+ * bracket-stripped, lower-cased host normalizes to. */
+const WILDCARD_HOSTS: ReadonlySet<string> = new Set([
+  "",
+  "0.0.0.0",
+  "::",
+  "::0",
+  "0:0:0:0:0:0:0:0",
+  "0000:0000:0000:0000:0000:0000:0000:0000",
+]);
+
+/** Whether a host is a wildcard or empty, so not an address a peer can dial back:
+ * a node that binds one must advertise a concrete address instead. It strips an
+ * IPv6 literal's brackets and lower-cases before matching, so bracketed and
+ * mixed-case spellings of the unspecified address are caught too. */
+function isWildcardHost(host: string): boolean {
+  const normalized: string = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, "$1");
+  return WILDCARD_HOSTS.has(normalized);
+}
+
+/**
+ * Builds the cluster node's options from the public cluster options, deriving the
+ * remoting address the node advertises from the bound remoting endpoint, binding
+ * the gossip and data endpoints to that same remoting host, and defaulting the
+ * gossip port. A standalone mapping so its defaulting is unit-testable without
+ * binding a socket. `remotingHost` and `remotingPort` are the system's bound
+ * remoting endpoint, so the caller passes them after remoting has started.
+ *
+ * @internal
+ */
+export function clusterNodeOptions(
+  cluster: ClusterOptions,
+  remotingHost: string,
+  remotingPort: number,
+  events: EventStream,
+): ClusterNodeOptions {
+  return {
+    discovery: cluster.discovery,
+    host: remotingHost,
+    gossipPort: cluster.gossipPort ?? CLUSTER_GOSSIP_PORT,
+    remotingAddress: formatHostPort(remotingHost, remotingPort),
+    events,
+    ...(cluster.dataPort !== undefined ? { dataPort: cluster.dataPort } : {}),
+    ...(cluster.bootstrapTimeout !== undefined ? { bootDeadlineMs: cluster.bootstrapTimeout } : {}),
+    ...(cluster.partitionCount !== undefined ? { partitionCount: cluster.partitionCount } : {}),
+    ...(cluster.replicaCount !== undefined ? { replicaCount: cluster.replicaCount } : {}),
+    ...(cluster.writeQuorum !== undefined ? { writeQuorum: cluster.writeQuorum } : {}),
+    ...(cluster.minimumMemberQuorum !== undefined
+      ? { minimumMemberQuorum: cluster.minimumMemberQuorum }
+      : {}),
+  };
+}
 
 /** The fallback ask/request deadline when a system configures none: a
  * generous default so a caller that omits its own timeout still never
@@ -176,6 +243,17 @@ export class ActorSystem {
    * or the system is stopped. */
   private _remoting: Remoting | null = null;
 
+  /** The cluster configuration, or undefined for an unclustered system. */
+  private readonly _clusterOptions: ClusterOptions | undefined;
+
+  /** The cluster node once started, or null while clustering is disabled or
+   * the system is stopped. */
+  private _clusterNode: ClusterNode | null = null;
+
+  /** The distributed registry over the cluster node, or null while clustering
+   * is disabled or the system is stopped. */
+  private _clusterRegistry: ClusterRegistry | null = null;
+
   /** A worker facade's route for paths of other nodes; null on the
    * main isolate, whose remoting seam serves them instead. */
   private _foreignResolver: ((path: Path) => PID | undefined) | null = null;
@@ -208,12 +286,27 @@ export class ActorSystem {
 
     this._name = name;
     this._remoteOptions = options?.remote;
+    this._clusterOptions = options?.cluster;
+    // Clustering needs a remoting endpoint for cross-node actor messages, so a
+    // clustered system with no remote is rejected rather than silently made
+    // unreachable; the remoting host must also be a concrete peer-routable address.
+    if (this._clusterOptions !== undefined) {
+      if (this._remoteOptions === undefined) {
+        throw ErrClusterRequiresRemote;
+      }
+
+      if (isWildcardHost(this._remoteOptions.advertisedHost ?? this._remoteOptions.host)) {
+        throw ErrClusterRequiresRoutableHost;
+      }
+    }
+
     this._askTimeout = askTimeout;
     this._address = {
       system: name,
-      host: this._remoteOptions?.host ?? HOST,
+      host: this._remoteOptions?.advertisedHost ?? this._remoteOptions?.host ?? HOST,
       port: this._remoteOptions?.port ?? PORT,
     };
+
     this._logger = options?.logger ?? defaultLogger;
     this._events = new EventStream((err) => {
       this._logger.error("event subscriber failed", { error: err });
@@ -255,6 +348,24 @@ export class ActorSystem {
    */
   port(): number {
     return this._address.port;
+  }
+
+  /** The running cluster node, or null when clustering is off or the system is
+   * stopped.
+   *
+   * @internal
+   */
+  clusterNode(): ClusterNode | null {
+    return this._clusterNode;
+  }
+
+  /** The distributed cluster registry over the node, or null when clustering is
+   * off or the system is stopped.
+   *
+   * @internal
+   */
+  clusterRegistry(): ClusterRegistry | null {
+    return this._clusterRegistry;
   }
 
   /**
@@ -469,17 +580,18 @@ export class ActorSystem {
     // system provisions for every core the machine gives it.
     this._capacity = detectCapacity();
 
-    // Remoting binds its endpoint before any actor exists, so every
-    // actor's path advertises the reachable node address. An ephemeral
-    // port resolves to the bound one here. A single-node system loads
-    // the seam but binds nothing, so it pays no runtime cost. A bind
-    // failure rejects, leaving the system unstarted.
+    // Remoting binds its endpoint before any actor exists, so every actor's path
+    // advertises the reachable node address. An ephemeral port resolves to the
+    // bound one here. A single-node system loads the seam but binds nothing, so it
+    // pays no runtime cost. A bind failure rejects, leaving the system unstarted.
+    let boundRemoting: Remoting | null = null;
     if (this._remoteOptions !== undefined) {
-      this._remoting = await Remoting.start(this, this._remoteOptions);
+      boundRemoting = await Remoting.start(this, this._remoteOptions);
+      this._remoting = boundRemoting;
       this._address = {
         system: this._name,
-        host: this._remoteOptions.host,
-        port: this._remoting.port,
+        host: this._remoteOptions.advertisedHost ?? this._remoteOptions.host,
+        port: boundRemoting.port,
       };
     }
 
@@ -510,6 +622,27 @@ export class ActorSystem {
       this._rootGuardian,
     );
 
+    // Clustering starts last, once the actor machinery is attached: the ready flag
+    // a peer consults before selecting this node for a placement is gossiped only
+    // from here, so a peer can never pick a member that cannot yet host an actor.
+    // The constructor requires remoting when clustering, so the listener is bound
+    // above; a cluster boot failure releases it, since a system that never reached
+    // "started" can never close it through stop(), while the cluster node releases
+    // its own sockets as it fails.
+    if (this._clusterOptions !== undefined) {
+      const remoting: Remoting = boundRemoting as Remoting;
+      try {
+        this._clusterNode = await ClusterNode.start(
+          clusterNodeOptions(this._clusterOptions, this.host(), this.port(), this._events),
+        );
+        this._clusterRegistry = new ClusterRegistry(this._clusterNode);
+      } catch (error: unknown) {
+        this._remoting = null;
+        await remoting.stop();
+        throw error;
+      }
+    }
+
     this._started = true;
   }
 
@@ -535,31 +668,46 @@ export class ActorSystem {
       await remoting.stop();
     }
 
-    // The pool goes first, while this system still serves: workers
-    // drain their own actors and their final dead letters still reach
-    // this stream. A facade never owns its placement; the worker
-    // runtime tears that down.
-    const placement = this._placement;
-    this._placement = null;
-    this._placementBoot = null;
-    if (placement !== null && this._ownsPlacement) {
-      this._ownsPlacement = false;
-      await placement.stop();
+    // The cluster node leaves gracefully after remoting closes: it drains its
+    // partitions to survivors and departs membership, so a clean shutdown is not
+    // mistaken for a crash and does not churn the survivors' placement. A node
+    // alone in its view has no peer to hand off to and departs at once, so this
+    // never stalls a single-node system. The rest of teardown runs in a finally, so
+    // a drain that reports an error still tears the system down and resets its
+    // state rather than wedging it; the leave error then surfaces from stop().
+    const clusterNode: ClusterNode | null = this._clusterNode;
+    this._clusterNode = null;
+    this._clusterRegistry = null;
+    try {
+      if (clusterNode !== null) {
+        await clusterNode.leave();
+      }
+    } finally {
+      // The pool goes first, while this system still serves: workers drain their
+      // own actors and their final dead letters still reach this stream. A facade
+      // never owns its placement; the worker runtime tears that down.
+      const placement = this._placement;
+      this._placement = null;
+      this._placementBoot = null;
+      if (placement !== null && this._ownsPlacement) {
+        this._ownsPlacement = false;
+        await placement.stop();
+      }
+
+      this._scheduler.stop();
+      this._passivation.stop();
+      await this._rootGuardian?.shutdown();
+
+      this._events.close();
+      this._tree.reset();
+      this._rootGuardian = null;
+      this._systemGuardian = null;
+      this._userGuardian = null;
+      this._noSender = null;
+      this._deadletter = null;
+      this._started = false;
+      this._stopping = false;
     }
-
-    this._scheduler.stop();
-    this._passivation.stop();
-    await this._rootGuardian?.shutdown();
-
-    this._events.close();
-    this._tree.reset();
-    this._rootGuardian = null;
-    this._systemGuardian = null;
-    this._userGuardian = null;
-    this._noSender = null;
-    this._deadletter = null;
-    this._started = false;
-    this._stopping = false;
   }
 
   /**

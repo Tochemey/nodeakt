@@ -22,7 +22,7 @@
  * SOFTWARE.
  */
 
-import { decodeNodeMetadata, type NodeMetadata } from "./clustering.metadata";
+import { decodeNodeMetadata, type NodeMetadata, readRemotingAddress } from "./clustering.metadata";
 import type { ClusterMember, ClusterView } from "./kv/ports";
 import type { MemberRecord } from "./membership/view";
 import { STATE_ALIVE, STATE_SUSPECT } from "./membership/wire";
@@ -80,6 +80,41 @@ export class SwimClusterView implements ClusterView {
   /** Present members, alive or suspect, oldest `startedAt` first, ties broken by name. */
   members(): readonly ClusterMember[] {
     return toClusterMembers(this.#snapshot());
+  }
+
+  /**
+   * The remoting endpoint the member named by `dataAddress` advertises, or
+   * `undefined` when no present member carries that data address or the member
+   * advertises no remoting endpoint.
+   *
+   * It reads the same records {@link members} does, matching on the data address a
+   * member is named by, and decodes the trailing remoting field the store's member
+   * type deliberately omits. This is the seam actor routing consults to turn a
+   * placement's owning member into an address it can deliver actor messages to.
+   *
+   * It walks and decodes a fresh member snapshot on each call, so it is a
+   * resolution and cache-refresh seam, not a per-message one: routing memoizes the
+   * mapping it returns rather than calling it per send.
+   */
+  remotingAddressOf(dataAddress: string): string | undefined {
+    if (dataAddress.length === 0) {
+      return undefined;
+    }
+
+    for (const record of this.#snapshot()) {
+      if (record.state !== STATE_ALIVE && record.state !== STATE_SUSPECT) {
+        continue;
+      }
+
+      if (decodeNodeMetadata(record.metadata).address !== dataAddress) {
+        continue;
+      }
+
+      const remotingAddress: string = readRemotingAddress(record.metadata);
+      return remotingAddress.length === 0 ? undefined : remotingAddress;
+    }
+
+    return undefined;
   }
 
   /**

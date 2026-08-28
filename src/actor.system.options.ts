@@ -22,6 +22,7 @@
  * SOFTWARE.
  */
 
+import type { ClusterOptions } from "./cluster.options";
 import type { Logger } from "./logger";
 import type { RemoteOptions } from "./remote.options";
 
@@ -34,6 +35,14 @@ export interface ActorSystemOptions {
   /** Enables remoting on the system. Absent by default, in which case
    * the system is single-node and the transport never loads. */
   remote?: RemoteOptions;
+
+  /** Enables clustering on the system: the node joins a cluster of peers
+   * and its registry is distributed. Requires `remote`, since a clustered
+   * node must be reachable for actor messages.
+   *
+   * @internal Not yet public: the option and its discovery types are exported,
+   * and documented, once the distributed actor API that rides on them lands. */
+  cluster?: ClusterOptions;
 
   /**
    * The default deadline, in milliseconds, applied to an `ask` or

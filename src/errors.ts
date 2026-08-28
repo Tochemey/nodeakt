@@ -155,6 +155,20 @@ export const ErrFanOutAsk: Error = new Error("a fan-out router cannot answer an 
  * system. */
 export const ErrRemotingDisabled: Error = new Error("remoting is not enabled");
 
+/** Raised when constructing an actor system with a `cluster` configuration but no
+ * `remote` configuration: a clustered node must be reachable for actor messages,
+ * so enable remoting alongside clustering. */
+export const ErrClusterRequiresRemote: Error = new Error(
+  "clustering requires remoting: set the remote option alongside cluster",
+);
+
+/** Raised when a clustered system's advertised host is a wildcard or empty: a
+ * clustered node must advertise a concrete, peer-routable address, so a wildcard
+ * `remote.host` such as `0.0.0.0` needs a concrete `remote.advertisedHost`. */
+export const ErrClusterRequiresRoutableHost: Error = new Error(
+  "clustering requires a concrete advertised host: set remote.advertisedHost when remote.host is a wildcard",
+);
+
 /**
  * Raised when a message would cross an isolate boundary but its class
  * is not in the message registry, either while encoding on the sending

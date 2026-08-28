@@ -30,9 +30,24 @@
  * and pays nothing for the transport.
  */
 export interface RemoteOptions {
-  /** The host the node binds and advertises. A concrete address such as
-   * `127.0.0.1` or `0.0.0.0`, not a name to resolve. */
+  /** The host the node binds its listener on. A concrete address such as
+   * `127.0.0.1`, or a wildcard such as `0.0.0.0` to accept on every
+   * interface, not a name to resolve. It is also the address the node
+   * advertises to peers unless {@link advertisedHost} overrides it, so a
+   * node that binds a wildcard must set {@link advertisedHost} to a
+   * reachable address, or peers cannot dial it back. */
   host: string;
+
+  /** The host the node advertises to peers as the address to dial it back
+   * on, when that differs from the bind {@link host}. Set it when the node
+   * binds a wildcard, so peers reach it at a routable address rather than the
+   * unroutable bind host. Defaults to {@link host}.
+   *
+   * On a clustered node it must also be a locally bindable interface, because
+   * the cluster's gossip and data endpoints bind it: a true NAT case, where the
+   * advertised address is not a local interface, is supported for plain remoting
+   * but not yet for clustering. */
+  advertisedHost?: string;
 
   /** The port the node binds. `0` lets the operating system choose a
    * free port, readable afterwards through `ActorSystem.port`. */

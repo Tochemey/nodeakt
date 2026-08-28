@@ -25,10 +25,29 @@
 import { parseHostPort } from "./clustering.transport";
 import { PutCondition, WriteKind } from "./kv/discriminants";
 import type { Entry, ScanEntry, WriteApplied, WriteOp, WriteResult } from "./kv/ports";
+import { reservedNamesPrefix } from "./reserved";
 
 /** Shared UTF-8 codecs for the address string a registry entry stores as its value. */
 const UTF8_ENCODER: TextEncoder = new TextEncoder();
 const UTF8_DECODER: TextDecoder = new TextDecoder();
+
+/**
+ * Key prefix under which a companion record lives, beside the placement it belongs
+ * to.
+ *
+ * A placement is keyed by the bare actor name; its companion is keyed by this
+ * prefix followed by the same name. The prefix carries the runtime reserved
+ * prefix, which an actor name can never start with, so a companion key can never
+ * collide with a placement key, and {@link ClusterRegistry.actorsByHost} skips it
+ * structurally instead of inferring a record's kind from its value, which a value
+ * that happens to read as an address would otherwise defeat.
+ */
+const COMPANION_KEY_PREFIX: string = `${reservedNamesPrefix}Companion:`;
+
+/** The key a companion record for `name` lives under. */
+function companionKey(name: string): string {
+  return `${COMPANION_KEY_PREFIX}${name}`;
+}
 
 /** The host of an `host:port` address, or `undefined` when the address is not one. */
 function hostOf(address: string): string | undefined {
@@ -121,6 +140,36 @@ export class ClusterRegistry {
   }
 
   /**
+   * Stores `record` as the companion of `name`, overwriting any current one. The
+   * record is opaque bytes kept beside the placement under the reserved companion
+   * prefix, so it never collides with an actor name and never counts as an actor
+   * in {@link actorsByHost}.
+   */
+  async putCompanion(name: string, record: Uint8Array): Promise<void> {
+    await this.#store.write({
+      kind: WriteKind.put,
+      key: companionKey(name),
+      value: record,
+      condition: PutCondition.none,
+    });
+  }
+
+  /** The companion record stored for `name`, or `undefined` when none is held. */
+  async getCompanion(name: string): Promise<Uint8Array | undefined> {
+    const entry: Entry | undefined = await this.#store.read(companionKey(name));
+    if (entry?.value === undefined) {
+      return undefined;
+    }
+
+    return entry.value;
+  }
+
+  /** Removes any companion record stored for `name`. */
+  async removeCompanion(name: string): Promise<void> {
+    await this.#store.write({ kind: WriteKind.delete, key: companionKey(name) });
+  }
+
+  /**
    * Atomically increments the counter at `key` and resolves with its new value,
    * for a round-robin selector shared across the cluster. An absent counter starts
    * at zero, so the first call returns one.
@@ -142,6 +191,10 @@ export class ClusterRegistry {
    * after `ttlMs`, for a singleton or a scheduled task at most one node runs. The
    * claim is an absent-only put with a lease, so exactly one caller wins until the
    * lease expires, then the next caller can claim it afresh.
+   *
+   * The value is an address, so like every non-placement record a lock that must
+   * not be counted by {@link actorsByHost} has to use a key under the reserved
+   * prefix; a bare-name claim counts as a placement on its address.
    */
   async claimOnce(key: string, address: string, ttlMs: number): Promise<boolean> {
     const result: WriteResult = await this.#store.write({
@@ -156,13 +209,21 @@ export class ClusterRegistry {
 
   /**
    * The names of every actor whose registered address is on `host`. It scans the
-   * whole cluster and keeps the names whose address is an `host:port` on `host`,
-   * so a host's actors can be found for failover or draining. An address that is
-   * not an `host:port` never matches.
+   * whole cluster, skips every record under the runtime reserved prefix (companions
+   * and any other non-placement record the runtime keys there) structurally, and
+   * keeps the placement names whose address is an `host:port` on `host`, so a host's
+   * actors can be found for failover or draining. A placement whose address is not
+   * an `host:port` never matches. A record the runtime does not want counted as an
+   * actor must therefore live under the reserved prefix, not by hoping its value
+   * fails to read as an address.
    */
   async actorsByHost(host: string): Promise<string[]> {
     const names: string[] = [];
     for (const entry of await this.#store.scan()) {
+      if (entry.key.startsWith(reservedNamesPrefix)) {
+        continue;
+      }
+
       if (hostOf(UTF8_DECODER.decode(entry.value)) === host) {
         names.push(entry.key);
       }

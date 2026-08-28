@@ -24,7 +24,7 @@
 
 import { Cluster, type ClusterClock, type ClusterOptions, type ClusterTimer } from "./clustering";
 import { CLUSTER_EVENT_TOPIC, type ClusterEvent, type ClusterEventSink } from "./clustering.events";
-import { encodeNodeMetadata } from "./clustering.metadata";
+import { appendRemotingAddress, encodeNodeMetadata } from "./clustering.metadata";
 import { KvNetTransport } from "./clustering.transport";
 import { SwimClusterView } from "./clustering.view";
 import { type BootstrapOptions, type BootstrapResult, bootstrap } from "./discovery/bootstrap";
@@ -72,6 +72,8 @@ export interface ClusterNodeOptions {
   readonly discovery: DiscoveryProvider;
   /** Bind and advertised host for both endpoints; defaults to loopback. */
   readonly host?: string;
+  /** The actor remoting endpoint peers reach this node's actors at, advertised in metadata so routing can dial it; omitted by a node that runs no actor remoting. */
+  readonly remotingAddress?: string;
   /** Key/value data endpoint port; zero binds an ephemeral port. */
   readonly dataPort?: number;
   /** Membership gossip port; zero binds an ephemeral port. */
@@ -122,6 +124,8 @@ export class ClusterNode {
   readonly #view: SwimClusterView;
   /** This node's key/value data endpoint, its cluster identity. */
   readonly #address: string;
+  /** The actor remoting endpoint advertised for routing, empty when the node carries none. */
+  readonly #remotingAddress: string;
   /** This node's membership gossip endpoint, the seed address peers join at. */
   readonly #gossipAddress: string;
   /** Immutable process start time deciding this node's coordinator order. */
@@ -140,6 +144,7 @@ export class ClusterNode {
     address: string,
     gossipAddress: string,
     startedAt: number,
+    remotingAddress: string,
   ) {
     this.#cluster = cluster;
     this.#swim = swim;
@@ -147,6 +152,7 @@ export class ClusterNode {
     this.#address = address;
     this.#gossipAddress = gossipAddress;
     this.#startedAt = startedAt;
+    this.#remotingAddress = remotingAddress;
   }
 
   /**
@@ -193,7 +199,10 @@ export class ClusterNode {
       );
       swim = new Swim({
         address: gossipAddress,
-        metadata: encodeNodeMetadata({ startedAt, ready: false, draining: false, address }),
+        metadata: appendRemotingAddress(
+          encodeNodeMetadata({ startedAt, ready: false, draining: false, address }),
+          options.remotingAddress ?? "",
+        ),
         transport: membershipTransport,
         clock: wallClock,
         random: createRandom(),
@@ -201,7 +210,15 @@ export class ClusterNode {
       });
 
       const cluster: Cluster = new Cluster(clusterOptions(view, transport, clock, options));
-      node = new ClusterNode(cluster, swim, view, address, gossipAddress, startedAt);
+      node = new ClusterNode(
+        cluster,
+        swim,
+        view,
+        address,
+        gossipAddress,
+        startedAt,
+        options.remotingAddress ?? "",
+      );
     } catch (error: unknown) {
       await membershipTransport.stop();
       await transport.stop();
@@ -240,6 +257,16 @@ export class ClusterNode {
     return this.#view.members();
   }
 
+  /**
+   * The actor remoting endpoint the member named by `dataAddress` advertises, or
+   * `undefined` when no present member carries that data address or the member
+   * advertises none. Routing consults this to turn a placement's owning member
+   * into an address it can deliver actor messages to.
+   */
+  remotingAddressOf(dataAddress: string): string | undefined {
+    return this.#view.remotingAddressOf(dataAddress);
+  }
+
   /** Submits a mutation and resolves with its outcome; routes to the partition primary. */
   write(op: WriteOp): Promise<WriteResult> {
     return this.#cluster.write(op);
@@ -269,12 +296,15 @@ export class ClusterNode {
     this.#leaving = true;
     try {
       this.#swim.updateMetadata(
-        encodeNodeMetadata({
-          startedAt: this.#startedAt,
-          ready: true,
-          draining: true,
-          address: this.#address,
-        }),
+        appendRemotingAddress(
+          encodeNodeMetadata({
+            startedAt: this.#startedAt,
+            ready: true,
+            draining: true,
+            address: this.#address,
+          }),
+          this.#remotingAddress,
+        ),
       );
       await this.#cluster.awaitDrained(LEAVE_DRAIN_TIMEOUT_MS);
       await this.#swim.leave();
@@ -313,12 +343,15 @@ export class ClusterNode {
     const result: BootstrapResult = await bootstrap(this.#bootstrapOptions(options));
     this.#joined = result.joined;
     this.#swim.updateMetadata(
-      encodeNodeMetadata({
-        startedAt: this.#startedAt,
-        ready: true,
-        draining: false,
-        address: this.#address,
-      }),
+      appendRemotingAddress(
+        encodeNodeMetadata({
+          startedAt: this.#startedAt,
+          ready: true,
+          draining: false,
+          address: this.#address,
+        }),
+        this.#remotingAddress,
+      ),
     );
   }
 

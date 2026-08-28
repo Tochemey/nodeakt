@@ -1,6 +1,6 @@
-# Clustering integration and node discovery: design and delivery plan
+# Clustering integration and node discovery: design
 
-This is the plan for the last piece of the distributed store: the integration layer that turns the finished, transport-blind `src/kv/` package plus the SWIM membership engine and the TCP carrier into a running cluster of real nodes. It is slice 12 of the store's delivery plan, and it is the only slice that touches the network transport decision. It also introduces **node discovery**, the pluggable mechanism by which a fresh node finds the cluster to join, so an operator can run nodeakt on a static host list, in a container orchestrator, or behind any service registry, without the core taking on a single third-party dependency.
+This is the design of the integration layer that turns the transport-blind `src/kv/` package, the SWIM membership engine, and the TCP carrier into a running cluster of real nodes: it is the one place that makes the network transport decision. It also introduces **node discovery**, the pluggable mechanism by which a fresh node finds the cluster to join, so an operator can run nodeakt on a static host list, in a container orchestrator, or behind any service registry, without the core taking on a single third-party dependency.
 
 ## 1. What this layer does
 
@@ -71,7 +71,7 @@ The store's `ClusterView` wants live members **oldest first**, each carrying a s
 updateMetadata(metadata: Uint8Array): void;
 ```
 
-It is the single change to the already-reviewed membership package the whole slice needs, and it is a focused addition over machinery that is already there. It is called exactly twice by this layer: to set `ready` after bootstrap intake, and to set `draining` at the start of a graceful leave.
+It is the single change to the membership package this layer needs, a focused addition over machinery that is already there. It is called exactly twice by this layer: to set `ready` after bootstrap intake, and to set `draining` at the start of a graceful leave.
 
 ## 5. The clustering engine
 
@@ -109,24 +109,12 @@ On top of the distributed store the layer exposes the registry the actor runtime
 
 Cluster lifecycle reaches the runtime's event stream: `NodeJoined`, `NodeLeft` (behind the ordering gate above), `CoordinatorChanged`, `RebalanceStarted`, `RebalanceCompleted`. This is the one part of the layer that touches the actor runtime; the cluster runtime beneath it (sections 2 to 5) is actor-blind and depends only on the store, membership, net, and discovery.
 
-## 7. Delivery: sub-slices
+## 7. Testing strategy
 
-Slice 12 is the largest integration surface in the store, so it lands as sub-slices in dependency order, each with tests, 100% coverage on touched files, and clean `tsc` and `biome`, in the cadence the earlier slices used.
+The clustering engine is exercised through the store's simulation harness: seeded scenarios reproduce a kill, a drain, a rejoin, and a partition from a printed seed, driven through the real inbound dispatch rather than a per-test router. Discovery, the membership adapter, and the transport adapter each carry their own focused tests, against a fake provider and a scripted clock, against a real `Swim` on the loopback and the membership harness, and over real sockets including an oversized fragment move and a peer dropped mid-request. Two things a simulation cannot prove are covered against real processes: real TCP under an oversized transfer and a mid-transfer kill, and three separate nodes forming, losing a member to a hard signal, and reading every record they owned back from the survivors. Every source file holds 100% coverage, and the throughput benchmark runs with clustering active to confirm the timers and the coordinator's pushes cost nothing measurable on the message path.
 
-- **12a. Discovery.** `DiscoveryProvider`, `StaticDiscovery`, `DnsDiscovery`, and the boot-only bootstrap: resolve-retry until seeds appear, then join-retry until a peer is reached or a boot deadline anchors a fresh cluster. No polling once joined. Freestanding, zero dependency, driven by an injected `Clock`. Tested against a fake provider and a scripted clock; no real network.
-- **12b. Membership metadata and the view adapter.** The `Swim.updateMetadata` addition with its own membership tests, the `startedAt`/`ready`/`draining` metadata codec, and the `ClusterView` adapter with its oldest-first ordering and liveness filter. Tested against a real `Swim` on the loopback and against the membership harness.
-- **12c. Transport adapter.** `KvTransport` over `Peer` and `NetServer`, the peer cache, envelope wrapping, TLS passthrough, and stop. Tested over loopback sockets, including an oversized fragment move and a peer dropped mid-request.
-- **12d. The clustering engine.** The `Cluster` object: canonical dispatch, the timers, the resolver application with the last-stable-size tracker, the `NodeLeft` ordering gate, the reseed trigger, and drain-on-demotion. Tested end to end against the store's simulation harness for the departure and split-brain scenarios, now driven through the real dispatch rather than per-test routers.
-- **12e. Registry API and events.** The section 6 surface and the cluster events onto the runtime event stream. This is the actor-facing layer.
-- **12f. Real-socket and multi-process proof.** A runnable `examples/` cluster that forms over TCP with `StaticDiscovery` and demonstrates a write, a cross-node read, a hard kill with recovery, a graceful drain, and a split-brain stop. The cross-runtime smoke harness gains a three-node populate, kill, and read-back.
+## 8. Design decisions
 
-## 8. Testing strategy
-
-The simulation harness that proved slices 8 to 11 carries most of 12d: seeded scenarios reproduce a kill, a drain, a rejoin, and a partition from a printed seed, now exercised through the real dispatch. 12a, 12b, and 12c each add their own focused tests, membership on the loopback and the harness, transport over real sockets. 12f adds the two things a simulation cannot prove: real TCP under an oversized transfer and a mid-transfer kill, and three separate processes forming, losing a member to a hard signal, and reading every record it owned back from the survivors. Every touched file holds 100% coverage, and the throughput benchmark runs with clustering active to confirm the timers and the coordinator's pushes cost nothing measurable on the message path.
-
-## 9. Open decisions to confirm before building
-
-- **OD1 (membership addition).** Slice 12 needs `Swim.updateMetadata` so `ready` and `draining` gossip. This is one focused, reviewed method added to the already-reviewed membership package. The alternative, immutable metadata plus a separate side channel for the two flags, duplicates gossip and is worse. Recommendation: add the method.
-- **OD2 (built-in discovery scope).** Ship `StaticDiscovery` and `DnsDiscovery` in the zero-dependency core, and Kubernetes and NATS as `examples/` implementations of the interface rather than core modules. Recommendation: as stated.
-- **OD3 (registry scope).** The registry API (12e) is the one actor-coupled part. It can land in this slice, or the slice can stop at a working distributed key/value cluster (12a to 12d, 12f) and the registry facade can be its own follow-on once the cluster runtime is proven. Recommendation: build the cluster runtime first, then the registry, so the actor coupling does not gate the distributed-store proof.
-- **OD4 (decomposition).** The 12a to 12f order above. Confirm or adjust.
+- **Membership metadata is mutable through one method.** The layer needs `Swim.updateMetadata` so `ready` and `draining` gossip, a single focused method over machinery the membership package already has privately. The alternative, immutable metadata plus a separate side channel for the two flags, duplicates gossip and is worse.
+- **Built-in discovery stays zero-dependency.** `StaticDiscovery` and `DnsDiscovery` ship in the core over platform modules only; a Kubernetes API lookup, a NATS or Consul registry, or a cloud instance query is a user-supplied `DiscoveryProvider`, shipped as an `examples/` implementation rather than a core module, so the core never takes on a third-party client.
+- **The registry is a thin facade above an actor-blind runtime.** The registry API is the one actor-coupled part of the layer and maps each call onto a store operation; everything beneath it depends only on the store, membership, net, and discovery. Keeping that split is what lets the cluster runtime be proven as a distributed key/value cluster in its own right, with the actor coupling isolated to the facade.

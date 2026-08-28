@@ -22,6 +22,8 @@
  * SOFTWARE.
  */
 
+import { MAX_METADATA_BYTES } from "./membership/wire";
+
 /**
  * The fixed record the clustering layer carries in each node's membership
  * metadata, the one thing the opaque metadata blob means to this layer.
@@ -69,8 +71,11 @@ const ADDRESS_LENGTH_OFFSET: number = 10;
 /** Byte offset where the UTF-8 address bytes begin; also the fixed-prefix length. */
 const ADDRESS_OFFSET: number = 12;
 
-/** Largest address the record admits, well within the membership metadata budget. */
+/** Largest data address the store record admits; the data and remoting fields together must still fit {@link MAX_METADATA_BYTES}, which {@link appendRemotingAddress} enforces. */
 const MAX_ADDRESS_BYTES: number = 255;
+
+/** Byte width of the `u16` length prefix on the trailing remoting-address field. */
+const REMOTING_LENGTH_SIZE: number = 2;
 
 /** Shared UTF-8 codecs; the decoder tolerates malformed bytes rather than throwing. */
 const UTF8_ENCODER: TextEncoder = new TextEncoder();
@@ -139,4 +144,74 @@ export function decodeNodeMetadata(bytes: Uint8Array): NodeMetadata {
     draining: bytes[DRAINING_OFFSET] !== 0,
     address: UTF8_DECODER.decode(bytes.subarray(ADDRESS_OFFSET, ADDRESS_OFFSET + addressLength)),
   };
+}
+
+/**
+ * Appends an actor remoting endpoint after the store's fixed record, as a second
+ * length-prefixed field.
+ *
+ * The remoting endpoint is where a node's actors are reached, a different address
+ * from the data endpoint the store keys on, so a clustered actor node advertises
+ * it here alongside the store's own fields. {@link decodeNodeMetadata} reads only
+ * up to the data address and ignores whatever follows, so a node that carries
+ * this field stays readable by the store, which never learns of it. An empty
+ * endpoint appends nothing, so a node with no remoting endpoint produces exactly
+ * the bytes the store record alone would.
+ *
+ * @throws {RangeError} If the record with the remoting endpoint appended would
+ * exceed the membership metadata budget.
+ * @internal
+ */
+export function appendRemotingAddress(metadata: Uint8Array, remotingAddress: string): Uint8Array {
+  const addressBytes: Uint8Array = UTF8_ENCODER.encode(remotingAddress);
+  if (addressBytes.length === 0) {
+    return metadata;
+  }
+
+  const total: number = metadata.length + REMOTING_LENGTH_SIZE + addressBytes.length;
+  if (total > MAX_METADATA_BYTES) {
+    throw new RangeError(
+      `node metadata with a remoting address cannot exceed ${MAX_METADATA_BYTES} bytes`,
+    );
+  }
+
+  const bytes: Uint8Array = new Uint8Array(total);
+  bytes.set(metadata, 0);
+  const view: DataView = new DataView(bytes.buffer);
+  view.setUint16(metadata.length, addressBytes.length);
+  bytes.set(addressBytes, metadata.length + REMOTING_LENGTH_SIZE);
+  return bytes;
+}
+
+/**
+ * Reads the trailing remoting endpoint {@link appendRemotingAddress} wrote, or the
+ * empty string when the record carries none.
+ *
+ * It skips past the store's fixed record and its data address to the trailing
+ * field, and tolerates a short or absent field the way {@link decodeNodeMetadata}
+ * tolerates a short record, so a peer that never advertised a remoting endpoint,
+ * or one whose record predates this field, reads as having none rather than
+ * throwing.
+ *
+ * @internal
+ */
+export function readRemotingAddress(metadata: Uint8Array): string {
+  if (metadata.length < ADDRESS_OFFSET) {
+    return "";
+  }
+
+  const view: DataView = new DataView(metadata.buffer, metadata.byteOffset, metadata.byteLength);
+  const dataAddressLength: number = view.getUint16(ADDRESS_LENGTH_OFFSET);
+  const fieldOffset: number = ADDRESS_OFFSET + dataAddressLength;
+  if (metadata.length < fieldOffset + REMOTING_LENGTH_SIZE) {
+    return "";
+  }
+
+  const addressLength: number = view.getUint16(fieldOffset);
+  const addressStart: number = fieldOffset + REMOTING_LENGTH_SIZE;
+  if (metadata.length < addressStart + addressLength) {
+    return "";
+  }
+
+  return UTF8_DECODER.decode(metadata.subarray(addressStart, addressStart + addressLength));
 }

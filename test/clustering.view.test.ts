@@ -23,7 +23,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { encodeNodeMetadata, type NodeMetadata } from "../src/clustering.metadata";
+import {
+  appendRemotingAddress,
+  encodeNodeMetadata,
+  type NodeMetadata,
+} from "../src/clustering.metadata";
 import { SwimClusterView } from "../src/clustering.view";
 import type { ClusterMember } from "../src/kv/ports";
 import type { MemberRecord } from "../src/membership/view";
@@ -40,7 +44,11 @@ import {
  * `member` (its membership identity) is deliberately distinct from the data
  * address, since the adapter names members by the address, not by `member`.
  */
-function record(metadata: NodeMetadata, state: MemberState = STATE_ALIVE): MemberRecord {
+function record(
+  metadata: NodeMetadata,
+  state: MemberState = STATE_ALIVE,
+  remotingAddress: string = "",
+): MemberRecord {
   return {
     state,
     selfOriginated: false,
@@ -48,7 +56,7 @@ function record(metadata: NodeMetadata, state: MemberState = STATE_ALIVE): Membe
     stateChangeTime: 0n,
     member: `gossip-${metadata.address}`,
     reporter: "",
-    metadata: encodeNodeMetadata(metadata),
+    metadata: appendRemotingAddress(encodeNodeMetadata(metadata), remotingAddress),
     appliedAt: 0,
   };
 }
@@ -135,5 +143,62 @@ describe("SwimClusterView", () => {
     unsubscribe();
     view.publish();
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe("SwimClusterView remoting-address lookup", () => {
+  it("returns the remoting endpoint a present member advertises", () => {
+    const records: readonly MemberRecord[] = [
+      record({ startedAt: 1, ready: true, draining: false, address: "a:1" }, STATE_ALIVE, "a:9000"),
+    ];
+    const view: SwimClusterView = new SwimClusterView(
+      "a:1",
+      (): readonly MemberRecord[] => records,
+    );
+    expect(view.remotingAddressOf("a:1")).toBe("a:9000");
+  });
+
+  it("returns undefined for a present member that advertises no remoting endpoint", () => {
+    const records: readonly MemberRecord[] = [
+      record({ startedAt: 1, ready: true, draining: false, address: "a:1" }),
+    ];
+    const view: SwimClusterView = new SwimClusterView(
+      "a:1",
+      (): readonly MemberRecord[] => records,
+    );
+    expect(view.remotingAddressOf("a:1")).toBeUndefined();
+  });
+
+  it("returns undefined for a data address no present member carries", () => {
+    const records: readonly MemberRecord[] = [
+      record({ startedAt: 1, ready: true, draining: false, address: "a:1" }, STATE_ALIVE, "a:9000"),
+    ];
+    const view: SwimClusterView = new SwimClusterView(
+      "a:1",
+      (): readonly MemberRecord[] => records,
+    );
+    expect(view.remotingAddressOf("z:1")).toBeUndefined();
+  });
+
+  it("ignores a dead member that still carries the data address", () => {
+    const records: readonly MemberRecord[] = [
+      record({ startedAt: 1, ready: true, draining: false, address: "a:1" }, STATE_DEAD, "a:9000"),
+    ];
+    const view: SwimClusterView = new SwimClusterView(
+      "a:1",
+      (): readonly MemberRecord[] => records,
+    );
+    expect(view.remotingAddressOf("a:1")).toBeUndefined();
+  });
+
+  it("returns undefined for an empty data address without scanning members", () => {
+    const records: readonly MemberRecord[] = [
+      record({ startedAt: 1, ready: true, draining: false, address: "a:1" }, STATE_ALIVE, "a:9000"),
+    ];
+    const view: SwimClusterView = new SwimClusterView(
+      "a:1",
+      (): readonly MemberRecord[] => records,
+    );
+    expect(view.remotingAddressOf("")).toBeUndefined();
   });
 });

@@ -144,4 +144,34 @@ describe("ClusterRegistry", () => {
     expect(await settle(fabric, registry.countActorsByHost("10.0.0.2"))).toBe(1);
     expect(await settle(fabric, registry.actorsByHost("10.0.0.9"))).toEqual([]);
   });
+
+  it("stores, reads, and removes a companion record", async () => {
+    const fabric: SimFabric = new SimFabric(26);
+    const cluster: Cluster = await loneCluster(fabric);
+    const registry: ClusterRegistry = new ClusterRegistry(cluster);
+
+    expect(await settle(fabric, registry.getCompanion("worker"))).toBeUndefined();
+
+    const record: Uint8Array = Uint8Array.of(1, 2, 3, 4);
+    await settle(fabric, registry.putCompanion("worker", record));
+    const read: Uint8Array | undefined = await settle(fabric, registry.getCompanion("worker"));
+    expect(Array.from(read ?? [])).toEqual([1, 2, 3, 4]);
+
+    await settle(fabric, registry.removeCompanion("worker"));
+    expect(await settle(fabric, registry.getCompanion("worker"))).toBeUndefined();
+  });
+
+  it("excludes companion records from actorsByHost even when their bytes read as an address", async () => {
+    const fabric: SimFabric = new SimFabric(27);
+    const cluster: Cluster = await loneCluster(fabric);
+    const registry: ClusterRegistry = new ClusterRegistry(cluster);
+
+    await settle(fabric, registry.putActor("a1", "10.0.0.1:7000"));
+    // A companion whose bytes decode to an address on the same host must not be
+    // counted as an actor: it is filtered by its reserved prefix, not by its value.
+    await settle(fabric, registry.putCompanion("a1", new TextEncoder().encode("10.0.0.1:9999")));
+
+    expect(await settle(fabric, registry.actorsByHost("10.0.0.1"))).toEqual(["a1"]);
+    expect(await settle(fabric, registry.countActorsByHost("10.0.0.1"))).toBe(1);
+  });
 });
