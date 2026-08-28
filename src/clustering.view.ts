@@ -82,6 +82,15 @@ export class SwimClusterView implements ClusterView {
     return toClusterMembers(this.#snapshot());
   }
 
+  /** The cluster coordinator: the oldest present member, ties broken by name, the
+   * one node every view agrees on. Falls back to this node when the view is
+   * momentarily empty, so a caller pinning work to the coordinator always has a
+   * target. */
+  coordinator(): string {
+    const members: readonly ClusterMember[] = this.members();
+    return members.length === 0 ? this.#self : (members[0] as ClusterMember).name;
+  }
+
   /**
    * The remoting endpoint the member named by `dataAddress` advertises, or
    * `undefined` when no present member carries that data address or the member

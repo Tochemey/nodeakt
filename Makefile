@@ -54,6 +54,9 @@ remoting: ## checkout and payments across two nodes (Docker Compose)
 cluster: ## a distributed KV cluster over DNS; boot it and assert every use case (Docker Compose)
 	@examples/dns-cluster/usecases.sh
 
+actors: ## a distributed-actor cluster over DNS; boot it and assert every use case (Docker Compose)
+	@examples/dns-actors/usecases.sh
+
 bench: ## run the full benchmark suite (see benchmark/README.md)
 	@pnpm bench
 

@@ -35,6 +35,7 @@ import type { Logger } from "../src/logger";
 import { Mesh } from "../src/mesh";
 import { MessageRegistry } from "../src/message.registry";
 import { Deadletter } from "../src/messages";
+import { PASSIVATION_TIME_BASED } from "../src/passivation";
 import { parsePath } from "../src/path";
 import type { PID } from "../src/pid";
 import { Props } from "../src/props";
@@ -802,6 +803,34 @@ describe("spawnRecipe", () => {
       spawnRecipe(system, "shapeless", { module: echoModule, actor: "Receiveless" }),
     ).rejects.toThrow('does not export an actor class named "Receiveless"');
 
+    await system.stop();
+  });
+
+  it("rebuilds the reentrancy option a recipe carries", async () => {
+    const system = new ActorSystem("reentrant-recipe", { logger: discardLogger });
+    await system.start();
+
+    const pid = await spawnRecipe(system, "reentrant", {
+      module: aliasedModule,
+      actor: "Hidden",
+      reentrancy: { mode: "allowAll" },
+    });
+
+    await expect(system.noSender().ask(pid, "ping", 5000)).resolves.toBe("hidden:ping");
+    await system.stop();
+  });
+
+  it("rebuilds the passivation strategy a recipe carries", async () => {
+    const system = new ActorSystem("passivating-recipe", { logger: discardLogger });
+    await system.start();
+
+    const pid = await spawnRecipe(system, "passivating", {
+      module: aliasedModule,
+      actor: "Hidden",
+      passivation: { kind: PASSIVATION_TIME_BASED, timeout: 60_000 },
+    });
+
+    await expect(system.noSender().ask(pid, "ping", 5000)).resolves.toBe("hidden:ping");
     await system.stop();
   });
 });

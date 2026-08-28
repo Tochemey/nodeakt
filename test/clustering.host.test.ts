@@ -24,7 +24,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { CLUSTER_EVENT_TOPIC, type ClusterEvent, ClusterEventType } from "../src/clustering.events";
-import { ClusterNode, systemClusterClock } from "../src/clustering.node";
+import { ClusterNode, systemClusterClock } from "../src/clustering.host";
 import { parseHostPort } from "../src/clustering.transport";
 import type { DiscoveryProvider } from "../src/discovery/provider";
 import { StaticDiscovery } from "../src/discovery/static";

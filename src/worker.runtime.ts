@@ -33,6 +33,7 @@ import { ActorNotFoundError, ErrDead } from "./errors";
 import { Mesh } from "./mesh";
 import type { MessageRegistry } from "./message.registry";
 import { Deadletter } from "./messages";
+import { deserializePassivation, type SerializedPassivation } from "./passivation";
 import { addressOf, newPathAt, type Path, parsePath } from "./path";
 import type { PID } from "./pid";
 import type { Props } from "./props";
@@ -60,6 +61,7 @@ import {
   WORKER_STOPPED,
   type WorkerMessage,
 } from "./protocol";
+import type { Reentrancy } from "./reentrancy";
 import { placedRecipe } from "./registration";
 import { routedPid } from "./routed.pid";
 import type { SpawnOptions } from "./spawn.options";
@@ -147,8 +149,27 @@ export async function spawnRecipe(
   }
 
   const instance = new (type as new (...args: unknown[]) => Actor)(...(recipe.args ?? []));
-  const reentrancy = recipe.reentrancy;
-  return system.spawn(name, instance, reentrancy === undefined ? undefined : { reentrancy });
+  return system.spawn(name, instance, recipeSpawnOptions(recipe));
+}
+
+/**
+ * Rebuilds the data spawn options a recipe carries: reentrancy verbatim and the
+ * passivation strategy from its plain form. Returns `undefined` when the recipe
+ * carries neither, so a bare recipe spawns with no options at all.
+ */
+function recipeSpawnOptions(recipe: ActorRecipe): SpawnOptions | undefined {
+  const reentrancy: Reentrancy | undefined = recipe.reentrancy;
+  const passivation: SerializedPassivation | undefined = recipe.passivation;
+  if (reentrancy === undefined && passivation === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(reentrancy !== undefined ? { reentrancy } : {}),
+    ...(passivation !== undefined
+      ? { passivationStrategy: deserializePassivation(passivation) }
+      : {}),
+  };
 }
 
 /**

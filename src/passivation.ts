@@ -96,3 +96,74 @@ export type PassivationStrategy =
  * @internal
  */
 export const defaultPassivationStrategy: PassivationStrategy = new LongLivedStrategy();
+
+/**
+ * Discriminants for a {@link SerializedPassivation}, the one place each is
+ * spelled so every construction and comparison names the constant instead of a
+ * bare string.
+ *
+ * @internal
+ */
+export const PASSIVATION_TIME_BASED: "time" = "time";
+export const PASSIVATION_COUNT_BASED: "count" = "count";
+export const PASSIVATION_LONG_LIVED: "longLived" = "longLived";
+
+/**
+ * A {@link PassivationStrategy} reduced to plain, structured-cloneable data: a
+ * kind and its numbers. A strategy is a live class instance whose prototype does
+ * not survive a hop between isolates, so a placed or relocated actor carries its
+ * strategy as this record and rebuilds the instance on the node it lands on.
+ *
+ * @internal
+ */
+export type SerializedPassivation =
+  | { readonly kind: typeof PASSIVATION_TIME_BASED; readonly timeout: number }
+  | { readonly kind: typeof PASSIVATION_COUNT_BASED; readonly maxMessages: number }
+  | { readonly kind: typeof PASSIVATION_LONG_LIVED };
+
+/**
+ * Reduces a strategy to its plain {@link SerializedPassivation} data form so it
+ * can cross an isolate boundary or rest in a registry record.
+ *
+ * @internal
+ */
+export function serializePassivation(strategy: PassivationStrategy): SerializedPassivation {
+  if (strategy instanceof TimeBasedStrategy) {
+    return { kind: PASSIVATION_TIME_BASED, timeout: strategy.timeout };
+  }
+
+  if (strategy instanceof MessagesCountBasedStrategy) {
+    return { kind: PASSIVATION_COUNT_BASED, maxMessages: strategy.maxMessages };
+  }
+
+  return { kind: PASSIVATION_LONG_LIVED };
+}
+
+/**
+ * Rebuilds a strategy instance from its {@link SerializedPassivation} data form,
+ * the inverse of {@link serializePassivation}. The numbers were validated when
+ * the original strategy was constructed, so the rebuilt instance re-validates
+ * them and matches.
+ *
+ * @internal
+ */
+export function deserializePassivation(data: SerializedPassivation): PassivationStrategy {
+  switch (data.kind) {
+    case PASSIVATION_TIME_BASED:
+      return new TimeBasedStrategy(data.timeout);
+
+    case PASSIVATION_COUNT_BASED:
+      return new MessagesCountBasedStrategy(data.maxMessages);
+
+    case PASSIVATION_LONG_LIVED:
+      return new LongLivedStrategy();
+
+    default: {
+      // The union is closed, so this is unreachable from a value produced by
+      // serializePassivation; guarding it keeps a corrupt record from silently
+      // returning undefined in place of a strategy.
+      const kind: string = (data as { readonly kind: string }).kind;
+      throw new TypeError(`unknown passivation strategy kind "${kind}"`);
+    }
+  }
+}

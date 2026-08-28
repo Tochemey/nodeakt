@@ -64,6 +64,13 @@ export const noSenderName = "NodeAktNoSender";
  */
 export const deadletterName = "NodeAktDeadletter";
 
+/** Name of the relocation actor, the coordinator's driver for recreating a departed
+ * node's actors on the survivors.
+ *
+ * @internal
+ */
+export const relocatorName = "NodeAktRelocator";
+
 /**
  * Reports whether the given actor name belongs to the runtime, that is,
  * whether it carries the reserved prefix.

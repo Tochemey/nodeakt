@@ -26,18 +26,20 @@ pnpm example examples/helloworld/main.ts
 
 ## Programs
 
-| Example | Shows |
-| --- | --- |
-| [helloworld](helloworld/main.ts) | Actors own their state; `tell` and `ask` |
-| [behaviors](behaviors/main.ts) | `become` / `unBecome`: an actor as a state machine |
-| [stash](stash/main.ts) | Defer messages until ready, then replay them |
-| [watch](watch/main.ts) | Death watch: `Terminated` as an ordinary message |
-| [chat](chat/main.ts) | Many actors collaborating with no shared memory |
-| [reentrancy](reentrancy/main.ts) | `ctx.request`: ask without freezing |
-| [pipeto](pipeto/main.ts) | `ctx.pipeTo`: deliver an async result as a message |
-| [scheduling](scheduling/main.ts) | `schedule` / `scheduleOnce`: send a message later or on a repeat |
-| [supervision](supervision/main.ts) | Restart with backoff; let it crash |
-| [iot](iot/main.ts) | A device hierarchy; every query is a short-lived actor |
-| [props](props/main.ts) | Construction as data with `Props` |
-| [multicore](multicore/main.ts) | One CPU-bound actor per core |
-| [remoting](remoting/README.md) | Checkout and payments on two nodes: remoting over TCP with Docker Compose |
+| Example                              | Shows                                                                       |
+|--------------------------------------|-----------------------------------------------------------------------------|
+| [helloworld](helloworld/main.ts)     | Actors own their state; `tell` and `ask`                                    |
+| [behaviors](behaviors/main.ts)       | `become` / `unBecome`: an actor as a state machine                          |
+| [stash](stash/main.ts)               | Defer messages until ready, then replay them                                |
+| [watch](watch/main.ts)               | Death watch: `Terminated` as an ordinary message                            |
+| [chat](chat/main.ts)                 | Many actors collaborating with no shared memory                             |
+| [reentrancy](reentrancy/main.ts)     | `ctx.request`: ask without freezing                                         |
+| [pipeto](pipeto/main.ts)             | `ctx.pipeTo`: deliver an async result as a message                          |
+| [scheduling](scheduling/main.ts)     | `schedule` / `scheduleOnce`: send a message later or on a repeat            |
+| [supervision](supervision/main.ts)   | Restart with backoff; let it crash                                          |
+| [iot](iot/main.ts)                   | A device hierarchy; every query is a short-lived actor                      |
+| [props](props/main.ts)               | Construction as data with `Props`                                           |
+| [multicore](multicore/main.ts)       | One CPU-bound actor per core                                                |
+| [remoting](remoting/README.md)       | Checkout and payments on two nodes: remoting over TCP with Docker Compose   |
+| [dns-cluster](dns-cluster/README.md) | DNS-discovered three-node cluster with Docker Compose                       |
+| [dns-actors](dns-actors/README.md)   | Distributed three-node actor systems over a DNS cluster with Docker Compose |

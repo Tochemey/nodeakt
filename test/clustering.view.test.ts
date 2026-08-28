@@ -123,6 +123,27 @@ describe("SwimClusterView", () => {
     ]);
   });
 
+  it("names the oldest present member as the coordinator", () => {
+    const records: readonly MemberRecord[] = [
+      record({ startedAt: 200, ready: true, draining: false, address: "b:1" }),
+      record({ startedAt: 50, ready: true, draining: false, address: "a:1" }),
+    ];
+    const view: SwimClusterView = new SwimClusterView(
+      "b:1",
+      (): readonly MemberRecord[] => records,
+    );
+
+    // The oldest startedAt wins regardless of snapshot order, so every view agrees,
+    // and it is the oldest member rather than this node.
+    expect(view.coordinator()).toBe("a:1");
+  });
+
+  it("falls back to this node as coordinator when the view is empty", () => {
+    const view: SwimClusterView = new SwimClusterView("a:1", (): readonly MemberRecord[] => []);
+
+    expect(view.coordinator()).toBe("a:1");
+  });
+
   it("notifies a listener on publish and stops after it unsubscribes", () => {
     const records: readonly MemberRecord[] = [
       record({ startedAt: 100, ready: true, draining: false, address: "a:1" }),

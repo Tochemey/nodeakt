@@ -25,6 +25,7 @@
 import { readFile } from "node:fs/promises";
 import type { IsolateRoute } from "./actor.ref";
 import type { ActorSystem } from "./actor.system";
+import { type RecreateRecipe, recipeToSpawn } from "./clustering.recreate";
 import { Codec } from "./codec";
 import type { WireMessage } from "./envelope";
 import { ActorNotFoundError, ActorNotRegisteredError, ErrDead, ErrRequestTimeout } from "./errors";
@@ -48,6 +49,7 @@ import { NetServer } from "./net/server";
 import { ErrAskTimeout, PeerError, REVISION_CURRENT, type Session } from "./net/session";
 import type { TlsConfig } from "./net/tls";
 import { ByteReader, ByteWriter, decodeValue, encodeValue } from "./net/values";
+import { deserializePassivation, type SerializedPassivation } from "./passivation";
 import { type Path, parsePath } from "./path";
 import type { PID } from "./pid";
 import { type ActorClass, Props } from "./props";
@@ -136,6 +138,10 @@ const CONTROL_RESPAWN: string = "nodeakt.remote.respawn";
  * gracefully. */
 const CONTROL_STOP: string = "nodeakt.remote.stop";
 
+/** The control request recreating a departed node's actor on the receiving node
+ * from its companion recipe, gated on the placement still naming the dead node. */
+const CONTROL_RELOCATE: string = "nodeakt.remote.relocate";
+
 /** The target path of a control envelope: control requests address the
  * node itself, so the field is deliberately empty. An absent sender
  * shares the spelling, so dispatch names this constant. */
@@ -183,12 +189,57 @@ interface ControlActorRef {
 
 /** What a control spawn carries: the actor name to hold, the class
  * name to construct (registered on the receiving node), the
- * constructor arguments, and the one spawn option that is data. */
+ * constructor arguments, and the spawn options that are data, the
+ * reentrancy configuration, the passivation strategy in plain form,
+ * and whether the actor relocates when its owner departs. */
 interface ControlSpawn {
   readonly name: string;
   readonly actor: string;
   readonly args?: readonly unknown[];
   readonly reentrancy?: Reentrancy;
+  readonly passivation?: SerializedPassivation;
+  readonly relocatable?: boolean;
+  readonly singleton?: boolean;
+}
+
+/** What a control relocate carries: the recipe fields to rebuild the actor by
+ * registered class name, whether it is a singleton, and the dead node the
+ * placement must still name for the recreate to apply. */
+interface ControlRelocate {
+  readonly name: string;
+  readonly actor: string;
+  readonly args?: readonly unknown[];
+  readonly reentrancy?: Reentrancy;
+  readonly passivation?: SerializedPassivation;
+  readonly singleton: boolean;
+  readonly deadOwner: string;
+}
+
+/** The data spawn options a control spawn carries: reentrancy verbatim, the
+ * passivation strategy rebuilt from its plain form, and the relocation flag;
+ * undefined when it carries none, so a bare spawn takes no options. */
+function controlSpawnOptions(request: ControlSpawn): SpawnOptions | undefined {
+  const reentrancy: Reentrancy | undefined = request.reentrancy;
+  const passivation: SerializedPassivation | undefined = request.passivation;
+  const relocatable: boolean | undefined = request.relocatable;
+  const singleton: boolean | undefined = request.singleton;
+  if (
+    reentrancy === undefined &&
+    passivation === undefined &&
+    relocatable === undefined &&
+    singleton === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(reentrancy !== undefined ? { reentrancy } : {}),
+    ...(passivation !== undefined
+      ? { passivationStrategy: deserializePassivation(passivation) }
+      : {}),
+    ...(relocatable !== undefined ? { relocatable } : {}),
+    ...(singleton !== undefined ? { singleton } : {}),
+  };
 }
 
 /** The empty body watch and unwatch envelopes carry. */
@@ -575,6 +626,9 @@ export class Remoting {
       actor: recipe.actor,
       args: recipe.args,
       reentrancy: recipe.reentrancy,
+      passivation: recipe.passivation,
+      relocatable: recipe.relocatable,
+      singleton: options?.singleton,
     });
     return this.mintFrom(reply, host, port);
   }
@@ -587,6 +641,34 @@ export class Remoting {
   async remoteReSpawn(host: string, port: number, name: string): Promise<PID> {
     const reply: ReplyEnvelope = await this.controlAsk(host, port, CONTROL_RESPAWN, { name });
     return this.mintFrom(reply, host, port);
+  }
+
+  /**
+   * Recreates a departed node's actor on the node at `host:port` from its recipe,
+   * gated on the placement still naming `deadOwner` there, and resolves whether that
+   * node took the name. A `false` means the record no longer named the dead node, so
+   * another pass has already placed it; a build failure on the far node settles the
+   * returned promise with the failure. The recreated actor is built and its record
+   * moved atomically on the owning node, so a partial pass leaves no half-placed name.
+   */
+  async remoteRecreate(
+    host: string,
+    port: number,
+    name: string,
+    recipe: RecreateRecipe,
+    singleton: boolean,
+    deadOwner: string,
+  ): Promise<boolean> {
+    const reply: ReplyEnvelope = await this.controlAsk(host, port, CONTROL_RELOCATE, {
+      name,
+      actor: recipe.actor,
+      args: recipe.args,
+      reentrancy: recipe.reentrancy,
+      passivation: recipe.passivation,
+      singleton,
+      deadOwner,
+    });
+    return decodeValue(new ByteReader(reply.payload)) === true;
   }
 
   /**
@@ -1529,6 +1611,11 @@ export class Remoting {
       return;
     }
 
+    if (envelope.typeRef === CONTROL_RELOCATE) {
+      this.handleRelocate(session, correlation, data);
+      return;
+    }
+
     session.replyError(
       correlation,
       this.badRequest(`unknown control request "${envelope.typeRef}"`),
@@ -1599,14 +1686,82 @@ export class Remoting {
       return;
     }
 
-    const options: SpawnOptions | undefined =
-      request.reentrancy === undefined ? undefined : { reentrancy: request.reentrancy };
+    let options: SpawnOptions | undefined;
+    try {
+      options = controlSpawnOptions(request);
+    } catch (err: unknown) {
+      // A malformed passivation strategy in the request is a bad request, not a
+      // spawn failure; answer with the error rather than letting it throw here.
+      session.replyError(correlation, encodeFailure(err as Error));
+      return;
+    }
+
     this._system.spawn(request.name, Props.restore(type, request.args ?? []), options).then(
       (pid: PID): void => {
         this.replyControl(session, correlation, {
           path: pid.path().toString(),
           uid: pid.path().uid(),
         });
+      },
+      (err: Error): void => {
+        session.replyError(correlation, encodeFailure(err));
+      },
+    );
+  }
+
+  /** The relocate request a control payload carries, or undefined for a payload of
+   * the wrong shape; the singleton marker is coerced to a boolean. */
+  private relocateRequestOf(data: unknown): ControlRelocate | undefined {
+    if (typeof data !== "object" || data === null) {
+      return undefined;
+    }
+
+    const request = data as {
+      name?: unknown;
+      actor?: unknown;
+      args?: unknown;
+      deadOwner?: unknown;
+    };
+    if (
+      typeof request.name !== "string" ||
+      typeof request.actor !== "string" ||
+      typeof request.deadOwner !== "string"
+    ) {
+      return undefined;
+    }
+
+    if (request.args !== undefined && !Array.isArray(request.args)) {
+      return undefined;
+    }
+
+    return {
+      ...(data as object),
+      singleton: (data as { singleton?: unknown }).singleton === true,
+    } as ControlRelocate;
+  }
+
+  /** Recreates a departed node's actor here from the shipped recipe, gated on the
+   * placement still naming the dead node: the record moves and the actor builds
+   * atomically on this node. The boolean answer says whether this node took the
+   * name; a build failure or an unclustered node settles the ask with the error. */
+  private handleRelocate(session: Session, correlation: number, data: unknown): void {
+    const request: ControlRelocate | undefined = this.relocateRequestOf(data);
+    if (request === undefined) {
+      session.replyError(correlation, this.badRequest("malformed relocate request"));
+      return;
+    }
+
+    let spawn: { props: Props; options: SpawnOptions };
+    try {
+      spawn = recipeToSpawn(request, request.singleton);
+    } catch (err: unknown) {
+      session.replyError(correlation, encodeFailure(err as Error));
+      return;
+    }
+
+    this._system.recreatePlaced(request.name, spawn.props, spawn.options, request.deadOwner).then(
+      (placed: boolean): void => {
+        this.replyControl(session, correlation, placed);
       },
       (err: Error): void => {
         session.replyError(correlation, encodeFailure(err));

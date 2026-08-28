@@ -28,20 +28,24 @@ import { MessageChannel } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem } from "../src/actor.system";
+import { BoundedMailbox } from "../src/bounded.mailbox";
 import { discardLogger } from "../src/discard.logger";
 import { ActorNotRegisteredError } from "../src/errors";
 import { PostStart } from "../src/messages";
+import { PASSIVATION_TIME_BASED, TimeBasedStrategy } from "../src/passivation";
 import { PortTransport } from "../src/port.transport";
 import { type ActorClass, Props } from "../src/props";
 import type { ReceiveContext } from "../src/receive.context";
 import {
   callerScript,
   defaultMessageRegistry,
+  placedRecipe,
   recipeOf,
   registerActor,
   registerMessage,
   scriptUrlOf,
 } from "../src/registration";
+import { defaultSupervisor } from "../src/supervisor";
 
 describe("registerActor", () => {
   it("infers the registering module from the call site", () => {
@@ -185,6 +189,50 @@ describe("recipeOf", () => {
 
     expect(() => recipeOf(Props.create(Hooked, () => {}))).toThrow(
       'Props arguments for "Hooked" must be structured-cloneable data',
+    );
+  });
+});
+
+describe("placedRecipe", () => {
+  class Placeable implements Actor {
+    preStart(): void {}
+
+    receive(): void {}
+
+    postStop(): void {}
+  }
+
+  registerActor(Placeable, "file:///app/placeable.actor.mjs");
+
+  it("carries the data spawn options as recipe fields", () => {
+    const recipe = placedRecipe(Props.create(Placeable), {
+      reentrancy: { mode: "allowAll" },
+      passivationStrategy: new TimeBasedStrategy(1000),
+      relocatable: false,
+    });
+
+    expect(recipe.reentrancy).toEqual({ mode: "allowAll" });
+    expect(recipe.passivation).toEqual({ kind: PASSIVATION_TIME_BASED, timeout: 1000 });
+    expect(recipe.relocatable).toBe(false);
+  });
+
+  it("omits the data fields a spawn leaves unset", () => {
+    const recipe = placedRecipe(Props.create(Placeable));
+
+    expect(recipe.reentrancy).toBeUndefined();
+    expect(recipe.passivation).toBeUndefined();
+    expect(recipe.relocatable).toBeUndefined();
+  });
+
+  it("refuses a mailbox, a live object that cannot cross an isolate", () => {
+    expect(() => placedRecipe(Props.create(Placeable), { mailbox: new BoundedMailbox(4) })).toThrow(
+      "cannot cross an isolate",
+    );
+  });
+
+  it("refuses a supervisor, a live object that cannot cross an isolate", () => {
+    expect(() => placedRecipe(Props.create(Placeable), { supervisor: defaultSupervisor })).toThrow(
+      "cannot cross an isolate",
     );
   });
 });

@@ -169,6 +169,11 @@ export const ErrClusterRequiresRoutableHost: Error = new Error(
   "clustering requires a concrete advertised host: set remote.advertisedHost when remote.host is a wildcard",
 );
 
+/** Raised by a placement that chooses its owning node, such as `spawnOn`, on a
+ * system that was created without a `cluster` configuration; there is no cluster
+ * to place across. */
+export const ErrClusteringDisabled: Error = new Error("clustering is not enabled");
+
 /**
  * Raised when a message would cross an isolate boundary but its class
  * is not in the message registry, either while encoding on the sending

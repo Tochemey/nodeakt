@@ -257,6 +257,12 @@ export class ClusterNode {
     return this.#view.members();
   }
 
+  /** The cluster coordinator this node currently sees: the oldest present member,
+   * the one node every view agrees on, the anchor a singleton is pinned to. */
+  coordinator(): string {
+    return this.#view.coordinator();
+  }
+
   /**
    * The actor remoting endpoint the member named by `dataAddress` advertises, or
    * `undefined` when no present member carries that data address or the member

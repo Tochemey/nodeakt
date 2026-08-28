@@ -46,7 +46,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { CLUSTER_EVENT_TOPIC, type ClusterEvent } from "../../src/clustering.events.js";
-import { ClusterNode } from "../../src/clustering.node.js";
+import { ClusterNode } from "../../src/clustering.host.js";
 import { DnsDiscovery, DnsRecordType } from "../../src/discovery/dns.js";
 import { EventStream } from "../../src/eventstream.js";
 import { PutCondition, WriteKind } from "../../src/kv/discriminants.js";

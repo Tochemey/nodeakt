@@ -24,7 +24,8 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { Cluster, type ClusterClock, type ClusterTimer } from "../src/clustering";
-import { ClusterRegistry } from "../src/clustering.registry";
+import { ClusterRegistry, type PlacementRecord } from "../src/clustering.registry";
+import { reservedNamesPrefix } from "../src/reserved";
 import {
   flush,
   member,
@@ -145,6 +146,84 @@ describe("ClusterRegistry", () => {
     expect(await settle(fabric, registry.actorsByHost("10.0.0.9"))).toEqual([]);
   });
 
+  it("tallies actors per host in one scan, skipping companions and non-addresses", async () => {
+    const fabric: SimFabric = new SimFabric(29);
+    const cluster: Cluster = await loneCluster(fabric);
+    const registry: ClusterRegistry = new ClusterRegistry(cluster);
+
+    await settle(fabric, registry.putActor("a1", "10.0.0.1:7000"));
+    await settle(fabric, registry.putActor("a2", "10.0.0.1:7001"));
+    await settle(fabric, registry.putActor("b1", "10.0.0.2:7000"));
+    await settle(fabric, registry.putActor("odd", "not-an-address"));
+    await settle(fabric, registry.putCompanion("a1", new Uint8Array([1, 2, 3])));
+
+    const counts: Map<string, number> = await settle(fabric, registry.countsByHost());
+    expect(counts.get("10.0.0.1")).toBe(2);
+    expect(counts.get("10.0.0.2")).toBe(1);
+    // The companion lives under the reserved prefix and the odd value is not an
+    // address, so neither is counted as an actor on any host.
+    expect(counts.size).toBe(2);
+  });
+
+  it("removes a placement only while it still names the expected owner", async () => {
+    const fabric: SimFabric = new SimFabric(30);
+    const cluster: Cluster = await loneCluster(fabric);
+    const registry: ClusterRegistry = new ClusterRegistry(cluster);
+
+    await settle(fabric, registry.putActor("svc", "dead:1"));
+
+    // A mismatch leaves a name a live node has reclaimed since the scan in place.
+    expect(await settle(fabric, registry.removeActorIf("svc", "other:2"))).toBe(false);
+    expect(await settle(fabric, registry.getActor("svc"))).toBe("dead:1");
+
+    // A match deletes it and reports the delete applied.
+    expect(await settle(fabric, registry.removeActorIf("svc", "dead:1"))).toBe(true);
+    expect(await settle(fabric, registry.getActor("svc"))).toBeUndefined();
+  });
+
+  it("frees a placement and its companion only while the dead owner still holds it", async () => {
+    const fabric: SimFabric = new SimFabric(31);
+    const cluster: Cluster = await loneCluster(fabric);
+    const registry: ClusterRegistry = new ClusterRegistry(cluster);
+
+    await settle(fabric, registry.putActor("reclaimed", "live:2"));
+    await settle(fabric, registry.putCompanion("reclaimed", new Uint8Array([9])));
+    // The record no longer names the dead owner, so nothing is freed: a reclaimed
+    // relocatable name keeps its placement and its recipe.
+    await settle(fabric, registry.freeActorIf("reclaimed", "dead:1"));
+    expect(await settle(fabric, registry.getActor("reclaimed"))).toBe("live:2");
+    expect(await settle(fabric, registry.getCompanion("reclaimed"))).toBeDefined();
+
+    await settle(fabric, registry.putActor("orphan", "dead:1"));
+    await settle(fabric, registry.putCompanion("orphan", new Uint8Array([7])));
+    // The record still names the dead owner, so the placement and its companion go.
+    await settle(fabric, registry.freeActorIf("orphan", "dead:1"));
+    expect(await settle(fabric, registry.getActor("orphan"))).toBeUndefined();
+    expect(await settle(fabric, registry.getCompanion("orphan"))).toBeUndefined();
+  });
+
+  it("relocates a placement only while it still names the departed owner", async () => {
+    const fabric: SimFabric = new SimFabric(28);
+    const cluster: Cluster = await loneCluster(fabric);
+    const registry: ClusterRegistry = new ClusterRegistry(cluster);
+
+    await settle(fabric, registry.putActor("svc", "dead:1"));
+
+    // Applies while the record still names the dead owner, and moves it.
+    expect(await settle(fabric, registry.relocateActor("svc", "dead:1", "live:2"))).toBe(true);
+    expect(await settle(fabric, registry.getActor("svc"))).toBe("live:2");
+
+    // A second pass over the moved record is a no-op: the compare no longer matches,
+    // so a successor coordinator's identical plan collapses to nothing.
+    expect(await settle(fabric, registry.relocateActor("svc", "dead:1", "other:3"))).toBe(false);
+    expect(await settle(fabric, registry.getActor("svc"))).toBe("live:2");
+
+    // A removed placement is never resurrected: the compare fails on an absent record.
+    await settle(fabric, registry.removeActor("svc"));
+    expect(await settle(fabric, registry.relocateActor("svc", "live:2", "again:4"))).toBe(false);
+    expect(await settle(fabric, registry.getActor("svc"))).toBeUndefined();
+  });
+
   it("stores, reads, and removes a companion record", async () => {
     const fabric: SimFabric = new SimFabric(26);
     const cluster: Cluster = await loneCluster(fabric);
@@ -159,6 +238,30 @@ describe("ClusterRegistry", () => {
 
     await settle(fabric, registry.removeCompanion("worker"));
     expect(await settle(fabric, registry.getCompanion("worker"))).toBeUndefined();
+  });
+
+  it("scans placements with their companions attached, skipping other reserved records", async () => {
+    const fabric: SimFabric = new SimFabric(29);
+    const cluster: Cluster = await loneCluster(fabric);
+    const registry: ClusterRegistry = new ClusterRegistry(cluster);
+
+    await settle(fabric, registry.putActor("a", "n:1"));
+    await settle(fabric, registry.putActor("b", "n:2"));
+    await settle(fabric, registry.putCompanion("a", Uint8Array.of(7, 8)));
+    // A reserved lock, not a companion: the scan skips it by its prefix, not its value.
+    await settle(fabric, registry.claimOnce(`${reservedNamesPrefix}Lock`, "n:1", 10_000));
+
+    const placements: PlacementRecord[] = await settle(fabric, registry.scanPlacements());
+    const byName: Map<string, Uint8Array | undefined> = new Map(
+      placements.map((p: PlacementRecord): [string, Uint8Array | undefined] => [
+        p.name,
+        p.companion,
+      ]),
+    );
+
+    expect([...byName.keys()].sort()).toEqual(["a", "b"]);
+    expect(Array.from(byName.get("a") ?? [])).toEqual([7, 8]);
+    expect(byName.get("b")).toBeUndefined();
   });
 
   it("excludes companion records from actorsByHost even when their bytes read as an address", async () => {

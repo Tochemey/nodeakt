@@ -119,6 +119,25 @@ export class ClusterRegistry {
     });
   }
 
+  /**
+   * Rewrites `name`'s placement from `fromAddress` to `toAddress`, but only if it
+   * still names `fromAddress` exactly, resolving to whether the rewrite applied. A
+   * `false` means the record no longer named `fromAddress`, already moved or gone,
+   * so a repeated relocation pass collapses to a no-op rather than resurrecting a
+   * stale owner: the compare-and-set makes the rewrite idempotent and resumable by
+   * a successor coordinator. An absent or tombstoned record fails the compare too,
+   * so a stopped actor is never re-homed.
+   */
+  async relocateActor(name: string, fromAddress: string, toAddress: string): Promise<boolean> {
+    const result: WriteResult = await this.#store.write({
+      kind: WriteKind.compareAndSet,
+      key: name,
+      expected: UTF8_ENCODER.encode(fromAddress),
+      value: UTF8_ENCODER.encode(toAddress),
+    });
+    return result.applied;
+  }
+
   /** The address registered for `name`, or `undefined` when no live entry holds it. */
   async getActor(name: string): Promise<string | undefined> {
     const entry: Entry | undefined = await this.#store.read(name);
@@ -132,6 +151,35 @@ export class ClusterRegistry {
   /** Removes any registration for `name`. */
   async removeActor(name: string): Promise<void> {
     await this.#store.write({ kind: WriteKind.delete, key: name });
+  }
+
+  /**
+   * Removes `name`'s registration, but only while it still names `expected`, and
+   * resolves whether the delete applied. The current holder is re-read immediately
+   * before the delete, so a name a live node has reclaimed since an earlier scan is
+   * left in place rather than clobbered, the delete counterpart of the compare-and-set
+   * relocation guards its writes with.
+   */
+  async removeActorIf(name: string, expected: string): Promise<boolean> {
+    const current: string | undefined = await this.getActor(name);
+    if (current !== expected) {
+      return false;
+    }
+
+    await this.removeActor(name);
+    return true;
+  }
+
+  /**
+   * Frees `name` and its companion, but only while the placement still names
+   * `deadOwner`, so a name a live node has reclaimed since the scan keeps both its
+   * placement and its recipe. The companion is deleted only when the placement was, so
+   * a reclaimed relocatable name never loses the companion that lets it move again.
+   */
+  async freeActorIf(name: string, deadOwner: string): Promise<void> {
+    if (await this.removeActorIf(name, deadOwner)) {
+      await this.removeCompanion(name);
+    }
   }
 
   /** Whether a live registration holds `name`. */
@@ -236,4 +284,74 @@ export class ClusterRegistry {
   async countActorsByHost(host: string): Promise<number> {
     return (await this.actorsByHost(host)).length;
   }
+
+  /**
+   * How many actors each host owns, tallied in one cluster scan. The leastLoad
+   * placement strategy reads every candidate's load from this single pass rather than
+   * scanning the cluster once per candidate, so choosing an owner costs one scan
+   * whatever the cluster's size. Records under the reserved prefix and any whose value
+   * is not an `host:port` are left out, exactly as {@link actorsByHost} leaves them.
+   */
+  async countsByHost(): Promise<Map<string, number>> {
+    const counts: Map<string, number> = new Map();
+    for (const entry of await this.#store.scan()) {
+      if (entry.key.startsWith(reservedNamesPrefix)) {
+        continue;
+      }
+
+      const host: string | undefined = hostOf(UTF8_DECODER.decode(entry.value));
+      if (host !== undefined) {
+        counts.set(host, (counts.get(host) ?? 0) + 1);
+      }
+    }
+
+    return counts;
+  }
+
+  /**
+   * Every placement across the cluster with its companion recipe attached, from a
+   * single scan: the one read recovery makes to collect a departed node's orphans,
+   * read their recipes, and tally how many actors each survivor owns, all at once.
+   * A record under the reserved prefix that is not a companion (a counter, a lock)
+   * is skipped, so only real placements are returned; a placement with no companion
+   * is a non-relocatable actor.
+   */
+  async scanPlacements(): Promise<PlacementRecord[]> {
+    const companions: Map<string, Uint8Array> = new Map();
+    const placements: { name: string; owner: string }[] = [];
+    for (const entry of await this.#store.scan()) {
+      if (entry.key.startsWith(COMPANION_KEY_PREFIX)) {
+        companions.set(entry.key.slice(COMPANION_KEY_PREFIX.length), entry.value);
+        continue;
+      }
+
+      if (entry.key.startsWith(reservedNamesPrefix)) {
+        continue;
+      }
+
+      placements.push({ name: entry.key, owner: UTF8_DECODER.decode(entry.value) });
+    }
+
+    return placements.map(
+      (placement: { name: string; owner: string }): PlacementRecord => ({
+        name: placement.name,
+        owner: placement.owner,
+        companion: companions.get(placement.name),
+      }),
+    );
+  }
+}
+
+/** One placement the cluster holds: the actor's name, the node that owns it, and
+ * its companion recipe bytes when it is relocatable. @internal */
+export interface PlacementRecord {
+  /** The placed actor's top-level name. */
+  readonly name: string;
+
+  /** The cluster address of the node that owns it. */
+  readonly owner: string;
+
+  /** The companion recipe bytes a survivor rebuilds it from, or undefined when the
+   * actor is non-relocatable and stores no recipe. */
+  readonly companion: Uint8Array | undefined;
 }

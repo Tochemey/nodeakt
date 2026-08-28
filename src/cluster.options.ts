@@ -74,4 +74,13 @@ export interface ClusterOptions {
 
   /** Minimum member quorum enabling the split-brain resolver; one, the default, disables it. */
   minimumMemberQuorum?: number;
+
+  /**
+   * Whether a departing node's actors are recreated on a survivor by default, the
+   * system-wide relocation default; defaults to `true`, so a `spawn`/`spawnOn`
+   * actor follows its cluster unless a per-actor `relocatable` override opts it out.
+   * Set `false` to make actors node-bound by default, opting individual ones back in
+   * with the spawn option. Singletons are always relocatable regardless.
+   */
+  relocation?: boolean;
 }
