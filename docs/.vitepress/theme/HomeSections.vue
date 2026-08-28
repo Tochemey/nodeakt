@@ -22,11 +22,12 @@ interface Band {
 const { frontmatter } = useData();
 const runtime = computed(() => frontmatter.value.runtime as Band | undefined);
 const networking = computed(() => frontmatter.value.networking as Band | undefined);
+const clustering = computed(() => frontmatter.value.clustering as Band | undefined);
 const deps = computed(() => frontmatter.value.deps as Item | undefined);
 </script>
 
 <template>
-  <div v-if="runtime || networking || deps" class="nk-home">
+  <div v-if="runtime || networking || clustering || deps" class="nk-home">
     <section v-if="runtime" class="nk-band" aria-labelledby="nk-runtime-title">
       <div class="nk-wrap">
         <header class="nk-head">
@@ -73,6 +74,34 @@ const deps = computed(() => frontmatter.value.deps as Item | undefined);
                 <span v-if="item.badge" class="nk-badge">{{ item.badge }}</span>
               </span>
               <span class="nk-panel__details">{{ item.details }}</span>
+              <span class="nk-go">Read <span aria-hidden="true">→</span></span>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section v-if="clustering" class="nk-band nk-band--cluster" aria-labelledby="nk-cluster-title">
+      <div class="nk-wrap">
+        <header class="nk-head">
+          <p class="nk-kicker">{{ clustering.kicker }}</p>
+          <h2 id="nk-cluster-title">{{ clustering.title }}</h2>
+          <p class="nk-lede">{{ clustering.details }}</p>
+        </header>
+        <ul class="nk-bento">
+          <li
+            v-for="(item, i) in clustering.items"
+            :key="item.title"
+            :class="['nk-cell', i === 0 && 'nk-cell--lead', item.wide && 'nk-cell--wide']"
+          >
+            <a v-if="item.link" class="nk-tile" :href="withBase(item.link)">
+              <span class="nk-tile__head">
+                <span class="nk-tile__icon">
+                  <FeatureMark :name="item.icon ?? 'cluster'" />
+                </span>
+                <span class="nk-tile__title">{{ item.title }}</span>
+              </span>
+              <span class="nk-tile__details">{{ item.details }}</span>
               <span class="nk-go">Read <span aria-hidden="true">→</span></span>
             </a>
           </li>
@@ -136,6 +165,10 @@ const deps = computed(() => frontmatter.value.deps as Item | undefined);
 .nk-band--net + .nk-band {
   margin-top: 64px;
   padding-top: 0;
+}
+
+.nk-band--cluster + .nk-band {
+  margin-top: 64px;
 }
 
 .nk-head {

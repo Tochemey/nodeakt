@@ -27,14 +27,39 @@ export { ActorSystem } from "./actor.system";
 export type { ActorSystemOptions } from "./actor.system.options";
 export type { Behavior } from "./behavior.stack";
 export { BoundedMailbox } from "./bounded.mailbox";
+export {
+  CoordinatorChanged,
+  NodeJoined,
+  NodeLeft,
+  RebalanceCompleted,
+  RebalanceStarted,
+  RelocationCompleted,
+  RelocationFailed,
+  RelocationStarted,
+} from "./cluster.events";
+export type { ClusterOptions } from "./cluster.options";
+export type { PlacementStrategy } from "./clustering.strategy";
 export { Context } from "./context";
 export { discardLogger } from "./discard.logger";
+export {
+  DnsDiscovery,
+  type DnsDiscoveryOptions,
+  DnsRecordType,
+  type DnsRecordTypeValue,
+  type DnsResolver,
+  type DnsSrvRecord,
+} from "./discovery/dns";
+export type { DiscoveryProvider } from "./discovery/provider";
+export { StaticDiscovery } from "./discovery/static";
 export {
   ActorInitializationError,
   ActorNotFoundError,
   ActorNotRegisteredError,
   ErrActorAlreadyExists,
   ErrActorSystemNotStarted,
+  ErrClusteringDisabled,
+  ErrClusterRequiresRemote,
+  ErrClusterRequiresRoutableHost,
   ErrDead,
   ErrFanOutAsk,
   ErrInvalidActorName,
@@ -126,7 +151,7 @@ export {
 } from "./router.options";
 export type { ScheduleOptions } from "./schedule.options";
 export { UnboundedSegmentedMailbox } from "./segmented.mailbox";
-export type { SpawnOptions } from "./spawn.options";
+export type { SpawnOnOptions, SpawnOptions } from "./spawn.options";
 export {
   type Directive,
   type ErrorClass,

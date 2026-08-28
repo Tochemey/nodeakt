@@ -6,11 +6,11 @@ There are two entry points, and they differ only in where the new actor lands in
 
 ## Two ways to spawn
 
-| Call | Spawns from | The new actor is a child of |
-| --- | --- | --- |
-| `system.spawn(name, actor, options?)` | Outside any actor. | The user guardian: a **top-level** actor. |
-| `ctx.spawn(name, actor, options?)` | Inside `receive`. | The receiving actor. |
-| `pid.spawnChild(name, actor, options?)` | Any code holding the parent's `PID`. | That `PID`'s actor. |
+| Call                                    | Spawns from                          | The new actor is a child of               |
+|-----------------------------------------|--------------------------------------|-------------------------------------------|
+| `system.spawn(name, actor, options?)`   | Outside any actor.                   | The user guardian: a **top-level** actor. |
+| `ctx.spawn(name, actor, options?)`      | Inside `receive`.                    | The receiving actor.                      |
+| `pid.spawnChild(name, actor, options?)` | Any code holding the parent's `PID`. | That `PID`'s actor.                       |
 
 `ctx.spawn` is `pid.spawnChild` on `ctx.self`: the same call, spelled for the actor currently running.
 
@@ -22,11 +22,27 @@ const greeter = await system.spawn("greeter", new Greeter());
 const worker = await ctx.spawn("worker", new Worker());
 ```
 
-```mermaid
-graph LR
-    A["system.spawn(name, actor)<br/>from outside an actor"] --> T["top-level actor<br/>under the user guardian"]
-    B["ctx.spawn(name, actor)<br/>from inside receive"] --> C["child actor<br/>under the receiving actor"]
-```
+<svg role="img" aria-label="system.spawn creates a top-level actor; ctx.spawn creates a child of the receiving actor" viewBox="0 0 720 184" style="width:100%;max-width:720px;height:auto;display:block;margin:24px auto;font-family:inherit">
+  <defs>
+    <marker id="act-sp" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="var(--vp-c-text-3, #929295)"/>
+    </marker>
+  </defs>
+  <rect x="16" y="24" width="260" height="56" rx="8" fill="var(--vp-c-bg-soft, #f6f6f7)" stroke="var(--vp-c-divider, #c9c9cc)" stroke-width="1.5"/>
+  <text x="146" y="48" text-anchor="middle" font-size="13.5" font-family="var(--vp-font-family-mono, ui-monospace, monospace)" fill="var(--vp-c-text-1, #3c3c43)">system.spawn(name, actor)</text>
+  <text x="146" y="68" text-anchor="middle" font-size="13" fill="var(--vp-c-text-2, #67676c)">from outside an actor</text>
+  <rect x="436" y="24" width="260" height="56" rx="8" fill="var(--vp-c-brand-soft, #e8ebf8)" stroke="var(--vp-c-brand-1, #3451b2)" stroke-width="1.5"/>
+  <text x="566" y="48" text-anchor="middle" font-size="14.5" font-weight="500" fill="var(--vp-c-text-1, #3c3c43)">top-level actor</text>
+  <text x="566" y="68" text-anchor="middle" font-size="13" fill="var(--vp-c-text-2, #67676c)">under the user guardian</text>
+  <path d="M276 52 H432" fill="none" stroke="var(--vp-c-text-3, #929295)" stroke-width="1.5" marker-end="url(#act-sp)"/>
+  <rect x="16" y="104" width="260" height="56" rx="8" fill="var(--vp-c-bg-soft, #f6f6f7)" stroke="var(--vp-c-divider, #c9c9cc)" stroke-width="1.5"/>
+  <text x="146" y="128" text-anchor="middle" font-size="13.5" font-family="var(--vp-font-family-mono, ui-monospace, monospace)" fill="var(--vp-c-text-1, #3c3c43)">ctx.spawn(name, actor)</text>
+  <text x="146" y="148" text-anchor="middle" font-size="13" fill="var(--vp-c-text-2, #67676c)">from inside receive</text>
+  <rect x="436" y="104" width="260" height="56" rx="8" fill="var(--vp-c-brand-soft, #e8ebf8)" stroke="var(--vp-c-brand-1, #3451b2)" stroke-width="1.5"/>
+  <text x="566" y="128" text-anchor="middle" font-size="14.5" font-weight="500" fill="var(--vp-c-text-1, #3c3c43)">child actor</text>
+  <text x="566" y="148" text-anchor="middle" font-size="13" fill="var(--vp-c-text-2, #67676c)">under the receiving actor</text>
+  <path d="M276 132 H432" fill="none" stroke="var(--vp-c-text-3, #929295)" stroke-width="1.5" marker-end="url(#act-sp)"/>
+</svg>
 
 Every spawn returns a `Promise<PID>`: it resolves only once `preStart` has finished, so a resolved `PID` is always ready to receive.
 
@@ -76,12 +92,12 @@ An [`ActorStarted`](../actor-system/events.md) event is published as the actor b
 
 `SpawnOptions` are all optional and independent:
 
-| Option | Default | Notes |
-| --- | --- | --- |
-| `mailbox` | `UnboundedMailbox` | The queue backing the actor. Live object, refused on `Props` spawns. See [Mailboxes](mailboxes.md). |
+| Option                | Default                                | Notes                                                                                                                  |
+|-----------------------|----------------------------------------|------------------------------------------------------------------------------------------------------------------------|
+| `mailbox`             | `UnboundedMailbox`                     | The queue backing the actor. Live object, refused on `Props` spawns. See [Mailboxes](mailboxes.md).                    |
 | `passivationStrategy` | `LongLivedStrategy` (never passivated) | When the actor stops itself after idleness. Live object, refused on `Props` spawns. See [Passivation](passivation.md). |
-| `supervisor` | any failure **stops** the actor | How a failure in `receive` is handled. Live object, refused on `Props` spawns. See [Supervision](supervision.md). |
-| `reentrancy` | requests disabled | Whether the actor may issue non-parking [`request`](reentrancy.md)s. Data, allowed on `Props` spawns. |
+| `supervisor`          | any failure **stops** the actor        | How a failure in `receive` is handled. Live object, refused on `Props` spawns. See [Supervision](supervision.md).      |
+| `reentrancy`          | requests disabled                      | Whether the actor may issue non-parking [`request`](reentrancy.md)s. Data, allowed on `Props` spawns.                  |
 
 The three live options are refused on a `Props` spawn because they cannot cross an isolate boundary; `reentrancy` is plain data and travels with the `Props`.
 
@@ -94,16 +110,16 @@ const pid = await system.spawn("orders", new Orders(), {
 
 ## When a spawn fails
 
-| Failure | When |
-| --- | --- |
-| `ErrActorSystemNotStarted` | The system is not running (`system.spawn`). |
-| `ErrDead` | The parent actor is not running (`ctx.spawn` / `pid.spawnChild`). |
-| `ErrReservedName` | The name starts with `NodeAkt`. |
-| `ErrInvalidActorName` | The name is empty, too long, or violates the syntax. |
-| `ErrActorAlreadyExists` | A top-level name is still held (`system.spawn` only). |
-| `ActorInitializationError` | `preStart` threw. The cause is on `error.cause`; the actor is not registered. |
-| `ActorNotRegisteredError` | `actor` is a `Props` whose class was never `registerActor`'d. |
-| `TypeError` | A `Props` spawn carrying a live `mailbox`, `supervisor`, or `passivationStrategy`, or a constructor argument that cannot be structured-cloned. |
+| Failure                    | When                                                                                                                                           |
+|----------------------------|------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ErrActorSystemNotStarted` | The system is not running (`system.spawn`).                                                                                                    |
+| `ErrDead`                  | The parent actor is not running (`ctx.spawn` / `pid.spawnChild`).                                                                              |
+| `ErrReservedName`          | The name starts with `NodeAkt`.                                                                                                                |
+| `ErrInvalidActorName`      | The name is empty, too long, or violates the syntax.                                                                                           |
+| `ErrActorAlreadyExists`    | A top-level name is still held (`system.spawn` only).                                                                                          |
+| `ActorInitializationError` | `preStart` threw. The cause is on `error.cause`; the actor is not registered.                                                                  |
+| `ActorNotRegisteredError`  | `actor` is a `Props` whose class was never `registerActor`'d.                                                                                  |
+| `TypeError`                | A `Props` spawn carrying a live `mailbox`, `supervisor`, or `passivationStrategy`, or a constructor argument that cannot be structured-cloned. |
 
 A failed `preStart` on a top-level spawn is surfaced to the caller; on a child, it also surfaces to whoever called `spawn` and the child is not registered.
 

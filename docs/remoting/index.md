@@ -119,4 +119,4 @@ The failure taxonomy is uniform with the local one: synchronous refusals return,
 ## Limits
 
 - No authorization: [TLS](tls.md) encrypts and verifies certificates, but nothing checks what a verified peer may do, and a sender's identity inside an envelope is self-declared. Trusted networks only, as above.
-- Clustering (discovery, membership, sharding) does not exist yet; remoting is point to point, addressed by `host:port`.
+- Remoting is point to point, addressed by `host:port`. To spawn, address, and message actors by name across a set of nodes without hard-coding addresses, enable [clustering](../clustering/index.md), which adds discovery, membership, a distributed registry, placement, singletons, and relocation on top of this transport.

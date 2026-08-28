@@ -78,14 +78,12 @@
     "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.11",
     "lefthook": "^2.1.10",
-    "mermaid": "^11.17.0",
     "publint": "^0.3.24",
     "tsdown": "^0.22.14",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitepress": "^1.6.4",
-    "vitepress-mermaid-renderer": "^1.2.0",
     "vitest": "^4.1.11"
   }
 }

@@ -54,8 +54,6 @@ export interface SpawnOptions {
    * On a clustered node, whether this actor is recreated on a surviving
    * node when its host departs. Overrides the system's relocation
    * default for this one actor. Ignored on a system without clustering.
-   *
-   * @internal
    */
   relocatable?: boolean;
 
@@ -72,8 +70,6 @@ export interface SpawnOptions {
 /**
  * Options for placing an actor on a node the caller chooses by strategy, the
  * extra a clustered `spawnOn` accepts over a plain spawn.
- *
- * @internal
  */
 export interface SpawnOnOptions extends SpawnOptions {
   /** The strategy selecting the owning node; `roundRobin` when omitted. */

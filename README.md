@@ -13,29 +13,11 @@
 
 ## Overview
 
-NodeAkt is an actor runtime for Node.js, Bun, and Deno. An actor owns private state and a mailbox. The runtime delivers one message at a time, so that state needs no lock. Actors talk only by sending messages. The whole runtime, the multi-core layer and the network protocol included, has **zero dependencies**: installing it brings exactly one package.
+NodeAkt is an actor framework for Node.js, Bun, and Deno.
 
-Requires Node.js 22+, Bun 1.3+, or Deno 2+. ESM only (`import`, not `require`). Every runtime is exercised in CI, multi-core placement included.
+An **actor** is a small unit of computation that owns private state and a mailbox. It never shares memory; it communicates only by sending messages, and the runtime delivers those messages to it **one at a time**. That single rule is what makes actors easy to reason about: inside a handler there is no concurrency, so there are no locks, no races, and no shared-state bugs. You model a system as many actors that each do one thing and talk by message, and the framework runs them safely across cores and across machines.
 
-## Features
-
-- **Actor system.** One logical runtime per process that owns every actor's lifecycle, from startup through graceful shutdown.
-- **Typed messages.** Messages are plain classes, so a handler narrows them with ordinary type checks. Send and forget when no answer is needed, or ask and await a typed reply.
-- **Hierarchy.** Actors spawn children and watch any other actor, receiving a message when the watched one stops. Stopping a parent drains its whole subtree cleanly.
-- **Behaviors and stash.** An actor can swap its message handler at runtime, set aside messages it cannot serve yet, and replay them once it switches back.
-- **Supervision.** When an actor fails, its parent decides: stop it, resume it, restart it, or escalate, for the one child or for all of them, with restart budgets and exponential backoff.
-- **Routers.** Spread work over a pool of identical actors or broadcast to all of them: round robin, random, fan-out, and consistent-hash routing. The router supervises its routees, the pool resizes in place, and replies go straight back to the original sender.
-- **Mailboxes.** Unbounded and bounded FIFO, segmented, fair per-sender, and priority variants, or bring your own implementation.
-- **Passivation.** Actors live as long as you need them: keep them forever, or retire them automatically after an idle timeout or a processed-message count.
-- **Reentrancy.** An actor can keep working through its mailbox while one of its own requests is still in flight, with control over which messages may overtake the pending reply.
-- **Pipe to.** The result of any promise can be delivered to an actor's mailbox as an ordinary message once it settles; failures and timeouts become dead letters instead of crashing the actor.
-- **Scheduling.** Send a message to an actor after a delay or on a repeating interval, and cancel, pause, or resume it by reference. A schedule created inside an actor is cancelled automatically when that actor stops.
-- **Event stream.** Subscribe to what the runtime observes: dead letters and actor lifecycle events such as started, stopped, restarted, and passivated.
-- **Logging.** Structured JSON logging out of the box, or silence the runtime entirely.
-- **Multi-core.** Spawn actors across every machine core without touching workers or threads yourself. An actor's address works the same locally and across cores, on Node.js, Bun, and Deno alike.
-- **Remoting.** Look up, spawn, watch, and message actors on another machine over TCP with the same PID API: tell, ask, request, forward, pipeTo, and death watch all cross nodes, with typed messages and identical failure semantics.
-
-The full API is in [Documentation](#documentation).
+The whole runtime, the multi-core layer and the network protocol included, has **zero dependencies**: installing it brings exactly one package. It requires Node.js 22+, Bun 1.3+, or Deno 2+, and is ESM only (`import`, not `require`). Every runtime is exercised in CI, multi-core placement included.
 
 ## Install
 
@@ -43,29 +25,70 @@ The full API is in [Documentation](#documentation).
 npm install @tochemey/nodeakt
 ```
 
-```sh
-pnpm add @tochemey/nodeakt
-```
+The same package works on pnpm (`pnpm add @tochemey/nodeakt`), Yarn (`yarn add @tochemey/nodeakt`), Bun (`bun add @tochemey/nodeakt`), and Deno (`deno add npm:@tochemey/nodeakt`).
 
-```sh
-yarn add @tochemey/nodeakt
-```
-
-```sh
-bun add @tochemey/nodeakt
-```
-
-```sh
-deno add npm:@tochemey/nodeakt
-```
-
-Then import from the package:
+## Quick start
 
 ```ts
+import type { Actor, Context, ReceiveContext } from "@tochemey/nodeakt";
 import { ActorSystem } from "@tochemey/nodeakt";
+
+class Greet {
+  constructor(readonly name: string) {}
+}
+
+// An actor implements three lifecycle hooks: preStart, receive, and postStop.
+class Greeter implements Actor {
+  preStart(_ctx: Context): void {}
+
+  receive(ctx: ReceiveContext): void {
+    if (ctx.message instanceof Greet) {
+      console.log(`Hello, ${ctx.message.name}!`);
+    }
+  }
+
+  postStop(_ctx: Context): void {}
+}
+
+const system = new ActorSystem("hello");
+await system.start();
+
+const greeter = await system.spawn("greeter", new Greeter());
+system.noSender().tell(greeter, new Greet("Ada")); // Hello, Ada!
+
+await system.stop();
 ```
 
-Then head to [Getting started](https://tochemey.github.io/nodeakt/guide/) for a first actor.
+Head to [Getting started](https://tochemey.github.io/nodeakt/guide/) to build on this, including `ask`/`request` for typed replies, supervision, and more.
+
+## Features
+
+Start with a handful of actors on one machine and grow to a cluster of them without changing how you write an actor.
+
+### The actor model
+
+- **Typed messages.** Messages are plain classes; a handler narrows them with ordinary `instanceof` checks. `tell` sends and forgets; `ask` awaits a typed reply with a timeout; `forward` preserves the original sender.
+- **Hierarchy and death watch.** Actors spawn children and `watch` any other actor, receiving a `Terminated` message when it stops. Stopping a parent drains its whole subtree cleanly.
+- **Behaviors and stash.** An actor can swap its message handler at runtime, set aside messages it cannot serve yet, and replay them in order once it switches back.
+- **Scheduling and pipeTo.** Send a message after a delay or on a repeating interval, cancel or pause it by reference; and deliver the result of any promise to a mailbox as an ordinary message once it settles.
+- **Reentrancy.** An actor can keep processing its mailbox while one of its own requests is still in flight, with control over which messages may overtake the pending reply.
+
+### Resilience
+
+- **Supervision.** When an actor fails, its parent decides: stop, resume, restart, or escalate, for one child or all of them, with restart budgets and exponential backoff.
+- **Mailboxes.** Unbounded and bounded FIFO, segmented, fair per-sender, and priority variants, or bring your own.
+- **Passivation.** Keep an actor forever, or retire it automatically after an idle timeout or a processed-message count.
+- **Event stream and dead letters.** Subscribe to what the runtime observes: undeliverable messages become dead letters, and lifecycle events (started, stopped, restarted, passivated) flow on the same stream.
+- **Logging.** Structured JSON logging out of the box, or silence the runtime entirely.
+
+### Distribution and scale
+
+- **Multi-core.** Spawn actors across every machine core without touching workers or threads yourself. An actor's address works the same on any core, on Node.js, Bun, and Deno alike.
+- **Routers.** Spread work over a pool of identical actors or broadcast to all: round-robin, random, fan-out, and consistent-hash. The router supervises its routees, resizes in place, and replies go straight to the original sender.
+- **[Remoting](https://tochemey.github.io/nodeakt/remoting/).** Look up, spawn, watch, and message actors on another machine over TCP with the same `PID` API. Optional TLS.
+- **[Clustering](https://tochemey.github.io/nodeakt/clustering/).** Turn a set of nodes into one cluster: discover peers, spawn and address actors by name across the cluster, place them by strategy, run cluster singletons, and have a departed node's actors recreated on the survivors automatically.
+
+The full API is in the [Documentation](#documentation).
 
 ## Documentation
 

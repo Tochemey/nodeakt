@@ -4,7 +4,7 @@ layout: home
 hero:
   name: NodeAkt
   text: Actor framework for Node, Bun, and Deno
-  tagline: "Typed actors, supervision, behaviors, a multi-core runtime, and remoting across nodes. Zero dependencies. No locks, just messages."
+  tagline: "Typed actors, supervision, behaviors, a multi-core runtime, remoting, and clustering across nodes. Zero dependencies. No locks, just messages."
   image:
     src: /logo.svg
     alt: NodeAkt
@@ -68,6 +68,37 @@ networking:
       badge: TLS
       details: Encrypt remoting with a cert, key, and optional CA. Mutual TLS when you ask for it. All or nothing per system; the protocol is unchanged over the encrypted carrier.
       link: /remoting/tls
+
+clustering:
+  kicker: Clustering
+  title: Actors, across many machines.
+  details: Turn a set of nodes into one cluster. Spawn, address, and message actors by name across the cluster, and have a departed node's actors recreated on the survivors automatically.
+  items:
+    - title: Clustering
+      icon: cluster
+      wide: true
+      details: Enable it with a discovery provider and a remote endpoint. Membership, a distributed name registry, and remoting join into one cluster of location-transparent actors, on the same PID API.
+      link: /clustering/
+    - title: Discovery and membership
+      icon: discovery
+      details: Find seed peers over DNS or a static list at boot, then track who is in the cluster with gossip and failure detection. A quorum guards against split brain.
+      link: /clustering/discovery
+    - title: Placement
+      icon: placement
+      details: spawn keeps an actor local; spawnOn places it on the node a strategy chooses. Top-level names are unique cluster-wide.
+      link: /clustering/placement
+    - title: Singletons
+      icon: actor
+      details: spawnSingleton gives a name exactly one live instance cluster-wide, pinned to the coordinator and idempotent to create.
+      link: /clustering/singletons
+    - title: Messaging
+      icon: tcp
+      details: actorOf and actorOfAsync return a PID that routes to the owning node, wherever it runs. tell, ask, and watch keep their call sites.
+      link: /clustering/messaging
+    - title: Relocation
+      icon: relocation
+      details: When a node departs, gracefully or by crash, the coordinator recreates its relocatable actors on the survivors from their recipes.
+      link: /clustering/relocation
 
 deps:
   title: Zero dependencies
