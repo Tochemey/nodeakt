@@ -24,6 +24,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Clock, ClockTimer } from "../../src/membership/clock";
+import { type Log, type LogFields, nopLog } from "../../src/membership/log";
 import { SeededRandom } from "../../src/membership/random";
 import { Swim, SwimLifecycleError } from "../../src/membership/swim";
 import { writeSyncFrames } from "../../src/membership/sync";
@@ -1014,5 +1015,90 @@ describe("Swim defensive lifecycle and protocol paths", () => {
     await second.start();
     await secondStopping;
     expect(second.lifecycle).toBe("stopped");
+  });
+});
+
+/** One captured entry: its level, message, and resolved fields. */
+interface Recorded {
+  readonly level: string;
+  readonly message: string;
+  readonly fields: Record<string, unknown> | undefined;
+}
+
+/** A {@link Log} that records every entry for assertions. */
+class RecordingLog implements Log {
+  readonly entries: Recorded[] = [];
+
+  debug(message: string, fields?: LogFields): void {
+    this.#record("debug", message, fields);
+  }
+
+  info(message: string, fields?: LogFields): void {
+    this.#record("info", message, fields);
+  }
+
+  warn(message: string, fields?: LogFields): void {
+    this.#record("warn", message, fields);
+  }
+
+  error(message: string, fields?: LogFields): void {
+    this.#record("error", message, fields);
+  }
+
+  #record(level: string, message: string, fields?: LogFields): void {
+    this.entries.push({
+      level,
+      message,
+      fields: typeof fields === "function" ? fields() : fields,
+    });
+  }
+}
+
+describe("Swim logging", () => {
+  it("reports lifecycle and membership transitions through the injected logger", async () => {
+    const network: SimNetwork = new SimNetwork(207);
+    const log: RecordingLog = new RecordingLog();
+    const swim: Swim = new Swim({
+      address: "a",
+      metadata: Uint8Array.of(1),
+      transport: network.endpoint("a"),
+      clock: network.clock,
+      random: new SeededRandom(9),
+      logger: log,
+    });
+
+    await swim.start();
+    swim.updateMetadata(Uint8Array.of(2));
+    await settle(network, swim.leave());
+
+    const seen: string[] = log.entries.map(
+      (entry: Recorded): string => `${entry.level}:${entry.message}`,
+    );
+    expect(seen).toContain("info:membership started");
+    expect(seen).toContain("info:member joined");
+    expect(seen).toContain("debug:member metadata changed");
+    expect(seen).toContain("info:membership leaving");
+    expect(seen).toContain("info:member left");
+
+    const started: Recorded | undefined = log.entries.find(
+      (entry: Recorded): boolean => entry.message === "membership started",
+    );
+    expect(started?.fields).toEqual({ address: "a" });
+
+    const joined: Recorded | undefined = log.entries.find(
+      (entry: Recorded): boolean => entry.message === "member joined",
+    );
+    expect(joined?.fields).toEqual({ member: "a" });
+  });
+});
+
+describe("membership nopLog", () => {
+  it("drops every level without throwing", () => {
+    expect((): void => {
+      nopLog.debug("x", { a: 1 });
+      nopLog.info("x");
+      nopLog.warn("x");
+      nopLog.error("x");
+    }).not.toThrow();
   });
 });

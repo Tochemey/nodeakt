@@ -33,7 +33,7 @@
  * Run: make props
  */
 
-import { ActorSystem, Props } from "../../src/index";
+import { ActorSystem, Props, TextLogger } from "../../src/index";
 import { Greeter } from "./greeter.actor";
 
 // The system sizes itself to the machine at start; the environment
@@ -41,7 +41,8 @@ import { Greeter } from "./greeter.actor";
 // this isolate.
 process.env.NODEAKT_PARALLELISM = "1";
 
-const system = new ActorSystem("props");
+const logger = new TextLogger({ level: "debug" });
+const system = new ActorSystem("props", { logger });
 await system.start();
 
 // Props form: the runtime builds the Greeter from the class + arguments.
@@ -49,11 +50,11 @@ const french = await system.spawn("french", Props.create(Greeter, "fr"));
 const spanish = await system.spawn("spanish", Props.create(Greeter, "es"));
 
 const outside = system.noSender();
-console.log(await outside.ask(french, "Ada", 1_000));
-console.log(await outside.ask(spanish, "Alan", 1_000));
+logger.info((await outside.ask(french, "Ada", 1_000)) as string);
+logger.info((await outside.ask(spanish, "Alan", 1_000)) as string);
 
 // Instance form still works and always stays on the calling core.
 const english = await system.spawn("english", new Greeter("en"));
-console.log(await outside.ask(english, "Grace", 1_000));
+logger.info((await outside.ask(english, "Grace", 1_000)) as string);
 
 await system.stop();

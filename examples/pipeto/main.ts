@@ -35,7 +35,7 @@
  */
 
 import type { Actor, PID } from "../../src/index";
-import { ActorSystem, Deadletter, type ReceiveContext } from "../../src/index";
+import { ActorSystem, Deadletter, type ReceiveContext, TextLogger } from "../../src/index";
 
 // protocol
 
@@ -97,7 +97,7 @@ class Loader implements Actor {
 
     if (message instanceof Order) {
       this.landed++;
-      console.log(`  order ${message.id} landed: total ${message.total}`);
+      ctx.logger().info(`  order ${message.id} landed: total ${message.total}`);
       return;
     }
 
@@ -111,13 +111,16 @@ class Loader implements Actor {
 
 // --- driver ---------------------------------------------------------------
 
-const system: ActorSystem = new ActorSystem("pipeto");
+const logger = new TextLogger({ level: "debug" });
+const system: ActorSystem = new ActorSystem("pipeto", {
+  logger,
+});
 await system.start();
 
 // A failed pipe becomes a dead letter; subscribe to see it.
 system.subscribe((event: unknown) => {
   if (event instanceof Deadletter) {
-    console.log(`  dead letter for ${event.receiver}: ${event.reason}`);
+    logger.info(`  dead letter for ${event.receiver}: ${event.reason}`);
   }
 });
 
@@ -131,7 +134,7 @@ outside.tell(loader, new Load(4));
 
 // Asked immediately: the loader answers 0 because no fetch has settled yet.
 const early: number = (await outside.ask(loader, new Count(), 1_000)) as number;
-console.log(`orders landed before any fetch settled: ${early}`);
+logger.info(`orders landed before any fetch settled: ${early}`);
 
 // Let the fetches settle and their results (or dead letters) arrive.
 await new Promise<void>((resolve) => {
@@ -139,6 +142,6 @@ await new Promise<void>((resolve) => {
 });
 
 const total: number = (await outside.ask(loader, new Count(), 1_000)) as number;
-console.log(`orders landed after fetches settled: ${total}`);
+logger.info(`orders landed after fetches settled: ${total}`);
 
 await system.stop();

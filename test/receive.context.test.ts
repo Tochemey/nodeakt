@@ -237,6 +237,22 @@ describe("ReceiveContext actor API", () => {
     await expect.poll(() => actor.seen).toBe(system);
   });
 
+  it("exposes the system logger from an attached context", async () => {
+    class LogAware implements Actor {
+      seen: unknown;
+      preStart(): void {}
+      receive(ctx: ReceiveContext): void {
+        this.seen = ctx.logger();
+      }
+      postStop(): void {}
+    }
+
+    const actor = new LogAware();
+    const pid = await startPid(actor, "log-aware");
+    external.tell(pid, "ping");
+    await expect.poll(() => actor.seen).toBe(system.logger());
+  });
+
   it("throws when tell targets a dead actor", async () => {
     const dead = await startPid(new Collector(), "dead");
     await dead.shutdown();

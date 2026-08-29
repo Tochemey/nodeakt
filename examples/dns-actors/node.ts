@@ -30,14 +30,12 @@
  * singletons; a caller on any node reaches an actor on any other through its name.
  * When a node departs, gracefully or by a hard kill, the coordinator recreates its
  * relocatable actors on the survivors, and lookups on the survivors reach them at
- * their new home. The framework imports carry a `.js` extension, the ESM specifier
- * `tsx` resolves back to the TypeScript source it runs.
+ * their new home. The framework is imported from its package entry point; `tsx` runs
+ * the TypeScript sources directly.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { ActorSystem } from "../../src/actor.system.js";
-import { DnsDiscovery, DnsRecordType } from "../../src/discovery/dns.js";
-import { Props } from "../../src/props.js";
+import { ActorSystem, DnsDiscovery, DnsRecordType, Props, TextLogger } from "../../src/index";
 import { Greet, WhereAreYou, Worker } from "./worker.actor.js";
 
 /** Reads a required string environment variable, failing fast when it is absent. */
@@ -73,15 +71,21 @@ const dataPort: number = portEnv("NODEAKT_DATA_PORT", 8080);
 const httpPort: number = portEnv("NODEAKT_HTTP_PORT", 3000);
 const memberQuorum: number = portEnv("NODEAKT_MEMBER_QUORUM", 2);
 
-/** Timestamped log line, prefixed with this node so a reader can follow each one. */
+// One logger for the whole node: the actor system and this program's own lines
+// share it, and every entry carries this node's address so a reader can tell the
+// nodes apart in a combined log.
+const logger = new TextLogger({ level: "debug", fields: { node: host } });
+
+/** Logs one of this program's own lines through the shared node logger. */
 function log(message: string): void {
-  process.stdout.write(`[${host}] ${message}\n`);
+  logger.info(message);
 }
 
 // The bind host is the wildcard so the container accepts connections on any interface;
 // the advertised host is this node's own resolvable service name, and the discovery
 // hostname resolves to every node, so a peer dials each node directly after it joins.
 const system: ActorSystem = new ActorSystem("dns-actors", {
+  logger,
   remote: { host: "0.0.0.0", advertisedHost: host, port: remotingPort },
   cluster: {
     discovery: new DnsDiscovery({

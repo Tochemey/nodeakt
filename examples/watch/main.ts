@@ -33,7 +33,13 @@
  */
 
 import type { Actor, PID } from "../../src/index";
-import { ActorSystem, PostStart, type ReceiveContext, Terminated } from "../../src/index";
+import {
+  ActorSystem,
+  PostStart,
+  type ReceiveContext,
+  Terminated,
+  TextLogger,
+} from "../../src/index";
 
 /** An actor that does nothing but exist until it is stopped. */
 class Worker implements Actor {
@@ -51,19 +57,20 @@ class Sentinel implements Actor {
     if (ctx.message instanceof PostStart) {
       // Watch while the target is alive; death watch reports a future stop.
       ctx.watch(this.target);
-      console.log(`sentinel is watching "${this.target.name()}"`);
+      ctx.logger().info(`sentinel is watching "${this.target.name()}"`);
       return;
     }
 
     if (ctx.message instanceof Terminated) {
-      console.log(`sentinel saw "${ctx.message.actorPath}" terminate`);
+      ctx.logger().info(`sentinel saw "${ctx.message.actorPath}" terminate`);
     }
   }
 
   postStop(): void {}
 }
 
-const system = new ActorSystem("watch");
+const logger = new TextLogger({ level: "debug" });
+const system = new ActorSystem("watch", { logger });
 await system.start();
 
 const worker = await system.spawn("worker", new Worker());

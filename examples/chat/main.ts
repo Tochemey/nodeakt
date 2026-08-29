@@ -34,7 +34,7 @@
  */
 
 import type { Actor, PID } from "../../src/index";
-import { ActorSystem, type ReceiveContext, Terminated } from "../../src/index";
+import { ActorSystem, type ReceiveContext, Terminated, TextLogger } from "../../src/index";
 
 // --- protocol -------------------------------------------------------------
 
@@ -82,7 +82,7 @@ class Room implements Actor {
 
       this.members.add(user);
       ctx.watch(user); // drop the user automatically when it stops
-      console.log(`* ${user.name()} joined (${this.members.size} present)`);
+      ctx.logger().info(`* ${user.name()} joined (${this.members.size} present)`);
       return;
     }
 
@@ -104,7 +104,7 @@ class Room implements Actor {
       for (const member of this.members) {
         if (member.path().toString() === message.actorPath) {
           this.members.delete(member);
-          console.log(`* ${member.name()} left (${this.members.size} present)`);
+          ctx.logger().info(`* ${member.name()} left (${this.members.size} present)`);
           break;
         }
       }
@@ -136,7 +136,7 @@ class User implements Actor {
     }
 
     if (message instanceof Deliver) {
-      console.log(`  [${this.name}] <${message.from}> ${message.text}`);
+      ctx.logger().info(`  [${this.name}] <${message.from}> ${message.text}`);
     }
   }
 
@@ -150,7 +150,8 @@ const settle = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-const system = new ActorSystem("chat");
+const logger = new TextLogger({ level: "debug" });
+const system = new ActorSystem("chat", { logger });
 await system.start();
 
 const room = await system.spawn("room", new Room());

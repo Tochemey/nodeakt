@@ -24,6 +24,7 @@
 
 import { BroadcastQueue } from "./broadcast";
 import type { Clock, ClockTimer } from "./clock";
+import { type Log, nopLog } from "./log";
 import { BASE_PROTOCOL_PERIOD_MS, Probe, type ProbeFailure } from "./probe";
 import type { Random } from "./random";
 import { type SuspicionExpiry, SuspicionManager } from "./suspicion";
@@ -48,6 +49,7 @@ import {
   type MemberRecord,
   MembershipCapacityError,
   type MembershipEvent,
+  type MembershipEventType,
   type MembershipView,
   type ReapOperation,
   MembershipView as View,
@@ -126,6 +128,8 @@ export interface SwimOptions {
   readonly random: Random;
   /** Synchronous observer invoked by the view in mutation order; exceptions may propagate. */
   readonly onEvent?: (event: MembershipEvent) => void;
+  /** Sink for lifecycle and membership-change entries; drops everything by default. */
+  readonly logger?: Log;
 }
 
 /** Externally settled promise pair used to publish a shared lifecycle promise early. */
@@ -156,6 +160,19 @@ function deferred(): Deferred {
   return { promise, resolve, reject };
 }
 
+/** How each membership transition is reported: the level to emit at and
+ * the message, keyed by the view's event type. A join and a graceful leave
+ * read as normal, a death is a warning, a metadata change is debug detail. */
+const EVENT_LOG: Record<
+  MembershipEventType,
+  { readonly level: "info" | "warn" | "debug"; readonly message: string }
+> = {
+  joined: { level: "info", message: "member joined" },
+  left: { level: "info", message: "member left" },
+  dead: { level: "warn", message: "member declared dead" },
+  updated: { level: "debug", message: "member metadata changed" },
+};
+
 /**
  * Composed membership engine and sole owner of the shared transport
  * listener. It coordinates detection, suspicion, dissemination, sync,
@@ -170,6 +187,8 @@ export class Swim {
   readonly #metadata: Uint8Array;
   /** Sole transport resource owned by this composed engine. */
   readonly #transport: MembershipTransport;
+  /** Sink for lifecycle and membership-change entries. */
+  readonly #log: Log;
   /** Shared source of protocol time, deadlines, and retention timers. */
   readonly #clock: Clock;
   /** Authoritative retained membership table for this engine. */
@@ -217,8 +236,14 @@ export class Swim {
     this.#address = options.address;
     this.#metadata = Uint8Array.from(options.metadata);
     this.#transport = options.transport;
+    this.#log = options.logger ?? nopLog;
     this.#clock = options.clock;
-    this.#view = new View(options.address, options.onEvent);
+
+    const onEvent: ((event: MembershipEvent) => void) | undefined = options.onEvent;
+    this.#view = new View(options.address, (event: MembershipEvent): void => {
+      this.#logEvent(event);
+      onEvent?.(event);
+    });
     this.#suspicion = new SuspicionManager(options.clock, (expiry): void => {
       this.#expireSuspicion(expiry);
     });
@@ -260,6 +285,7 @@ export class Swim {
           this.#confirmSuspicion(update);
         },
         selfRefuted: (): void => {
+          this.#log.warn("refuting a suspicion of this node", { address: this.#address });
           this.#probe.selfRefute();
         },
       },
@@ -355,6 +381,7 @@ export class Swim {
 
         this.#antiEntropy.start();
         this.#state = SwimState.started;
+        this.#log.info("membership started", { address: this.#address });
       })
       .catch((error: unknown): never => {
         if (this.#state === SwimState.starting) {
@@ -449,6 +476,7 @@ export class Swim {
     // so a reentrant leave() observes the shared promise, not undefined.
     const leaving: Deferred = deferred();
     this.#leavePromise = leaving.promise;
+    this.#log.info("membership leaving", { address: this.#address });
     try {
       const update: MembershipUpdate = this.#beginLeave();
       this.#completeLeave(update).then(leaving.resolve, leaving.reject);
@@ -597,6 +625,13 @@ export class Swim {
     );
   }
 
+  /** Reports a membership transition through the injected log, tagging it
+   * with the affected member's address. */
+  #logEvent(event: MembershipEvent): void {
+    const entry = EVENT_LOG[event.type];
+    this.#log[entry.level](entry.message, { member: event.member.member });
+  }
+
   /** Applies decoded updates synchronously in wire order. */
   #applyUpdates(updates: readonly MembershipUpdate[]): void {
     for (const update of updates) {
@@ -701,6 +736,10 @@ export class Swim {
       this.#stateChangeTime(),
     );
     if (result.kind === ApplyKind.applied) {
+      this.#log.warn("member suspected", {
+        member: failure.target,
+        reason: "no probe acknowledgment",
+      });
       this.#broadcasts.enqueue(result.record, this.#view.aliveOrSuspectCount());
       this.#truthApplied(result.record);
       return true;

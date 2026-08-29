@@ -33,7 +33,7 @@
  */
 
 import type { Actor } from "../../src/index";
-import { ActorSystem, type ReceiveContext } from "../../src/index";
+import { ActorSystem, type ReceiveContext, TextLogger } from "../../src/index";
 
 /** Advances the light by one step. */
 class Tick {}
@@ -44,21 +44,21 @@ class TrafficLight implements Actor {
   /** The default behavior is the RED state. */
   receive(ctx: ReceiveContext): void {
     if (ctx.message instanceof Tick) {
-      console.log("🔴 red    -> 🟢 green");
+      ctx.logger().info("🔴 red    -> 🟢 green");
       ctx.become(this.green);
     }
   }
 
   private green = (ctx: ReceiveContext): void => {
     if (ctx.message instanceof Tick) {
-      console.log("🟢 green  -> 🟡 yellow");
+      ctx.logger().info("🟢 green  -> 🟡 yellow");
       ctx.become(this.yellow);
     }
   };
 
   private yellow = (ctx: ReceiveContext): void => {
     if (ctx.message instanceof Tick) {
-      console.log("🟡 yellow -> 🔴 red");
+      ctx.logger().info("🟡 yellow -> 🔴 red");
       // Revert to the default `receive`, which is the red state.
       ctx.unBecome();
     }
@@ -67,7 +67,10 @@ class TrafficLight implements Actor {
   postStop(): void {}
 }
 
-const system = new ActorSystem("traffic");
+const logger = new TextLogger({ level: "debug" });
+const system = new ActorSystem("traffic", {
+  logger,
+});
 await system.start();
 
 const light = await system.spawn("light", new TrafficLight());

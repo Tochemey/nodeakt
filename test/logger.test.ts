@@ -24,9 +24,17 @@
 
 import { describe, expect, it } from "vitest";
 import { ActorSystem } from "../src/actor.system";
+import type { CallSiteScript } from "../src/call.sites";
 import { discardLogger } from "../src/discard.logger";
-import { defaultLogger, JsonLogger } from "../src/json.logger";
+import { JsonLogger } from "../src/json.logger";
 import type { Fields, Level } from "../src/logger";
+import {
+  defaultLogger,
+  firstScriptName,
+  resolveCaller,
+  TextLogger,
+  threadName,
+} from "../src/text.logger";
 
 /** A sink that captures each written line for assertions. */
 class CaptureStream {
@@ -156,9 +164,283 @@ describe("JsonLogger", () => {
     expect(entry.unserializable).toBe(true);
   });
 
+  it("defaults to info on standard error with no options", () => {
+    const logger = new JsonLogger();
+
+    expect(logger.level()).toBe("info");
+    expect(logger.enabled("debug")).toBe(false);
+  });
+});
+
+function makeText(level?: Level): { logger: TextLogger; sink: CaptureStream } {
+  const sink = new CaptureStream();
+  const stream = sink as unknown as NodeJS.WritableStream;
+  const logger =
+    level === undefined ? new TextLogger({ stream }) : new TextLogger({ level, stream });
+  return { logger, sink };
+}
+
+/** The first physical line of a written chunk, before any appended stack. */
+function textLine(chunk: string): string {
+  return (chunk.split("\n")[0] ?? "") as string;
+}
+
+/** The contents of each bracketed column, in order. */
+function columnsOf(chunk: string): string[] {
+  const line = textLine(chunk);
+  const dash = line.indexOf(" - ");
+  const head = dash === -1 ? line : line.slice(0, dash);
+  return [...head.matchAll(/\[([^\]]*)\]/g)].map((match) => match[1] as string);
+}
+
+/** The message, between the columns and any fields segment. */
+function msgOf(chunk: string): string {
+  const line = textLine(chunk);
+  const dash = line.indexOf(" - ");
+  const tail = dash === -1 ? line : line.slice(dash + 3);
+  const fields = / \{.*\}$/.exec(tail);
+  return fields === null ? tail : tail.slice(0, fields.index);
+}
+
+/** The field text, or `null` when the line carries no fields segment. */
+function fieldsOf(chunk: string): string | null {
+  const fields = / \{(.*)\}$/.exec(textLine(chunk));
+  return fields === null ? null : (fields[1] as string);
+}
+
+describe("TextLogger", () => {
+  it("renders a clean line with a lifted logger column and fields", () => {
+    const { logger, sink } = makeText();
+
+    logger.with({ logger: "orders" }).info("actor started", { actor: "user/greeter" });
+
+    expect(sink.lines).toHaveLength(1);
+    const chunk = sink.lines[0] as string;
+    const columns = columnsOf(chunk);
+    expect(columns[1]).toBe("INF");
+    expect(columns).toContain("orders");
+    expect(columns).toContain("main");
+    expect(textLine(chunk)).not.toContain("[]");
+    expect(msgOf(chunk)).toBe("actor started");
+    expect(fieldsOf(chunk)).toBe("actor=user/greeter");
+    expect(Number.isNaN(Date.parse(columns[0] as string))).toBe(false);
+    expect(chunk.endsWith("\n")).toBe(true);
+  });
+
+  it("reports the call site as dir/file:line in a column", () => {
+    const { logger, sink } = makeText();
+
+    logger.info("here");
+
+    const caller = columnsOf(sink.lines[0] as string).find((c) => c.includes("logger.test"));
+    expect(caller).toBeDefined();
+    expect(caller).toMatch(/:\d+$/);
+  });
+
+  it("lifts the marker column and omits the absent logger column", () => {
+    const { logger, sink } = makeText();
+
+    logger.info("mark", { marker: "audit" });
+
+    const chunk = sink.lines[0] as string;
+    expect(columnsOf(chunk)).toContain("audit");
+    expect(textLine(chunk)).not.toContain("[]");
+    expect(fieldsOf(chunk)).toBeNull();
+  });
+
+  it("renders bound and per-entry fields, per-entry winning", () => {
+    const { logger, sink } = makeText();
+    const bound = logger.with({ node: "a", region: "eu" });
+
+    bound.info("hello", { node: "b" });
+
+    expect(fieldsOf(sink.lines[0] as string)).toBe("node=b, region=eu");
+  });
+
+  it("carries bound fields alone when an entry adds none", () => {
+    const { logger, sink } = makeText();
+
+    logger.with({ node: "a" }).info("hello");
+
+    expect(fieldsOf(sink.lines[0] as string)).toBe("node=a");
+  });
+
+  it("merges fields across chained with, later binds winning", () => {
+    const { logger, sink } = makeText();
+
+    logger.with({ node: "a", region: "eu" }).with({ node: "b" }).info("hello");
+
+    expect(fieldsOf(sink.lines[0] as string)).toBe("node=b, region=eu");
+  });
+
+  it("omits reserved columns whose value is explicitly undefined", () => {
+    const { logger, sink } = makeText();
+
+    logger.info("mark", { logger: undefined, marker: undefined, actor: "greeter" });
+
+    const chunk = sink.lines[0] as string;
+    expect(textLine(chunk)).not.toContain("[]");
+    expect(fieldsOf(chunk)).toBe("actor=greeter");
+  });
+
+  it("omits the fields segment when there are none", () => {
+    const { logger, sink } = makeText();
+
+    logger.info("bare");
+
+    const chunk = sink.lines[0] as string;
+    expect(fieldsOf(chunk)).toBeNull();
+    expect(textLine(chunk)).not.toContain("{");
+    expect(textLine(chunk)).not.toContain("[]");
+    expect(msgOf(chunk)).toBe("bare");
+  });
+
+  it("emits entries at its level and above and drops the rest", () => {
+    const { logger, sink } = makeText();
+
+    logger.debug("hidden");
+    logger.info("kept");
+    logger.warn("kept");
+    logger.error("kept");
+
+    expect(sink.lines).toHaveLength(3);
+    expect(logger.level()).toBe("info");
+    expect(logger.enabled("debug")).toBe(false);
+    expect(logger.enabled("error")).toBe(true);
+  });
+
+  it("emits everything at debug level and nothing at off", () => {
+    const debug = makeText("debug");
+    debug.logger.debug("visible");
+    expect(columnsOf(debug.sink.lines[0] as string)[1]).toBe("DBG");
+
+    const off = makeText("off");
+    off.logger.debug("dropped");
+    off.logger.info("dropped");
+    off.logger.warn("dropped");
+    off.logger.error("dropped");
+    expect(off.sink.lines).toHaveLength(0);
+  });
+
+  it("suppresses warnings below the error level", () => {
+    const { logger, sink } = makeText("error");
+
+    logger.warn("hidden");
+    logger.error("kept");
+
+    expect(sink.lines).toHaveLength(1);
+    expect(columnsOf(sink.lines[0] as string)[1]).toBe("ERR");
+  });
+
+  it("computes lazy fields only when the entry is emitted", () => {
+    const { logger, sink } = makeText();
+    let computed = 0;
+    const lazy = (): Fields => {
+      computed++;
+      return { size: 3 };
+    };
+
+    logger.debug("hidden", lazy);
+    expect(computed).toBe(0);
+
+    logger.info("kept", lazy);
+    expect(computed).toBe(1);
+    expect(fieldsOf(sink.lines[0] as string)).toBe("size=3");
+  });
+
+  it("renders an error as name: message and appends its stack", () => {
+    const { logger, sink } = makeText();
+
+    logger.error("postStop failed", { error: new RangeError("cleanup failed") });
+
+    const chunk = sink.lines[0] as string;
+    expect(fieldsOf(chunk)).toBe("error=RangeError: cleanup failed");
+    expect(chunk).toContain("RangeError: cleanup failed\n");
+    expect(chunk.split("\n").length).toBeGreaterThan(2);
+  });
+
+  it("renders an error that carries no stack without appending lines", () => {
+    const { logger, sink } = makeText();
+    const stackless = new Error("no trace");
+    delete (stackless as { stack?: string }).stack;
+    const empty = new Error("blank trace");
+    empty.stack = "";
+
+    logger.info("first", { error: stackless });
+    logger.info("second", { error: empty });
+
+    expect((sink.lines[0] as string).trimEnd().split("\n")).toHaveLength(1);
+    expect((sink.lines[1] as string).trimEnd().split("\n")).toHaveLength(1);
+    expect(fieldsOf(sink.lines[0] as string)).toBe("error=Error: no trace");
+  });
+
+  it("serializes object fields as JSON and stringifies scalars", () => {
+    const { logger, sink } = makeText();
+
+    logger.info("mixed", { config: { retries: 3 }, count: 7, ready: true });
+
+    expect(fieldsOf(sink.lines[0] as string)).toBe('config={"retries":3}, count=7, ready=true');
+  });
+
+  it("falls back to a string when an object serializes to nothing", () => {
+    const { logger, sink } = makeText();
+
+    logger.info("empty json", { value: { toJSON: (): undefined => undefined } });
+
+    expect(fieldsOf(sink.lines[0] as string)).toBe("value=[object Object]");
+  });
+
+  it("still emits a line when a field cannot be serialized", () => {
+    const { logger, sink } = makeText();
+    const circular: Fields = {};
+    circular.self = circular;
+
+    logger.info("survived", { circular });
+
+    const chunk = sink.lines[0] as string;
+    expect(msgOf(chunk)).toBe("survived");
+    expect(fieldsOf(chunk)).toBe("circular=[unserializable]");
+  });
+
   it("defaults to info on standard error", () => {
     expect(defaultLogger.level()).toBe("info");
     expect(defaultLogger.enabled("debug")).toBe(false);
+  });
+});
+
+describe("threadName", () => {
+  it("names the main thread and worker threads", () => {
+    expect(threadName(true, 0)).toBe("main");
+    expect(threadName(false, 3)).toBe("worker-3");
+  });
+});
+
+describe("firstScriptName", () => {
+  it("answers frame 0's script, or empty when there is none", () => {
+    expect(firstScriptName([{ scriptName: "/src/app.ts", lineNumber: 4 }])).toBe("/src/app.ts");
+    expect(firstScriptName([])).toBe("");
+  });
+});
+
+describe("resolveCaller", () => {
+  function frame(scriptName: string, lineNumber: number): CallSiteScript {
+    return { scriptName, lineNumber };
+  }
+
+  it("skips this module and empty frames, then reports dir/file:line", () => {
+    const frames = [frame("own", 1), frame("", 2), frame("/project/src/app.ts", 42)];
+
+    expect(resolveCaller(frames, "own")).toBe("src/app.ts:42");
+  });
+
+  it("keeps a single-segment path and a bare script name intact", () => {
+    expect(resolveCaller([frame("/main.ts", 9)], "own")).toBe("main.ts:9");
+    expect(resolveCaller([frame("[eval]", 5)], "own")).toBe("[eval]:5");
+  });
+
+  it("returns empty when no frame is available or the module is unknown", () => {
+    expect(resolveCaller([frame("own", 1)], "own")).toBe("");
+    expect(resolveCaller([frame("/project/src/app.ts", 1)], "")).toBe("");
   });
 });
 
@@ -202,8 +484,10 @@ describe("ActorSystem logging", () => {
 
     await system.stop();
 
-    const entry = parse(sink.lines[0] as string);
-    expect(entry.msg).toBe("acquiring");
-    expect(entry.actor).toBe("worker");
+    const acquiring = sink.lines
+      .map((line: string): Fields => parse(line))
+      .find((entry: Fields): boolean => entry.msg === "acquiring");
+    expect(acquiring).toBeDefined();
+    expect(acquiring?.actor).toBe("worker");
   });
 });

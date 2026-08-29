@@ -32,8 +32,14 @@
  * Run: make supervision
  */
 
-import type { Actor } from "../../src/index";
-import { ActorSystem, type ReceiveContext, RestartDirective, Supervisor } from "../../src/index";
+import type { Actor, Context } from "../../src/index";
+import {
+  ActorSystem,
+  type ReceiveContext,
+  RestartDirective,
+  Supervisor,
+  TextLogger,
+} from "../../src/index";
 
 /** A unit of work; job 13 is unlucky and makes the worker throw. */
 class Job {
@@ -46,12 +52,12 @@ class Unlucky extends Error {}
 class Worker implements Actor {
   private completed = 0;
 
-  preStart(): void {
+  preStart(ctx: Context): void {
     // Initialize state here, not in a field or the constructor: a restart
     // reuses the instance and re-runs preStart, so this is what makes the
     // recovered actor start from a clean slate.
     this.completed = 0;
-    console.log("worker started with fresh state");
+    ctx.actorSystem().logger().info("worker started with fresh state");
   }
 
   receive(ctx: ReceiveContext): void {
@@ -61,14 +67,17 @@ class Worker implements Actor {
       }
 
       this.completed++;
-      console.log(`  did job ${ctx.message.n} (completed ${this.completed} since last start)`);
+      ctx
+        .logger()
+        .info(`  did job ${ctx.message.n} (completed ${this.completed} since last start)`);
     }
   }
 
   postStop(): void {}
 }
 
-const system = new ActorSystem("supervision");
+const logger = new TextLogger({ level: "debug" });
+const system = new ActorSystem("supervision", { logger });
 await system.start();
 
 const worker = await system.spawn("worker", new Worker(), {

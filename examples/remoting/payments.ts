@@ -35,7 +35,7 @@
  */
 
 import type { Actor, PID, ReceiveContext } from "../../src/index";
-import { ActorSystem } from "../../src/index";
+import { ActorSystem, TextLogger } from "../../src/index";
 import { advertisedHost } from "./host";
 import { ChargeCard, Declined, Receipt } from "./messages";
 
@@ -76,22 +76,24 @@ class PaymentsActor implements Actor {
     }
 
     if (message.last4 === HOTLISTED_LAST4) {
-      console.log(`[payments] DECLINED ${message.orderId}: card ending ${message.last4}`);
+      ctx.logger().info(`[payments] DECLINED ${message.orderId}: card ending ${message.last4}`);
       ctx.response(new Declined(message.orderId, `card ending ${message.last4} refused`));
       return;
     }
 
     if (message.amountPence > CHARGE_LIMIT_PENCE) {
-      console.log(`[payments] DECLINED ${message.orderId}: over the charge limit`);
+      ctx.logger().info(`[payments] DECLINED ${message.orderId}: over the charge limit`);
       ctx.response(new Declined(message.orderId, "amount over the charge limit"));
       return;
     }
 
     this.transactions++;
     const transactionId: string = `txn-${String(this.transactions).padStart(5, "0")}`;
-    console.log(
-      `[payments] charged ${message.orderId}: £${(message.amountPence / 100).toFixed(2)} (${transactionId})`,
-    );
+    ctx
+      .logger()
+      .info(
+        `[payments] charged ${message.orderId}: £${(message.amountPence / 100).toFixed(2)} (${transactionId})`,
+      );
     ctx.response(new Receipt(message.orderId, transactionId, message.amountPence));
   }
 
@@ -101,16 +103,18 @@ class PaymentsActor implements Actor {
 const host: string = await advertisedHost();
 const port: number = Number(process.env.NODEAKT_PORT ?? "5100");
 
+const logger = new TextLogger({ level: "debug" });
 const system: ActorSystem = new ActorSystem("payments", {
+  logger,
   remote: { host, port },
 });
 await system.start();
 let payments: PID = await system.spawn("payments", new PaymentsActor());
 
-console.log(`[payments] up: ${payments.path().toString()}`);
+logger.info(`[payments] up: ${payments.path().toString()}`);
 
 async function shutdown(signal: string): Promise<void> {
-  console.log(`[payments] ${signal} received, stopping`);
+  logger.info(`[payments] ${signal} received, stopping`);
   await system.stop();
   process.exit(0);
 }
@@ -129,11 +133,11 @@ process.on("SIGTERM", (): void => {
  * Terminated a node death produces; the two causes are
  * indistinguishable on purpose. */
 async function maintenance(): Promise<void> {
-  console.log("[payments] maintenance: stopping the payments actor; the node stays up");
+  logger.info("[payments] maintenance: stopping the payments actor; the node stays up");
   await payments.shutdown();
   await pause(MAINTENANCE_MS);
   payments = await system.spawn("payments", new PaymentsActor());
-  console.log(`[payments] maintenance done: ${payments.path().toString()}`);
+  logger.info(`[payments] maintenance done: ${payments.path().toString()}`);
 }
 
 // The drill fires once per run, unreferenced so it never holds a

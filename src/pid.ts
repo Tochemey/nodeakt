@@ -429,6 +429,7 @@ export class PID {
     this._running = true;
     this._latestActivity = Date.now();
     this.tree().addNode(this._parent, this);
+    this._actorSystem.logger().debug("actor started", { actor: this._path.toString() });
 
     if (this.canEmit()) {
       this._actorSystem.publishEvent(new ActorStarted(this._path.toString(), Date.now()));
@@ -475,6 +476,7 @@ export class PID {
 
   private async doShutdown(): Promise<void> {
     this._stopping = true;
+    this._actorSystem.logger().debug("shutting down actor", { actor: this._path.toString() });
 
     // The receive loop may still be draining the backlog accepted before
     // the stopping flag was set, possibly parked on an async behavior or
@@ -493,26 +495,38 @@ export class PID {
     // runs its own cleanup.
     const children = this.tree().children(this);
     if (children.length > 0) {
+      this._actorSystem.logger().debug("stopping children", {
+        actor: this._path.toString(),
+        children: children.length,
+      });
       await Promise.all(children.map((child) => child.shutdown()));
+    }
+
+    // Release the actors this one watched, before it runs its own teardown, so
+    // a watchee that stops from here on does not try to notify a dying watcher.
+    const watchees = this.tree().watchees(this);
+    if (watchees.length > 0) {
+      this._actorSystem.logger().debug("releasing watched actors", {
+        actor: this._path.toString(),
+        watched: watchees.length,
+      });
+
+      for (const watchee of watchees) {
+        this.tree().removeWatcher(watchee, this);
+      }
     }
 
     await this.runPostStop();
 
-    this._mailbox.dispose();
-    this._stash?.dispose();
-    this._stash = null;
-    this._behaviorStack?.reset();
-    this._running = false;
-    this._stopping = false;
-    this._suspended = false;
-
-    // Capture the watchers before the tree forgets this actor, then
-    // deliver the death notifications.
+    // Notify the watchers while the actor can still send: a stopped actor
+    // cannot deliver its own death notice, so the Terminated goes out here,
+    // before the actor is torn down.
     const watchers = this.tree().watchers(this);
-    this.tree().deleteNode(this);
-    this._parent = null;
-
     if (watchers.length > 0) {
+      this._actorSystem.logger().debug("notifying watchers", {
+        actor: this._path.toString(),
+        watchers: watchers.length,
+      });
       const terminated = new Terminated(this._path.toString());
 
       for (const watcher of watchers) {
@@ -520,9 +534,9 @@ export class PID {
       }
     }
 
-    // A dead PID must not pin the hierarchy: drop the tree reference so a
-    // retained handle to this actor keeps nothing else alive.
-    this._tree = null;
+    // The death notice is out; tear the actor down and mark it stopped.
+    this.reset();
+    this._actorSystem.logger().debug("actor stopped", { actor: this._path.toString() });
 
     if (this.canEmit()) {
       this._actorSystem.publishEvent(new ActorStopped(this._path.toString(), Date.now()));
@@ -535,6 +549,25 @@ export class PID {
         listener();
       }
     }
+  }
+
+  /**
+   * Tears a stopped actor down: disposes its mailbox and stash, resets its
+   * behavior, unlinks it from the hierarchy, and marks it stopped. The tree
+   * reference is dropped so a retained handle to a dead actor keeps nothing
+   * else alive.
+   */
+  private reset(): void {
+    this._mailbox.dispose();
+    this._stash?.dispose();
+    this._stash = null;
+    this._behaviorStack?.reset();
+    this.tree().deleteNode(this);
+    this._parent = null;
+    this._tree = null;
+    this._running = false;
+    this._stopping = false;
+    this._suspended = false;
   }
 
   /**
@@ -551,8 +584,11 @@ export class PID {
     // A count-based budget can trip passivate again while the graceful
     // stop already begun by the first trip is still draining the backlog;
     // the stopping flag keeps that from publishing a second event.
-    if (!this._stopping && this.canEmit()) {
-      this._actorSystem.publishEvent(new ActorPassivated(this._path.toString(), Date.now()));
+    if (!this._stopping) {
+      this._actorSystem.logger().info("actor passivated", { actor: this._path.toString() });
+      if (this.canEmit()) {
+        this._actorSystem.publishEvent(new ActorPassivated(this._path.toString(), Date.now()));
+      }
     }
 
     return this.shutdown();
@@ -616,6 +652,10 @@ export class PID {
       this._suspended = false;
       this._restartCount++;
       this._latestActivity = Date.now();
+      this._actorSystem.logger().debug("actor restarted", {
+        actor: this._path.toString(),
+        restarts: this._restartCount,
+      });
 
       if (this.canEmit()) {
         this._actorSystem.publishEvent(new ActorRestarted(this._path.toString(), Date.now()));
@@ -1137,6 +1177,11 @@ export class PID {
    * alive.
    */
   watch(cid: PID): void {
+    this._actorSystem.logger().debug("watching actor", {
+      watcher: this._path.toString(),
+      watched: cid._path.toString(),
+    });
+
     const route = cid._route;
     if (route !== null) {
       route.watch(cid._path, this);
@@ -1152,6 +1197,11 @@ export class PID {
 
   /** Cancels a {@link watch} registration on `cid`. */
   unWatch(cid: PID): void {
+    this._actorSystem.logger().debug("unwatching actor", {
+      watcher: this._path.toString(),
+      watched: cid._path.toString(),
+    });
+
     const route = cid._route;
     if (route !== null) {
       route.unwatch(cid._path, this);
@@ -1558,6 +1608,11 @@ export class PID {
    */
   private handleFault(err: unknown, ctx: ReceiveContext): void {
     const directive = this._supervisor.directive(err);
+    this._actorSystem.logger().warn("actor failed", {
+      actor: this._path.toString(),
+      directive: directive ?? "suspend",
+      error: err,
+    });
 
     // The failure is transient: keep the actor's state and move on.
     if (directive === ResumeDirective) {

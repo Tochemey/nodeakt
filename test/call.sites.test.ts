@@ -97,6 +97,24 @@ describe("v8CallSites", () => {
     }
   });
 
+  it("reads a frame's line number when the runtime exposes one", () => {
+    const saved: typeof Error.captureStackTrace = Error.captureStackTrace;
+    Error.captureStackTrace = (target: object): void => {
+      (target as { stack?: unknown }).stack = [
+        { getFileName: (): string => "/from/with-line.ts", getLineNumber: (): number => 17 },
+        { getFileName: (): string => "/from/no-line.ts" },
+      ];
+    };
+
+    try {
+      const sites: ReadonlyArray<CallSiteScript> = v8CallSites(() => undefined);
+      expect(sites[0]).toEqual({ scriptName: "/from/with-line.ts", lineNumber: 17 });
+      expect(sites[1]).toEqual({ scriptName: "/from/no-line.ts", lineNumber: 0 });
+    } finally {
+      Error.captureStackTrace = saved;
+    }
+  });
+
   it("falls back through the script accessors a frame may lack", () => {
     const saved: typeof Error.captureStackTrace = Error.captureStackTrace;
     Error.captureStackTrace = (target: object): void => {

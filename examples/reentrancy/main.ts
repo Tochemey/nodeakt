@@ -33,7 +33,7 @@
  */
 
 import type { Actor, PID } from "../../src/index";
-import { ActorSystem, type ReceiveContext } from "../../src/index";
+import { ActorSystem, type ReceiveContext, TextLogger } from "../../src/index";
 
 // --- protocol -------------------------------------------------------------
 
@@ -93,12 +93,12 @@ class Aggregator implements Actor {
         // This continuation runs on the aggregator's own turn.
         this.pending--;
         if (error !== null) {
-          console.log(`  ${message.key} failed: ${error.message}`);
+          ctx.logger().info(`  ${message.key} failed: ${error.message}`);
           return;
         }
 
         const value = reply as Value;
-        console.log(`  ${value.key} = ${value.value} (${this.pending} still in flight)`);
+        ctx.logger().info(`  ${value.key} = ${value.value} (${this.pending} still in flight)`);
       });
       return;
     }
@@ -114,7 +114,8 @@ class Aggregator implements Actor {
 
 // --- driver ---------------------------------------------------------------
 
-const system = new ActorSystem("reentrancy");
+const logger = new TextLogger({ level: "debug" });
+const system = new ActorSystem("reentrancy", { logger });
 await system.start();
 
 const backend = await system.spawn("backend", new Backend());
@@ -128,7 +129,7 @@ outside.tell(aggregator, new Compute("bravo"));
 
 // Asked right after firing two requests; answered without waiting for them.
 const inFlight = (await outside.ask(aggregator, new Status(), 1_000)) as number;
-console.log(`status while computing: ${inFlight} in flight`);
+logger.info(`status while computing: ${inFlight} in flight`);
 
 // Let the backend replies land and their continuations run.
 await new Promise<void>((resolve) => {

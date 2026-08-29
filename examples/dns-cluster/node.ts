@@ -40,17 +40,17 @@
  *
  * This is the actor-agnostic store the actor system builds its distributed registry
  * and placement on; this program drives it directly to prove the layer underneath
- * end to end. The imports carry a `.js` extension because this script runs through
- * `tsx`, whose runtime resolver treats a bare `clustering.node` as a native addon.
+ * end to end. Unlike the other examples it reaches below the package entry point for
+ * the low-level cluster store, which the public API does not re-export; `tsx` runs
+ * the TypeScript sources directly.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { CLUSTER_EVENT_TOPIC, type ClusterEvent } from "../../src/clustering.events.js";
-import { ClusterNode } from "../../src/clustering.host.js";
-import { DnsDiscovery, DnsRecordType } from "../../src/discovery/dns.js";
-import { EventStream } from "../../src/eventstream.js";
-import { PutCondition, WriteKind } from "../../src/kv/discriminants.js";
-import type { Entry, ScanEntry, WriteResult } from "../../src/kv/ports.js";
+import { CLUSTER_EVENT_TOPIC, type ClusterEvent } from "../../src/clustering.events";
+import { ClusterNode } from "../../src/clustering.host";
+import { DnsDiscovery, DnsRecordType, EventStream, TextLogger } from "../../src/index";
+import { PutCondition, WriteKind } from "../../src/kv/discriminants";
+import type { Entry, ScanEntry, WriteResult } from "../../src/kv/ports";
 
 /** How often, in milliseconds, a node re-writes its heartbeat and scans the cluster. */
 const HEARTBEAT_INTERVAL_MS: number = 5_000;
@@ -87,9 +87,9 @@ function portEnv(name: string, fallback: number): number {
   return port;
 }
 
-/** Timestamped log line, prefixed with this replica so a reader can follow each one. */
+/** Logs one of this program's own lines through the shared node logger. */
 function log(message: string): void {
-  process.stdout.write(`[${host}] ${message}\n`);
+  logger.info(message);
 }
 
 // The advertised host is this replica's own resolvable name; the discovery hostname
@@ -102,6 +102,11 @@ const dataPort: number = portEnv("NODEAKT_DATA_PORT", 8080);
 const httpPort: number = portEnv("NODEAKT_HTTP_PORT", 3000);
 const memberQuorum: number = portEnv("NODEAKT_MEMBER_QUORUM", 2);
 
+// One logger for the whole node: the cluster engine and this program's own lines
+// share it, and every entry carries this node's address so a reader can tell the
+// nodes apart in a combined log.
+const logger = new TextLogger({ level: "debug", fields: { node: host } });
+
 const events: EventStream = new EventStream();
 events.subscribe((event: unknown): void => {
   log(`event ${JSON.stringify(event as ClusterEvent)}`);
@@ -111,6 +116,7 @@ log(
   `booting: resolving peers from "${discoveryHostname}", gossip :${gossipPort}, data :${dataPort}`,
 );
 const node: ClusterNode = await ClusterNode.start({
+  logger,
   discovery: new DnsDiscovery({
     hostname: discoveryHostname,
     recordType: DnsRecordType.address,

@@ -531,6 +531,7 @@ export class Remoting {
     // node dials out advertises an endpoint a peer can reach; the
     // server patches its own copy the same way for accepted sessions.
     seam = new Remoting(system, server, { ...local, port: server.address.port }, tls);
+    system.logger().info("remoting listening", { host: options.host, port: server.address.port });
     return seam;
   }
 
@@ -789,6 +790,8 @@ export class Remoting {
    * which the settlement may have just unreferenced.
    */
   private onLaneClose(node: string, lane: number): void {
+    this._system.logger().debug("peer connection closed", { peer: node, lane });
+
     // Watches a far node registered here rode sessions of its own; any
     // lane closure is a chance to release the ones whose delivering
     // session has since closed, wherever the close callback could not
@@ -1488,6 +1491,7 @@ export class Remoting {
   private onSession(session: Session): void {
     const remote: Hello = session.remote as Hello;
     const key: string = nodeKey(remote.host, remote.port);
+    this._system.logger().debug("inbound connection accepted", { peer: key });
     let set: Set<Session> | undefined = this._inboundSessions.get(key);
     if (set === undefined) {
       set = new Set<Session>();
@@ -1508,6 +1512,7 @@ export class Remoting {
     this.sweepInbound(session);
     const remote: Hello = session.remote as Hello;
     const key: string = nodeKey(remote.host, remote.port);
+    this._system.logger().debug("inbound connection closed", { peer: key });
     const set: Set<Session> | undefined = this._inboundSessions.get(key);
     if (set !== undefined) {
       set.delete(session);
@@ -2194,6 +2199,7 @@ export class Remoting {
         tls === undefined ? {} : { tls },
       );
       this._peers.set(key, peer);
+      this._system.logger().debug("connecting to peer", { peer: key });
     }
 
     return peer;

@@ -26,6 +26,7 @@ import type { Actor } from "./actor";
 import type { ActorSystem } from "./actor.system";
 import type { Behavior } from "./behavior.stack";
 import { ErrRequestTimeout } from "./errors";
+import type { Logger } from "./logger";
 import type { PID } from "./pid";
 import type { PipeTask } from "./pipe";
 import type { PipeOptions } from "./pipe.options";
@@ -134,6 +135,15 @@ export class ReceiveContext {
   /** The actor system hosting the receiving actor. */
   actorSystem(): ActorSystem {
     return this.pid().actorSystem();
+  }
+
+  /**
+   * The logger the actor system reports through, the same instance for
+   * every actor. Emit structured entries from a behavior with it, or bind
+   * stable per-actor context once via `ctx.logger().with(...)`.
+   */
+  logger(): Logger {
+    return this.actorSystem().logger();
   }
 
   /**
