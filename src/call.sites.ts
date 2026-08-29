@@ -78,9 +78,20 @@ export function captureCallSites(
   sourceMap = false,
 ): ReadonlyArray<CallSiteScript> {
   if (typeof util.getCallSites === "function") {
-    // Frame 0 of the native answer is this function itself; one extra
-    // frame is requested so dropping it still fills the count.
-    return util.getCallSites(frameCount + 1, { sourceMap }).slice(1);
+    // Frame 0 of the native answer is this function itself; one extra frame is
+    // requested so dropping it still fills the count. A runtime can report a
+    // null script or line for a native or internal frame (Deno does), so each
+    // field is normalized to the type callers rely on.
+    const frames = util.getCallSites(frameCount + 1, { sourceMap }).slice(1) as ReadonlyArray<{
+      readonly scriptName: string | null;
+      readonly lineNumber: number | null;
+    }>;
+    return frames.map(
+      (frame): CallSiteScript => ({
+        scriptName: frame.scriptName ?? "",
+        lineNumber: frame.lineNumber ?? 0,
+      }),
+    );
   }
 
   // The count is applied here, after the fallback returns, so that call
