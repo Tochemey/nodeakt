@@ -175,6 +175,17 @@ export const ErrClusterRequiresRoutableHost: Error = new Error(
 export const ErrClusteringDisabled: Error = new Error("clustering is not enabled");
 
 /**
+ * Raised when constructing an actor system with an extension whose identifier is
+ * not 2 to 255 characters long, does not start with an alphanumeric character, or
+ * contains anything other than alphanumerics, '-' or '_'.
+ */
+export const ErrInvalidExtensionId: Error = new Error("invalid extension identifier");
+
+/** Raised when constructing an actor system with two extensions reporting the
+ * same identifier; an identifier names exactly one installed service. */
+export const ErrExtensionAlreadyExists: Error = new Error("extension already exists");
+
+/**
  * Raised when a message would cross an isolate boundary but its class
  * is not in the message registry, either while encoding on the sending
  * side or while decoding on the receiving side. Register the class on

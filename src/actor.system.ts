@@ -63,6 +63,8 @@ import {
   ErrReservedName,
 } from "./errors";
 import { EventStream, type StreamSubscriber } from "./eventstream";
+import type { Extension } from "./extension/extension";
+import { ExtensionRegistry } from "./extension/registry";
 import type { Logger } from "./logger";
 import { Deadletter, PostStart, RuntimeCommand, Terminated } from "./messages";
 import { NoSender } from "./no.sender";
@@ -241,6 +243,10 @@ export class ActorSystem {
    * omitted or non-positive; always a positive duration. */
   private readonly _askTimeout: number;
 
+  /** The services installed at construction, keyed by identifier; empty
+   * when the system was created without any. */
+  private readonly _extensions: ExtensionRegistry;
+
   private _rootGuardian: PID | null = null;
   private _systemGuardian: PID | null = null;
   private _userGuardian: PID | null = null;
@@ -309,6 +315,10 @@ export class ActorSystem {
    * @throws The {@link ErrNameRequired} sentinel when the name is empty.
    * @throws The {@link ErrInvalidActorSystemName} sentinel when the name
    * violates the syntax rules.
+   * @throws The `ErrInvalidExtensionId` sentinel when an extension
+   * reports an identifier that violates the identifier syntax rules, and
+   * the `ErrExtensionAlreadyExists` sentinel when two of them report the
+   * same identifier.
    */
   constructor(name: string, options?: ActorSystemOptions) {
     if (name.length === 0) {
@@ -341,6 +351,7 @@ export class ActorSystem {
     }
 
     this._askTimeout = askTimeout;
+    this._extensions = new ExtensionRegistry(options?.extensions);
     this._address = {
       system: name,
       host: this._remoteOptions?.advertisedHost ?? this._remoteOptions?.host ?? HOST,
@@ -361,6 +372,34 @@ export class ActorSystem {
   /** Returns the logger the runtime reports through. */
   logger(): Logger {
     return this._logger;
+  }
+
+  /**
+   * Returns the extension installed under the given identifier, or
+   * `undefined` when the system carries none under it.
+   *
+   * The type parameter names the concrete service for the caller; the
+   * system stores plain {@link Extension} values, so ask for the type the
+   * identifier was installed with.
+   *
+   * ```ts
+   * const store = system.extension<EventStore>("eventStore");
+   * await store?.append("orders", event);
+   * ```
+   *
+   * An actor reaches the same instance through `ctx.extension(...)`, on
+   * both a lifecycle `Context` and a `ReceiveContext`.
+   *
+   * @param id - The identifier the extension was installed under.
+   */
+  extension<T extends Extension>(id: string): T | undefined {
+    return this._extensions.get<T>(id);
+  }
+
+  /** Returns every extension installed on the system, in the order they
+   * were given, so a caller can report what a running system depends on. */
+  extensions(): Extension[] {
+    return this._extensions.all();
   }
 
   /** The fallback deadline, in milliseconds, an `ask` or `request`
