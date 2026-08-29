@@ -30,14 +30,12 @@
  * singletons; a caller on any node reaches an actor on any other through its name.
  * When a node departs, gracefully or by a hard kill, the coordinator recreates its
  * relocatable actors on the survivors, and lookups on the survivors reach them at
- * their new home. The framework imports carry a `.js` extension, the ESM specifier
- * `tsx` resolves back to the TypeScript source it runs.
+ * their new home. The framework is imported from its package entry point; `tsx` runs
+ * the TypeScript sources directly.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { ActorSystem } from "../../src/actor.system.js";
-import { DnsDiscovery, DnsRecordType } from "../../src/discovery/dns.js";
-import { Props } from "../../src/props.js";
+import { ActorSystem, DnsDiscovery, DnsRecordType, Props, TextLogger } from "../../src/index";
 import { Greet, WhereAreYou, Worker } from "./worker.actor.js";
 
 /** Reads a required string environment variable, failing fast when it is absent. */
@@ -82,6 +80,7 @@ function log(message: string): void {
 // the advertised host is this node's own resolvable service name, and the discovery
 // hostname resolves to every node, so a peer dials each node directly after it joins.
 const system: ActorSystem = new ActorSystem("dns-actors", {
+  logger: new TextLogger({ level: "debug" }),
   remote: { host: "0.0.0.0", advertisedHost: host, port: remotingPort },
   cluster: {
     discovery: new DnsDiscovery({

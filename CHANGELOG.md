@@ -1,5 +1,13 @@
 # @tochemey/nodeakt
 
+## Unreleased
+
+### Features
+
+- **Human-readable text logger, now the default.** `TextLogger` writes one readable line per entry, `[date] [level] [logger] [marker] [thread] [caller] - msg {field=value}`, and is the new `defaultLogger`. It lifts the reserved `logger` and `marker` fields into their own columns, reports the source location of each call as `dir/file:line` (mapped back through source maps so a transpiled or bundled entry still points at the line you wrote), tags the thread (`main` or `worker-<id>`), and renders the remaining fields as `key=value` pairs in braces, with `Error` values expanded to `name: message` plus their stack. A part with no value is dropped rather than printed empty, so a bare entry reads `[date] [level] [thread] [caller] - msg` with no `[]` gaps and no trailing `{}`. It mirrors `JsonLoggerOptions` as `TextLoggerOptions` (`level`, `stream`, `fields`) and keeps disabled calls allocation-free. Construct it directly or accept it as the default.
+
+  **Behavior change.** The default logger's output format changes from one JSON line per entry to human-readable text. Anyone parsing the default logger's JSON lines should pass `{ logger: new JsonLogger() }` to restore the previous output exactly.
+
 ## 0.2.0
 
 ### Features

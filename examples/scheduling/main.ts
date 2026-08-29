@@ -39,7 +39,7 @@
  */
 
 import type { Actor, PID } from "../../src/index";
-import { ActorSystem, ErrScheduleNotFound, type ReceiveContext } from "../../src/index";
+import { ActorSystem, ErrScheduleNotFound, type ReceiveContext, TextLogger } from "../../src/index";
 
 // protocol
 
@@ -68,12 +68,12 @@ class Worker implements Actor {
 
     if (message instanceof Heartbeat) {
       this.beats++;
-      console.log(`  heartbeat ${this.beats}`);
+      ctx.logger().info(`  heartbeat ${this.beats}`);
       return;
     }
 
     if (message instanceof Reminder) {
-      console.log("  reminder fired (one-shot)");
+      ctx.logger().info("  reminder fired (one-shot)");
       return;
     }
 
@@ -104,7 +104,7 @@ class Ephemeral implements Actor {
     }
 
     if (ctx.message instanceof SelfTick) {
-      console.log("  self-tick fired (this should not happen)");
+      ctx.logger().info("  self-tick fired (this should not happen)");
     }
   }
 
@@ -117,40 +117,43 @@ function sleep(ms: number): Promise<void> {
 
 // --- driver ---------------------------------------------------------------
 
-const system: ActorSystem = new ActorSystem("scheduling");
+const logger = new TextLogger({ level: "debug" });
+const system: ActorSystem = new ActorSystem("scheduling", {
+  logger,
+});
 await system.start();
 
 const worker: PID = await system.spawn("worker", new Worker());
 
 // One-shot: a single reminder, 30ms out.
-console.log("scheduleOnce: a reminder in 30ms");
+logger.info("scheduleOnce: a reminder in 30ms");
 await system.scheduleOnce(new Reminder(), worker, 30);
 
 // Repeating: a heartbeat every 20ms, addressable as "heartbeat".
-console.log('schedule: a heartbeat every 20ms, reference "heartbeat"');
+logger.info('schedule: a heartbeat every 20ms, reference "heartbeat"');
 await system.schedule(new Heartbeat(), worker, 20, { reference: "heartbeat" });
 await sleep(70);
 
 // Pause it: nothing fires while paused.
-console.log("pauseSchedule: hold the heartbeat");
+logger.info("pauseSchedule: hold the heartbeat");
 await system.pauseSchedule("heartbeat");
 await sleep(70);
 
 // Resume it: heartbeats come back, one interval after the resume.
-console.log("resumeSchedule: let it beat again");
+logger.info("resumeSchedule: let it beat again");
 await system.resumeSchedule("heartbeat");
 await sleep(70);
 
 // Cancel it for good.
-console.log("cancelSchedule: stop the heartbeat");
+logger.info("cancelSchedule: stop the heartbeat");
 await system.cancelSchedule("heartbeat");
 await sleep(40);
 
 const beats: number = (await system.noSender().ask(worker, new Count(), 1_000)) as number;
-console.log(`total heartbeats delivered: ${beats}`);
+logger.info(`total heartbeats delivered: ${beats}`);
 
 // Ownership: a schedule created inside an actor dies with the actor.
-console.log("\nownership: an actor's own schedule is cancelled when it stops");
+logger.info("\nownership: an actor's own schedule is cancelled when it stops");
 const ephemeral: PID = await system.spawn("ephemeral", new Ephemeral());
 system.noSender().tell(ephemeral, new ArmSelfTick());
 await sleep(10);
@@ -159,10 +162,10 @@ await ephemeral.shutdown();
 // The reference is gone: stopping the actor already cancelled its schedule.
 try {
   await system.cancelSchedule("ephemeral-tick");
-  console.log("  schedule still present (unexpected)");
+  logger.info("  schedule still present (unexpected)");
 } catch (err: unknown) {
   if (err === ErrScheduleNotFound) {
-    console.log("  the ephemeral actor's schedule was cancelled with it");
+    logger.info("  the ephemeral actor's schedule was cancelled with it");
   }
 }
 

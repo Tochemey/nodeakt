@@ -37,15 +37,12 @@
  * process and a replaced pod joins as a new member while the old one is detected
  * dead and its actors relocated. NODEAKT_DISCOVERY_HOSTNAME is the headless
  * service's fully qualified name, because the discovery resolver queries DNS records
- * directly and does not walk the resolv.conf search path. The framework imports
- * carry a `.js` extension, the ESM specifier `tsx` resolves back to the TypeScript
- * source it runs.
+ * directly and does not walk the resolv.conf search path. The framework is imported
+ * from its package entry point; `tsx` runs the TypeScript sources directly.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { ActorSystem } from "../../src/actor.system.js";
-import { DnsDiscovery, DnsRecordType } from "../../src/discovery/dns.js";
-import { Props } from "../../src/props.js";
+import { ActorSystem, DnsDiscovery, DnsRecordType, Props, TextLogger } from "../../src/index";
 import { Greet, WhereAreYou, Worker } from "./worker.actor.js";
 
 /** Reads a required string environment variable, failing fast when it is absent. */
@@ -94,6 +91,7 @@ function log(message: string): void {
 // the advertised host is this pod's own IP, and the discovery hostname resolves to
 // every pod's IP, so a peer dials each pod directly after it joins.
 const system: ActorSystem = new ActorSystem("k8s-actors", {
+  logger: new TextLogger({ level: "debug" }),
   remote: { host: "0.0.0.0", advertisedHost: host, port: remotingPort },
   cluster: {
     discovery: new DnsDiscovery({

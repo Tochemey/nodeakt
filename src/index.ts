@@ -93,7 +93,7 @@ export {
   type SenderKeyFunc,
   UnboundedFairMailbox,
 } from "./fair.mailbox";
-export { defaultLogger, JsonLogger, type JsonLoggerOptions } from "./json.logger";
+export { JsonLogger, type JsonLoggerOptions } from "./json.logger";
 export type { EntryLevel, Fields, LazyFields, Level, Logger } from "./logger";
 export type { Mailbox } from "./mailbox";
 export {
@@ -165,4 +165,5 @@ export {
   Supervisor,
   type SupervisorOptions,
 } from "./supervisor";
+export { defaultLogger, TextLogger, type TextLoggerOptions } from "./text.logger";
 export { UnboundedMailbox } from "./unbounded.mailbox";

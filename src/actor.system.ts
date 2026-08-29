@@ -63,7 +63,6 @@ import {
   ErrReservedName,
 } from "./errors";
 import { EventStream, type StreamSubscriber } from "./eventstream";
-import { defaultLogger } from "./json.logger";
 import type { Logger } from "./logger";
 import { Deadletter, PostStart, RuntimeCommand, Terminated } from "./messages";
 import { NoSender } from "./no.sender";
@@ -87,11 +86,13 @@ import {
 import { RootGuardian } from "./root.guardian";
 import { createRouter } from "./router";
 import type { RouterOptions } from "./router.options";
+import { startupBanner } from "./runtime.info";
 import type { ScheduleOptions } from "./schedule.options";
 import { Scheduler } from "./scheduler";
 import type { SpawnOnOptions, SpawnOptions } from "./spawn.options";
 import { SystemGuardian } from "./system.guardian";
 import { systemPlacement } from "./system.placement";
+import { defaultLogger } from "./text.logger";
 import { UserGuardian } from "./user.guardian";
 
 /** The node endpoint of a system with remoting disabled: the loopback
@@ -154,6 +155,7 @@ export function clusterNodeOptions(
   remotingHost: string,
   remotingPort: number,
   events: EventStream,
+  logger?: Logger,
 ): ClusterNodeOptions {
   return {
     discovery: cluster.discovery,
@@ -161,6 +163,7 @@ export function clusterNodeOptions(
     gossipPort: cluster.gossipPort ?? CLUSTER_GOSSIP_PORT,
     remotingAddress: formatHostPort(remotingHost, remotingPort),
     events,
+    ...(logger !== undefined ? { logger } : {}),
     ...(cluster.dataPort !== undefined ? { dataPort: cluster.dataPort } : {}),
     ...(cluster.bootstrapTimeout !== undefined ? { bootDeadlineMs: cluster.bootstrapTimeout } : {}),
     ...(cluster.partitionCount !== undefined ? { partitionCount: cluster.partitionCount } : {}),
@@ -612,6 +615,22 @@ export class ActorSystem {
       return;
     }
 
+    this._logger.info("actor system starting", startupBanner(this._name));
+    try {
+      await this.bootstrap();
+    } catch (error: unknown) {
+      this._logger.error("actor system failed to start", { name: this._name, error });
+      throw error;
+    }
+
+    this._logger.info("actor system started", { name: this._name });
+  }
+
+  /**
+   * The boot sequence run under {@link start}'s logging: capacity detection,
+   * remoting, the guardian tree, and clustering.
+   */
+  private async bootstrap(): Promise<void> {
     // Capacity is a boot fact: detected once here, consulted by the
     // placement when the first Props spawn boots the pool, so the
     // system provisions for every core the machine gives it.
@@ -696,6 +715,7 @@ export class ActorSystem {
           this.host(),
           this.port(),
           this._events,
+          this._logger,
         ),
       );
       this._clusterNode = clusterNode;
@@ -821,7 +841,22 @@ export class ActorSystem {
     }
 
     this._stopping = true;
+    this._logger.info("actor system stopping", { name: this._name });
+    try {
+      await this.teardown();
+    } catch (error: unknown) {
+      this._logger.error("actor system failed to stop", { name: this._name, error });
+      throw error;
+    }
 
+    this._logger.info("actor system stopped", { name: this._name });
+  }
+
+  /**
+   * The teardown sequence run under {@link stop}'s logging: remoting, a graceful
+   * cluster leave, then the placement, scheduler, passivation, and guardians.
+   */
+  private async teardown(): Promise<void> {
     // Remoting closes first, while the system still serves: every
     // connection is torn down at once, so in-flight remote asks fail
     // cleanly and no listener outlives the system.
@@ -1135,11 +1170,15 @@ export class ActorSystem {
       throw ErrInvalidActorName;
     }
 
+    this._logger.debug("spawning actor", { actor: name });
+
     // Props is construction as data: the placement decides which
     // isolate builds the actor, booting the pool on first use.
     if (actor instanceof Props) {
       const placement = await this.ensurePlacement();
-      return placement.place(name, actor, options);
+      const placed: PID = await placement.place(name, actor, options);
+      this._logger.info("actor spawned", { actor: name });
+      return placed;
     }
 
     // Occupancy is registration in the tree: a suspended or stopping
@@ -1175,6 +1214,7 @@ export class ActorSystem {
     }
 
     this.schedulePassivation(pid);
+    this._logger.info("actor spawned", { actor: name });
     return pid;
   }
 

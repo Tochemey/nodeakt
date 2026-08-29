@@ -2,6 +2,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // Drops the runtime's default log lines so a suite that builds an actor
+    // system without configuring a logger does not flood the test output.
+    setupFiles: ["./test/setup.ts"],
     // A leaked handle surfaces as a named report instead of a silent
     // hang in CI.
     reporters: ["default", "hanging-process"],

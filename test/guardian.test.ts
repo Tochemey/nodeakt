@@ -25,6 +25,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Actor } from "../src/actor";
 import type { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
 import { PanicSignal, PostStart, Terminated } from "../src/messages";
 import { newPath } from "../src/path";
 import { PID } from "../src/pid";
@@ -58,6 +59,7 @@ function stubSystem(running = true): ActorSystem {
     name: () => "sys",
     isRunning: () => running,
     noSender: () => announcer,
+    logger: () => discardLogger,
   } as unknown as ActorSystem;
 }
 

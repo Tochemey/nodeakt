@@ -139,7 +139,3 @@ export class JsonLogger implements Logger {
     this._stream.write(`${line}\n`);
   }
 }
-
-/** The runtime's default logger: info level and above, one JSON line
- * per entry on standard error. */
-export const defaultLogger: Logger = new JsonLogger();

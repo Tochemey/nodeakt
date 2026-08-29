@@ -41,6 +41,7 @@ import {
 import { ClusterUnavailableError } from "../src/kv/errors";
 import type { ClusterMember, Entry, KvTransport, ScanEntry, WriteResult } from "../src/kv/ports";
 import { decodeMessage, encodeMessage, type KvMessage, MessageKind } from "../src/kv/wire";
+import type { Fields, LazyFields, Level, Logger } from "../src/logger";
 import {
   flush,
   member,
@@ -50,6 +51,54 @@ import {
   type SimTimer,
   settle,
 } from "./kv/sim";
+
+/** One captured log entry: its level, message, and resolved fields. */
+interface LogRecord {
+  readonly level: string;
+  readonly message: string;
+  readonly fields: Record<string, unknown>;
+}
+
+/** A {@link Logger} that records every entry for assertions and stays enabled. */
+class RoutingLogger implements Logger {
+  readonly entries: LogRecord[] = [];
+
+  debug(message: string, fields?: LazyFields): void {
+    this.#record("debug", message, fields);
+  }
+
+  info(message: string, fields?: LazyFields): void {
+    this.#record("info", message, fields);
+  }
+
+  warn(message: string, fields?: LazyFields): void {
+    this.#record("warn", message, fields);
+  }
+
+  error(message: string, fields?: LazyFields): void {
+    this.#record("error", message, fields);
+  }
+
+  level(): Level {
+    return "debug";
+  }
+
+  enabled(): boolean {
+    return true;
+  }
+
+  with(_fields: Fields): Logger {
+    return this;
+  }
+
+  #record(level: string, message: string, fields?: LazyFields): void {
+    this.entries.push({
+      level,
+      message,
+      fields: typeof fields === "function" ? fields() : (fields ?? {}),
+    });
+  }
+}
 
 /** A cluster node under test: its scripted membership view and the engine over it. */
 interface Node {
@@ -151,6 +200,32 @@ describe("Cluster formation and routing", () => {
       a.cluster.write({ kind: "put", key: "k", value: Uint8Array.of(9), condition: "none" }),
     );
     expect(applied.applied).toBe(true);
+  });
+
+  it("logs a routing table update when a membership event installs a table", async () => {
+    const fabric: SimFabric = new SimFabric(21);
+    const view: SimCluster = new SimCluster("solo:1", [member("solo:1", 1)]);
+    const log: RoutingLogger = new RoutingLogger();
+    const cluster: Cluster = new Cluster({
+      view,
+      transport: fabric.transport("solo:1"),
+      clock: clusterClock(fabric.clock),
+      partitionCount: 8,
+      logger: log,
+    });
+    cluster.start();
+
+    view.set([member("solo:1", 1)]);
+    await settle(fabric, flush(100));
+
+    const updated: LogRecord | undefined = log.entries.find(
+      (entry: LogRecord): boolean => entry.message === "routing table updated",
+    );
+    expect(updated?.level).toBe("info");
+    expect(typeof updated?.fields.version).toBe("string");
+    expect(updated?.fields.partitions).toBe(8);
+
+    await cluster.stop();
   });
 
   it("rejects an inbound message it cannot route", async () => {

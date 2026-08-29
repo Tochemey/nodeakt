@@ -32,7 +32,7 @@
  */
 
 import type { Actor } from "../../src/index";
-import { ActorSystem, PostStart, type ReceiveContext } from "../../src/index";
+import { ActorSystem, PostStart, type ReceiveContext, TextLogger } from "../../src/index";
 
 /** A greeting to print. Messages are plain classes; the receiver narrows
  * them with `instanceof`. */
@@ -61,7 +61,7 @@ class Greeter implements Actor {
 
     if (message instanceof Greet) {
       this.count++;
-      console.log(`Hello, ${message.name}!`);
+      ctx.logger().info(`Hello, ${message.name}!`);
       return;
     }
 
@@ -74,7 +74,13 @@ class Greeter implements Actor {
   postStop(): void {}
 }
 
-const system = new ActorSystem("hello");
+const logger = new TextLogger({
+  level: "debug",
+});
+
+const system = new ActorSystem("hello", {
+  logger: logger,
+});
 await system.start();
 
 const greeter = await system.spawn("greeter", new Greeter());
@@ -86,6 +92,6 @@ outside.tell(greeter, new Greet("Alan"));
 
 // `ask` waits for the actor to answer with `ctx.response`, up to the timeout.
 const total = (await outside.ask(greeter, new HowMany(), 1_000)) as number;
-console.log(`Greeted ${total} people.`);
+logger.info(`Greeted ${total} people.`);
 
 await system.stop();

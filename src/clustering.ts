@@ -23,6 +23,7 @@
  */
 
 import { type ClusterEvent, type ClusterEventSink, ClusterEventType } from "./clustering.events";
+import { discardLogger } from "./discard.logger";
 import { AntiEntropy } from "./kv/anti.entropy";
 import {
   DEFAULT_PARTITION_COUNT,
@@ -67,6 +68,7 @@ import {
   MSG_WRITE_REQUEST,
   messageType,
 } from "./kv/wire";
+import type { Logger } from "./logger";
 
 /** A scheduled callback that can be cancelled before it fires. @internal */
 export interface ClusterTimer {
@@ -129,6 +131,8 @@ export interface ClusterOptions {
   readonly minimumMemberQuorum?: number;
   /** Receives this node's cluster lifecycle events; omitted when nothing observes them. */
   readonly events?: ClusterEventSink;
+  /** Logger the store reports routing and recovery activity through; drops everything by default. */
+  readonly logger?: Logger;
 }
 
 /**
@@ -212,6 +216,8 @@ export class Cluster {
   #stableTimer: ClusterTimer | undefined;
   /** Receives this node's lifecycle events, or `undefined` when nothing observes them. */
   readonly #events: ClusterEventSink | undefined;
+  /** Logger for routing and recovery activity, tagged with its component. */
+  readonly #log: Logger;
   /** Member names at the last event diff, for detecting joins, departures, and coordinator change. */
   #previousMembers: readonly string[] = [];
   /** Departed members awaiting the repair of their partitions before `node-left` is reported. */
@@ -253,6 +259,7 @@ export class Cluster {
     this.#transfer = new FragmentTransfer(this.#engine, options.transport);
     this.#resolver = new KeepMajorityResolver(options.minimumMemberQuorum);
     this.#events = options.events;
+    this.#log = options.logger ?? discardLogger;
     this.#installRoutes();
   }
 
@@ -660,6 +667,11 @@ export class Cluster {
     const ring: PartitionRing = new PartitionRing(this.#ringMembers(), this.#partitionCount);
     this.#replicator.install(table, ring);
     this.#table = table;
+    this.#log.info("routing table updated", {
+      version: table.version.toString(),
+      partitions: this.#partitionCount,
+      primaried: this.#engine.heldPartitions().length,
+    });
     this.#repairTargets = this.#computeRepairTargets(table, ring);
     this.#repairCursor = 0;
     // This table reflects the departures observed up to now, so its recovery is the

@@ -24,24 +24,29 @@
 
 import * as util from "node:util";
 
-/** The one call-site field registration reads: the script that owns the
- * frame, as a path or URL.
+/** A captured frame: the script that owns it, as a path or URL, and the
+ * one-based line within that script. Registration reads `scriptName`; a
+ * source-location reporter reads both. `lineNumber` is `0` when the
+ * runtime does not surface it.
  *
  * @internal
  */
 export interface CallSiteScript {
   readonly scriptName: string;
+  readonly lineNumber: number;
 }
 
-/** The V8 stack-trace API surface the fallback relies on. Both methods
- * answer the frame's script; `getScriptNameOrSourceURL` is preferred
- * because it survives source maps, and not every runtime exposes it.
+/** The V8 stack-trace API surface the fallback relies on. The two script
+ * accessors answer the frame's script; `getScriptNameOrSourceURL` is
+ * preferred because it survives source maps, and not every runtime
+ * exposes it. `getLineNumber` answers the frame's line where present.
  *
  * @internal
  */
 interface V8CallSite {
   getFileName(): string | null | undefined;
   getScriptNameOrSourceURL?(): string | null | undefined;
+  getLineNumber?(): number | null | undefined;
 }
 
 /** `Error.captureStackTrace` and `Error.prepareStackTrace` as optional
@@ -61,13 +66,21 @@ interface StackTraceCapableError {
  * with neither gets an empty list, which callers surface as "pass the
  * module URL explicitly".
  *
+ * When `sourceMap` is set, positions are mapped back through source maps
+ * to the original source, so a script transpiled or bundled on the way in
+ * reports the line the author wrote. The fallback cannot map and reports
+ * the running position regardless.
+ *
  * @internal
  */
-export function captureCallSites(frameCount: number): ReadonlyArray<CallSiteScript> {
+export function captureCallSites(
+  frameCount: number,
+  sourceMap = false,
+): ReadonlyArray<CallSiteScript> {
   if (typeof util.getCallSites === "function") {
     // Frame 0 of the native answer is this function itself; one extra
     // frame is requested so dropping it still fills the count.
-    return util.getCallSites(frameCount + 1).slice(1);
+    return util.getCallSites(frameCount + 1, { sourceMap }).slice(1);
   }
 
   // The count is applied here, after the fallback returns, so that call
@@ -104,7 +117,7 @@ export function v8CallSites(anchor: (...args: never[]) => unknown): ReadonlyArra
     return sites.map((site: V8CallSite): CallSiteScript => {
       const script: string | null | undefined =
         site.getScriptNameOrSourceURL?.() ?? site.getFileName();
-      return { scriptName: script ?? "" };
+      return { scriptName: script ?? "", lineNumber: site.getLineNumber?.() ?? 0 };
     });
   } finally {
     errorType.prepareStackTrace = previous;

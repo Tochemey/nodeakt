@@ -38,7 +38,7 @@
  */
 
 import type { Actor, PID, ReceiveContext } from "../../src/index";
-import { ActorSystem, PostStart, Terminated } from "../../src/index";
+import { ActorSystem, PostStart, Terminated, TextLogger } from "../../src/index";
 import { advertisedHost } from "./host";
 import { ChargeCard, Declined, Receipt } from "./messages";
 
@@ -117,7 +117,7 @@ class CheckoutDesk implements Actor {
     const message: unknown = ctx.message;
 
     if (message instanceof PostStart) {
-      console.log("[checkout] desk open; resolving the payments service");
+      ctx.logger().info("[checkout] desk open; resolving the payments service");
       ctx.pipeTo(ctx.self as PID, this.locatePayments());
       // The shop takes orders whether or not payments is up. The
       // schedule is owned by this actor and dies with it; nothing here
@@ -136,33 +136,35 @@ class CheckoutDesk implements Actor {
       // Death watch: the payments actor stopping, or its whole node
       // dying, comes back as one Terminated message.
       ctx.watch(message.pid);
-      console.log(`[checkout] payments connected: ${message.pid.path().toString()}`);
+      ctx.logger().info(`[checkout] payments connected: ${message.pid.path().toString()}`);
       this.flushBacklog(ctx);
       return;
     }
 
     if (message instanceof Terminated) {
       this.payments = null;
-      console.log("[checkout] payments is GONE; queueing orders and re-resolving");
+      ctx.logger().info("[checkout] payments is GONE; queueing orders and re-resolving");
       ctx.pipeTo(ctx.self as PID, this.locatePayments());
       return;
     }
 
     if (message instanceof Receipt) {
-      console.log(`[checkout] ${message.orderId} paid (${message.transactionId})`);
+      ctx.logger().info(`[checkout] ${message.orderId} paid (${message.transactionId})`);
       return;
     }
 
     if (message instanceof Declined) {
-      console.log(`[checkout] ${message.orderId} declined: ${message.reason}`);
+      ctx.logger().info(`[checkout] ${message.orderId} declined: ${message.reason}`);
       return;
     }
 
     if (message instanceof ChargeFailed) {
       this.backlog.push(message.charge);
-      console.log(
-        `[checkout] ${message.charge.orderId} unsettled (${message.reason.message}); queued for retry`,
-      );
+      ctx
+        .logger()
+        .info(
+          `[checkout] ${message.charge.orderId} unsettled (${message.reason.message}); queued for retry`,
+        );
     }
   }
 
@@ -178,13 +180,17 @@ class CheckoutDesk implements Actor {
       template.amountPence,
       template.last4,
     );
-    console.log(
-      `[checkout] order ${charge.orderId}: ${template.item} (£${(template.amountPence / 100).toFixed(2)})`,
-    );
+    ctx
+      .logger()
+      .info(
+        `[checkout] order ${charge.orderId}: ${template.item} (£${(template.amountPence / 100).toFixed(2)})`,
+      );
 
     if (this.payments === null) {
       this.backlog.push(charge);
-      console.log(`[checkout] ${charge.orderId} queued; ${this.backlog.length} order(s) waiting`);
+      ctx
+        .logger()
+        .info(`[checkout] ${charge.orderId} queued; ${this.backlog.length} order(s) waiting`);
       return;
     }
 
@@ -209,7 +215,7 @@ class CheckoutDesk implements Actor {
       return;
     }
 
-    console.log(`[checkout] flushing ${this.backlog.length} queued order(s)`);
+    ctx.logger().info(`[checkout] flushing ${this.backlog.length} queued order(s)`);
     for (const charge of this.backlog) {
       this.charge(ctx, charge);
     }
@@ -245,18 +251,20 @@ const port: number = Number(process.env.NODEAKT_PORT ?? "5200");
 const paymentsHost: string = process.env.PAYMENTS_HOST ?? "127.0.0.1";
 const paymentsPort: number = Number(process.env.PAYMENTS_PORT ?? "5100");
 
+const logger = new TextLogger({ level: "debug" });
 const system: ActorSystem = new ActorSystem("checkout", {
+  logger,
   remote: { host, port },
 });
 await system.start();
 await system.spawn("desk", new CheckoutDesk(system, paymentsHost, paymentsPort));
 
-console.log(
+logger.info(
   `[checkout] up at ${host}:${system.port()}, paying through ${paymentsHost}:${paymentsPort}`,
 );
 
 async function shutdown(signal: string): Promise<void> {
-  console.log(`[checkout] ${signal} received, stopping`);
+  logger.info(`[checkout] ${signal} received, stopping`);
   await system.stop();
   process.exit(0);
 }

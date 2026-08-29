@@ -32,7 +32,7 @@
  */
 
 import type { Actor } from "../../src/index";
-import { ActorSystem, type ReceiveContext } from "../../src/index";
+import { ActorSystem, type ReceiveContext, TextLogger } from "../../src/index";
 
 /** A piece of work to perform once ready. */
 class Work {
@@ -50,13 +50,13 @@ class Loader implements Actor {
     const message = ctx.message;
 
     if (message instanceof Work) {
-      console.log(`  stashing "${message.job}" (not ready yet)`);
+      ctx.logger().info(`  stashing "${message.job}" (not ready yet)`);
       ctx.stash();
       return;
     }
 
     if (message instanceof Ready) {
-      console.log("initialized; switching to serving and replaying the backlog");
+      ctx.logger().info("initialized; switching to serving and replaying the backlog");
       ctx.become(this.serving);
       ctx.unstashAll(); // re-deliver the stashed Work to `serving`, in order
     }
@@ -65,14 +65,15 @@ class Loader implements Actor {
   /** Ready behavior: process work immediately. */
   private serving = (ctx: ReceiveContext): void => {
     if (ctx.message instanceof Work) {
-      console.log(`  processing "${ctx.message.job}"`);
+      ctx.logger().info(`  processing "${ctx.message.job}"`);
     }
   };
 
   postStop(): void {}
 }
 
-const system = new ActorSystem("stash");
+const logger = new TextLogger({ level: "debug" });
+const system = new ActorSystem("stash", { logger });
 await system.start();
 
 const loader = await system.spawn("loader", new Loader());

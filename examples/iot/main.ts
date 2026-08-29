@@ -36,7 +36,13 @@
  */
 
 import type { Actor, PID } from "../../src/index";
-import { ActorSystem, PostStart, type ReceiveContext, Terminated } from "../../src/index";
+import {
+  ActorSystem,
+  PostStart,
+  type ReceiveContext,
+  Terminated,
+  TextLogger,
+} from "../../src/index";
 
 // query outcomes
 
@@ -160,7 +166,7 @@ class Device implements Actor {
 
     if (message instanceof Jam) {
       this.jammed = true;
-      console.log(`${this.deviceId} jammed (stops answering reads)`);
+      ctx.logger().info(`${this.deviceId} jammed (stops answering reads)`);
     }
   }
 
@@ -322,9 +328,9 @@ class DeviceGroup implements Actor {
       for (const [deviceId, device] of this.devices) {
         if (device.path().toString() === message.actorPath) {
           this.devices.delete(deviceId);
-          console.log(
-            `group ${this.groupId} dropped ${deviceId} (${this.devices.size} still tracked)`,
-          );
+          ctx
+            .logger()
+            .info(`group ${this.groupId} dropped ${deviceId} (${this.devices.size} still tracked)`);
           break;
         }
       }
@@ -388,9 +394,9 @@ class Reporter implements Actor {
     const message = ctx.message;
 
     if (message instanceof RespondAllTemperatures) {
-      console.log(`query #${message.requestId} answered:`);
+      ctx.logger().info(`query #${message.requestId} answered:`);
       for (const [deviceId, reading] of message.readings) {
-        console.log(`  ${deviceId.padEnd(8)} ${describe(reading)}`);
+        ctx.logger().info(`  ${deviceId.padEnd(8)} ${describe(reading)}`);
       }
     }
   }
@@ -421,7 +427,10 @@ const settle = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-const system = new ActorSystem("iot");
+const logger = new TextLogger({ level: "debug" });
+const system = new ActorSystem("iot", {
+  logger,
+});
 await system.start();
 
 const manager = await system.spawn("device-manager", new DeviceManager());
@@ -436,7 +445,7 @@ const register = async (deviceId: string): Promise<PID> => {
     new TrackDevice("home", deviceId),
     1_000,
   )) as DeviceRegistered;
-  console.log(`registered ${registered.device.path().toString()}`);
+  logger.info(`registered ${registered.device.path().toString()}`);
   return registered.device;
 };
 
@@ -450,24 +459,24 @@ const again = (await outside.ask(
   new TrackDevice("home", "kitchen"),
   1_000,
 )) as DeviceRegistered;
-console.log(`registering kitchen again hands back the same actor: ${again.device === kitchen}`);
+logger.info(`registering kitchen again hands back the same actor: ${again.device === kitchen}`);
 
 const listed = (await outside.ask(manager, new ListDevices("home"), 1_000)) as DeviceList;
-console.log(`group home tracks: ${listed.deviceIds.join(", ")}`);
+logger.info(`group home tracks: ${listed.deviceIds.join(", ")}`);
 
 await outside.ask(kitchen, new RecordTemperature(21.0), 1_000);
 await outside.ask(kitchen, new RecordTemperature(22.5), 1_000); // the last reading wins
 await outside.ask(garage, new RecordTemperature(18.0), 1_000);
-console.log("recorded: kitchen 22.5°C, garage 18.0°C");
+logger.info("recorded: kitchen 22.5°C, garage 18.0°C");
 
-console.log("\n-- query 1: every sensor answers --");
+logger.info("\n-- query 1: every sensor answers --");
 outside.tell(manager, new QueryAllTemperatures("home", 1, reporter, 250));
 await settle(100); // all four answer at once, so the round finishes early
 
 await outside.ask(bedroom, new RecordTemperature(19.2), 1_000);
-console.log("recorded: bedroom 19.2°C");
+logger.info("recorded: bedroom 19.2°C");
 
-console.log("\n-- query 2: a jammed sensor and a dying one --");
+logger.info("\n-- query 2: a jammed sensor and a dying one --");
 outside.tell(garage, new Jam());
 outside.tell(attic, new Jam());
 await settle(20);
@@ -478,6 +487,6 @@ await garage.shutdown(); // mid-query: death watch turns the stop into an answer
 await settle(300); // let the deadline settle the silent attic
 
 const remaining = (await outside.ask(manager, new ListDevices("home"), 1_000)) as DeviceList;
-console.log(`group home tracks: ${remaining.deviceIds.join(", ")}`);
+logger.info(`group home tracks: ${remaining.deviceIds.join(", ")}`);
 
 await system.stop();

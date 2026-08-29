@@ -28,7 +28,7 @@ new ActorSystem(name, options?)
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `logger` | `defaultLogger` | Structured logger the runtime reports through. See [Logging](logging.md). |
+| `logger` | `defaultLogger` | Logger the runtime reports through, a human-readable `TextLogger` by default. See [Logging](logging.md). |
 | `remote` | none | Enables remoting. A `RemoteOptions` with the `host` and `port` the node binds. |
 | `askTimeout` | `5000` | Fallback deadline in milliseconds for an `ask` or `request` whose own timeout is omitted or non-positive, so no reply-bearing call is ever unbounded. A positive integer. |
 

@@ -33,13 +33,14 @@
  */
 
 import { availableParallelism } from "node:os";
-import { ActorSystem, Props } from "../../src/index";
+import { ActorSystem, Props, TextLogger } from "../../src/index";
 import { CountPrimes, type PrimeCount, PrimeCounter } from "./primes.actor";
 
 const cores = availableParallelism();
 const upTo = 1_000_000;
 
-const system = new ActorSystem("multicore");
+const logger = new TextLogger({ level: "debug" });
+const system = new ActorSystem("multicore", { logger });
 await system.start();
 
 // Create one counter per core. Because we spawn with Props (data, not a
@@ -48,7 +49,7 @@ await system.start();
 const counters = await Promise.all(
   Array.from({ length: cores }, (_, i) => system.spawn(`counter-${i}`, Props.create(PrimeCounter))),
 );
-console.log(`spawned ${counters.length} counters, each on its own core`);
+logger.info(`spawned ${counters.length} counters, each on its own core`);
 
 const me = system.noSender();
 
@@ -63,7 +64,7 @@ const parallelMs = Date.now() - parallelStart;
 
 for (const [i, answer] of answers.entries()) {
   const result = answer as PrimeCount;
-  console.log(`  counter-${i}: ${result.count} primes below ${result.upTo}`);
+  logger.info(`  counter-${i}: ${result.count} primes below ${result.upTo}`);
 }
 
 // The same work, but one ask at a time so nothing overlaps: the baseline
@@ -74,8 +75,8 @@ for (const counter of counters) {
 }
 const serialMs = Date.now() - serialStart;
 
-console.log(`parallel (all ${cores} cores at once): ${parallelMs} ms`);
-console.log(`serial   (one core at a time):        ${serialMs} ms`);
-console.log(`speedup: ${(serialMs / parallelMs).toFixed(1)}x`);
+logger.info(`parallel (all ${cores} cores at once): ${parallelMs} ms`);
+logger.info(`serial   (one core at a time):        ${serialMs} ms`);
+logger.info(`speedup: ${(serialMs / parallelMs).toFixed(1)}x`);
 
 await system.stop();

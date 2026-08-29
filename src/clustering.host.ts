@@ -27,11 +27,13 @@ import { CLUSTER_EVENT_TOPIC, type ClusterEvent, type ClusterEventSink } from ".
 import { appendRemotingAddress, encodeNodeMetadata } from "./clustering.metadata";
 import { KvNetTransport } from "./clustering.transport";
 import { SwimClusterView } from "./clustering.view";
+import { discardLogger } from "./discard.logger";
 import { type BootstrapOptions, type BootstrapResult, bootstrap } from "./discovery/bootstrap";
 import type { DiscoveryProvider } from "./discovery/provider";
 import type { EventStream } from "./eventstream";
 import { LEAVE_DRAIN_TIMEOUT_MS } from "./kv/constants";
 import type { ClusterMember, Entry, ScanEntry, WriteOp, WriteResult } from "./kv/ports";
+import type { Logger } from "./logger";
 import { wallClock } from "./membership/clock";
 import { createRandom } from "./membership/random";
 import { Swim } from "./membership/swim";
@@ -94,6 +96,8 @@ export interface ClusterNodeOptions {
   readonly startedAt?: number;
   /** Event stream this node's cluster lifecycle events publish onto, under {@link CLUSTER_EVENT_TOPIC}. */
   readonly events?: EventStream;
+  /** Logger the cluster reports through; drops everything by default. Membership and the store tag their entries under their own component. */
+  readonly logger?: Logger;
 }
 
 /**
@@ -207,6 +211,7 @@ export class ClusterNode {
         clock: wallClock,
         random: createRandom(),
         onEvent: (): void => view.publish(),
+        logger: (options.logger ?? discardLogger).with({ logger: "membership" }),
       });
 
       const cluster: Cluster = new Cluster(clusterOptions(view, transport, clock, options));
@@ -394,6 +399,7 @@ function clusterOptions(
     view,
     transport,
     clock,
+    logger: (options.logger ?? discardLogger).with({ logger: "kv" }),
     ...(options.partitionCount !== undefined ? { partitionCount: options.partitionCount } : {}),
     ...(options.replicaCount !== undefined ? { replicaCount: options.replicaCount } : {}),
     ...(options.writeQuorum !== undefined ? { writeQuorum: options.writeQuorum } : {}),
