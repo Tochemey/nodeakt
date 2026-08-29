@@ -8,6 +8,8 @@
 
   **Behavior change.** The default logger's output format changes from one JSON line per entry to human-readable text. Anyone parsing the default logger's JSON lines should pass `{ logger: new JsonLogger() }` to restore the previous output exactly.
 
+- **Extensions.** Install the services actors share, an event store, a metrics recorder, a tracing client, on the system with `{ extensions: [...] }` instead of threading each one through every actor. An extension implements one method, `id(): string`; read it back with `system.extension<EventStore>("eventStore")`, or with `ctx.extension(id)` from any actor context.
+
 ## 0.2.0
 
 ### Features
