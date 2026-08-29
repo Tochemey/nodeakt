@@ -87,9 +87,9 @@ function portEnv(name: string, fallback: number): number {
   return port;
 }
 
-/** Timestamped log line, prefixed with this replica so a reader can follow each one. */
+/** Logs one of this program's own lines through the shared node logger. */
 function log(message: string): void {
-  process.stdout.write(`[${host}] ${message}\n`);
+  logger.info(message);
 }
 
 // The advertised host is this replica's own resolvable name; the discovery hostname
@@ -102,6 +102,11 @@ const dataPort: number = portEnv("NODEAKT_DATA_PORT", 8080);
 const httpPort: number = portEnv("NODEAKT_HTTP_PORT", 3000);
 const memberQuorum: number = portEnv("NODEAKT_MEMBER_QUORUM", 2);
 
+// One logger for the whole node: the cluster engine and this program's own lines
+// share it, and every entry carries this node's address so a reader can tell the
+// nodes apart in a combined log.
+const logger = new TextLogger({ level: "debug", fields: { node: host } });
+
 const events: EventStream = new EventStream();
 events.subscribe((event: unknown): void => {
   log(`event ${JSON.stringify(event as ClusterEvent)}`);
@@ -111,7 +116,7 @@ log(
   `booting: resolving peers from "${discoveryHostname}", gossip :${gossipPort}, data :${dataPort}`,
 );
 const node: ClusterNode = await ClusterNode.start({
-  logger: new TextLogger({ level: "debug" }),
+  logger,
   discovery: new DnsDiscovery({
     hostname: discoveryHostname,
     recordType: DnsRecordType.address,

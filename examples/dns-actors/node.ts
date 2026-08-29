@@ -71,16 +71,21 @@ const dataPort: number = portEnv("NODEAKT_DATA_PORT", 8080);
 const httpPort: number = portEnv("NODEAKT_HTTP_PORT", 3000);
 const memberQuorum: number = portEnv("NODEAKT_MEMBER_QUORUM", 2);
 
-/** Timestamped log line, prefixed with this node so a reader can follow each one. */
+// One logger for the whole node: the actor system and this program's own lines
+// share it, and every entry carries this node's address so a reader can tell the
+// nodes apart in a combined log.
+const logger = new TextLogger({ level: "debug", fields: { node: host } });
+
+/** Logs one of this program's own lines through the shared node logger. */
 function log(message: string): void {
-  process.stdout.write(`[${host}] ${message}\n`);
+  logger.info(message);
 }
 
 // The bind host is the wildcard so the container accepts connections on any interface;
 // the advertised host is this node's own resolvable service name, and the discovery
 // hostname resolves to every node, so a peer dials each node directly after it joins.
 const system: ActorSystem = new ActorSystem("dns-actors", {
-  logger: new TextLogger({ level: "debug" }),
+  logger,
   remote: { host: "0.0.0.0", advertisedHost: host, port: remotingPort },
   cluster: {
     discovery: new DnsDiscovery({
