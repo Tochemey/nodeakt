@@ -97,7 +97,7 @@ The same program, with expected output, is [`examples/helloworld`](https://githu
 
 The reference covers NodeAkt's public API. Read it in this order:
 
-1. [Actor system](../actor-system/index.md): create the runtime, start it, spawn top-level actors, log, and observe dead letters.
+1. [Actor system](../actor-system/index.md): create the runtime, start it, spawn top-level actors, log, observe dead letters, and install the services actors share.
 2. [Actors](../actor/index.md): implement an actor, send messages, switch behavior, supervise children, and choose a mailbox.
 3. [Multi-core](../multi-core/index.md): place actors on other isolates with `Props` so CPU-bound work uses every core.
 

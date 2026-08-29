@@ -23,6 +23,8 @@ new ActorSystem(name, options?)
 | --- | --- |
 | `ErrNameRequired` | `name` is empty. |
 | `ErrInvalidActorSystemName` | The name violates the syntax above. |
+| `ErrInvalidExtensionId` | An [extension](extensions.md) reports an identifier that violates the identifier syntax. |
+| `ErrExtensionAlreadyExists` | Two extensions report the same identifier. |
 
 `ActorSystemOptions`:
 
@@ -31,6 +33,7 @@ new ActorSystem(name, options?)
 | `logger` | `defaultLogger` | Logger the runtime reports through, a human-readable `TextLogger` by default. See [Logging](logging.md). |
 | `remote` | none | Enables remoting. A `RemoteOptions` with the `host` and `port` the node binds. |
 | `askTimeout` | `5000` | Fallback deadline in milliseconds for an `ask` or `request` whose own timeout is omitted or non-positive, so no reply-bearing call is ever unbounded. A positive integer. |
+| `extensions` | none | Shared services every actor can reach by name from its context, each an `Extension`. See [Extensions](extensions.md). |
 
 Without `remote`, the system is single-node: its node address is `127.0.0.1:0`, paths look like `nodeakt://orders@127.0.0.1:0/greeter`, and the network transport never loads. Pass `remote` to bind a listener and advertise a reachable endpoint:
 
@@ -100,10 +103,13 @@ Actors deeper in the hierarchy are reached through their parent (`ctx.child(name
 | --- | --- |
 | `name()` | The system name passed to the constructor. |
 | `logger()` | The logger configured on the system. |
+| `extension(id)` | The [extension](extensions.md) installed under `id`, or `undefined`. |
+| `extensions()` | Every extension installed on the system. |
 
 ## Next
 
 - [Logging](logging.md)
 - [Events and dead letters](events.md)
+- [Extensions](extensions.md)
 - [Actors](../actor/index.md)
 - [Multi-core](../multi-core/index.md)

@@ -26,6 +26,7 @@ import type { Actor } from "./actor";
 import type { ActorSystem } from "./actor.system";
 import type { Behavior } from "./behavior.stack";
 import { ErrRequestTimeout } from "./errors";
+import type { Extension } from "./extension/extension";
 import type { Logger } from "./logger";
 import type { PID } from "./pid";
 import type { PipeTask } from "./pipe";
@@ -144,6 +145,32 @@ export class ReceiveContext {
    */
   logger(): Logger {
     return this.actorSystem().logger();
+  }
+
+  /**
+   * The extension installed on the actor system under the given
+   * identifier, or `undefined` when none holds it. Reach a shared service
+   * such as an event store or a metrics recorder from a behavior without
+   * threading it through the actor:
+   *
+   * ```ts
+   * receive(ctx: ReceiveContext): void {
+   *   ctx.extension<EventStore>("eventStore")?.append("orders", ctx.message);
+   * }
+   * ```
+   *
+   * An extension is a per-process instance, so an actor placed on a
+   * worker isolate sees only what that isolate's system was created with.
+   *
+   * @param id - The identifier the extension was installed under.
+   */
+  extension<T extends Extension>(id: string): T | undefined {
+    return this.actorSystem().extension<T>(id);
+  }
+
+  /** Every extension installed on the actor system. */
+  extensions(): Extension[] {
+    return this.actorSystem().extensions();
   }
 
   /**

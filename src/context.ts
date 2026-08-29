@@ -23,6 +23,7 @@
  */
 
 import type { ActorSystem } from "./actor.system";
+import type { Extension } from "./extension/extension";
 import type { Logger } from "./logger";
 
 /**
@@ -67,5 +68,30 @@ export class Context {
   /** Returns the actor system's logger. */
   logger(): Logger {
     return this._actorSystem.logger();
+  }
+
+  /**
+   * Returns the extension installed on the actor system under the given
+   * identifier, or `undefined` when none holds it.
+   *
+   * This is how an actor reaches a shared service while it acquires its
+   * resources in `preStart`, or releases them in `postStop`, without the
+   * service being threaded through its constructor.
+   *
+   * ```ts
+   * async preStart(ctx: Context): Promise<void> {
+   *   this.store = ctx.extension<EventStore>("eventStore");
+   * }
+   * ```
+   *
+   * @param id - The identifier the extension was installed under.
+   */
+  extension<T extends Extension>(id: string): T | undefined {
+    return this._actorSystem.extension<T>(id);
+  }
+
+  /** Returns every extension installed on the actor system. */
+  extensions(): Extension[] {
+    return this._actorSystem.extensions();
   }
 }

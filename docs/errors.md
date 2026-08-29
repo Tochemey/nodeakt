@@ -20,9 +20,11 @@ if (err === ErrDead || err === ErrMailboxFull) {
 | `ErrActorAlreadyExists` | [`system.spawn`](actor-system/index.md) with a top-level name that is still held, including by a suspended or currently stopping actor. |
 | `ErrActorSystemNotStarted` | `spawn`, `noSender`, `subscribe`, `unsubscribe`, or any [scheduling call](actor/scheduling.md) on a [system](actor-system/index.md) that is not running. |
 | `ErrDead` | The actor is not running: [`tell` / `ask`](actor/messaging.md) to a stopped target, registering a [schedule](actor/scheduling.md) whose target has stopped, or `spawnChild`, `ctx.child`, `ctx.stop`, `restart` through a stopped actor. Also the dead-letter reason for a send through a [router](actor/routers.md) with no live routee. |
+| `ErrExtensionAlreadyExists` | Two [extensions](actor-system/extensions.md) on one system report the same identifier. |
 | `ErrFanOutAsk` | An `ask` or `request` through a fan-out [router](actor/routers.md); a broadcast has no single answer. |
 | `ErrInvalidActorName` | An [actor name](actor-system/index.md) is empty, longer than 255 characters, or syntactically invalid. |
 | `ErrInvalidActorSystemName` | A [system name](actor-system/index.md) violates the system-name syntax (stricter than actor names). |
+| `ErrInvalidExtensionId` | An [extension](actor-system/extensions.md) reports an identifier that is not 2 to 255 characters or violates the identifier syntax. |
 | `ErrInvalidInterval` | [`schedule` / `scheduleOnce`](actor/scheduling.md) with a delay or interval that is not a positive number. |
 | `ErrInvalidPoolSize` | [`spawnRouter`](actor/routers.md) with a pool size that is not a positive integer, or an `AdjustRouterPoolSize` whose size is not a non-negative integer. |
 | `ErrInvalidReentrancyMode` | An unknown [reentrancy](actor/reentrancy.md) mode at spawn or on request options. |

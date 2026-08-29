@@ -61,9 +61,11 @@ export {
   ErrClusterRequiresRemote,
   ErrClusterRequiresRoutableHost,
   ErrDead,
+  ErrExtensionAlreadyExists,
   ErrFanOutAsk,
   ErrInvalidActorName,
   ErrInvalidActorSystemName,
+  ErrInvalidExtensionId,
   ErrInvalidInterval,
   ErrInvalidPoolSize,
   ErrInvalidReentrancyMode,
@@ -89,6 +91,7 @@ export {
   ErrUnhandled,
 } from "./errors";
 export { EventStream, type StreamSubscriber } from "./eventstream";
+export type { Extension } from "./extension/extension";
 export {
   type SenderKeyFunc,
   UnboundedFairMailbox,

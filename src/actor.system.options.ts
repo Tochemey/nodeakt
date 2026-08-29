@@ -23,6 +23,7 @@
  */
 
 import type { ClusterOptions } from "./cluster.options";
+import type { Extension } from "./extension/extension";
 import type { Logger } from "./logger";
 import type { RemoteOptions } from "./remote.options";
 
@@ -52,4 +53,17 @@ export interface ActorSystemOptions {
    * keeps it; this is only the fallback.
    */
   askTimeout?: number;
+
+  /**
+   * The extensions installed on the system: named services every actor
+   * reaches from its context, such as an event store or a metrics
+   * recorder. Absent by default, in which case the system carries none
+   * and every lookup answers `undefined`.
+   *
+   * Each extension reports an identifier that is 2 to 255 characters
+   * long, starts with an alphanumeric character, and contains only
+   * alphanumerics, `-` or `_`. An identifier that violates those rules,
+   * or one claimed twice, fails the system's construction.
+   */
+  extensions?: readonly Extension[];
 }
