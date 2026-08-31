@@ -6,7 +6,6 @@
 <p align="center">
   <a href="https://github.com/Tochemey/nodeakt/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Tochemey/nodeakt/ci.yml?branch=main" alt="build"/></a>
   <a href="https://www.npmjs.com/package/@tochemey/nodeakt"><img src="https://img.shields.io/npm/v/%40tochemey%2Fnodeakt?logo=npm&logoColor=white&color=brightgreen" alt="npm version"/></a>
-  <a href="https://www.npmjs.com/package/@tochemey/nodeakt"><img src="https://img.shields.io/npm/dt/%40tochemey%2Fnodeakt?logo=npm&logoColor=white&color=brightgreen" alt="npm total downloads"/></a>
   <a href="https://codecov.io/gh/Tochemey/nodeakt"><img src="https://codecov.io/gh/Tochemey/nodeakt/graph/badge.svg" alt="codecov"/></a>
   <a href="https://biomejs.dev"><img src="https://img.shields.io/badge/code%20style-biome-60a5fa?logo=biome&logoColor=white" alt="code style: biome"/></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="license"/></a>
