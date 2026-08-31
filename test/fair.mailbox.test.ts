@@ -40,7 +40,9 @@ const noop: Actor = {
 };
 
 function senderPid(name: string): PID {
-  return new PID(noop, newPath(name, "sys", "127.0.0.1", 0), {} as ActorSystem);
+  return new PID(noop, newPath(name, "sys", "127.0.0.1", 0), {
+    metricRegistry: () => null,
+  } as unknown as ActorSystem);
 }
 
 describe("UnboundedFairMailbox", () => {

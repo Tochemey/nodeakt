@@ -24,6 +24,8 @@
 
 import type { MessagePort } from "node:worker_threads";
 import type { WireError, WireMessage } from "./envelope";
+import type { MetricsOptions } from "./observability/metric.options";
+import type { IsolateMetrics } from "./observability/metric.snapshot";
 import type { SerializedPassivation } from "./passivation";
 import type { Reentrancy } from "./reentrancy";
 
@@ -85,6 +87,11 @@ export interface WorkerBootData {
    * isolate's registry, which is how every isolate ends up with the
    * same registrations. */
   readonly setup: string | null;
+
+  /** The metrics configuration to enable on the facade, or null when the
+   * system runs without metrics, so every isolate counts its own actors
+   * for the machine-wide snapshot. */
+  readonly metrics: MetricsOptions | null;
 }
 
 /** The control-message kinds the main isolate sends a worker; the one
@@ -99,6 +106,7 @@ export const CONTROL_CLAIMED: "claimed" = "claimed";
 export const CONTROL_PLACED: "placed" = "placed";
 export const CONTROL_RESTART: "restart" = "restart";
 export const CONTROL_STOP_ACTOR: "stop-actor" = "stop-actor";
+export const CONTROL_METRICS: "metrics" = "metrics";
 export const CONTROL_STOP: "stop" = "stop";
 
 /** The worker-message kinds a worker sends the main isolate back. */
@@ -110,6 +118,7 @@ export const WORKER_PLACE: "place" = "place";
 export const WORKER_ACTOR_STOPPED: "actor-stopped" = "actor-stopped";
 export const WORKER_CONTROLLED: "controlled" = "controlled";
 export const WORKER_DEADLETTER: "deadletter" = "deadletter";
+export const WORKER_METRICS: "metrics-reply" = "metrics-reply";
 export const WORKER_STOPPED: "stopped" = "stopped";
 
 /**
@@ -150,6 +159,7 @@ export type ControlMessage =
     }
   | { readonly kind: typeof CONTROL_RESTART; readonly seq: number; readonly name: string }
   | { readonly kind: typeof CONTROL_STOP_ACTOR; readonly seq: number; readonly name: string }
+  | { readonly kind: typeof CONTROL_METRICS; readonly seq: number }
   | { readonly kind: typeof CONTROL_STOP };
 
 /**
@@ -189,5 +199,10 @@ export type WorkerMessage =
       readonly receiver: string;
       readonly message: WireMessage;
       readonly reason: string;
+    }
+  | {
+      readonly kind: typeof WORKER_METRICS;
+      readonly seq: number;
+      readonly metrics: IsolateMetrics | null;
     }
   | { readonly kind: typeof WORKER_STOPPED };

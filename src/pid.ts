@@ -59,6 +59,8 @@ import {
   RuntimeCommand,
   Terminated,
 } from "./messages";
+import type { MetricRegistry } from "./metric.registry";
+import type { ActorMetrics } from "./observability/metric.snapshot";
 import {
   defaultPassivationStrategy,
   MessagesCountBasedStrategy,
@@ -189,6 +191,19 @@ export class PID {
   private readonly _path: Path;
   private readonly _actorSystem: ActorSystem;
 
+  /** This isolate's metrics, cached from the system at construction, or
+   * null when metrics are off; read on the message hot path. */
+  private readonly _metrics: MetricRegistry | null;
+
+  /** Whether messages are timed into the metrics histogram; mirrors the
+   * registry's flag, false when metrics are off, so the hot-path guard is
+   * a stable branch. */
+  private readonly _timing: boolean;
+
+  /** The clock at the start of the message being processed, read only
+   * when timing is on. */
+  private _receiveStart = 0;
+
   /** Created on first behavior switch; most actors never need one. */
   private _behaviorStack: BehaviorStack | null = null;
 
@@ -276,6 +291,8 @@ export class PID {
     this._actor = actor;
     this._path = path;
     this._actorSystem = actorSystem;
+    this._metrics = actorSystem.metricRegistry();
+    this._timing = this._metrics?.timing ?? false;
     this._mailbox = options?.mailbox ?? new UnboundedMailbox();
     this._supervisor = options?.supervisor ?? defaultSupervisor;
     this._passivationStrategy = options?.passivationStrategy ?? defaultPassivationStrategy;
@@ -401,9 +418,38 @@ export class PID {
     return this._stash?.len() ?? 0;
   }
 
+  /** Returns the current depth of the actor's mailbox. Runtime plumbing
+   * for the metrics gauges; developers read it through {@link metrics}.
+   *
+   * @internal
+   */
+  mailboxSize(): number {
+    return this._mailbox.len();
+  }
+
   /** Returns the passivation strategy configured for this actor. */
   passivationStrategy(): PassivationStrategy {
     return this._passivationStrategy;
+  }
+
+  /**
+   * Returns a snapshot of this actor's own metrics, read on demand from
+   * the fields it already keeps: its processed and restart counts, its
+   * mailbox and stash depth, its child count, when it was last active,
+   * and whether it is suspended. It is introspection for one actor, never
+   * a fleet time series, and does not require the system's metrics option.
+   */
+  metrics(): ActorMetrics {
+    return {
+      path: this._path.toString(),
+      processedCount: this._processedCount,
+      restartCount: this._restartCount,
+      mailboxSize: this.mailboxSize(),
+      stashSize: this.stashSize(),
+      childrenCount: this.children().length,
+      lastActivity: this._latestActivity,
+      suspended: this._suspended,
+    };
   }
 
   /**
@@ -1483,6 +1529,11 @@ export class PID {
       // Panicking message is a failing child's supervision request.
       if (ctx.message instanceof RuntimeCommand) {
         this._processedCount++;
+        const metrics = this._metrics;
+        if (metrics !== null) {
+          metrics.processed++;
+        }
+
         const msg = ctx.message;
 
         if (msg instanceof RequestReply) {
@@ -1512,6 +1563,10 @@ export class PID {
         }
 
         continue;
+      }
+
+      if (this._timing) {
+        this._receiveStart = performance.now();
       }
 
       let result: unknown;
@@ -1584,6 +1639,13 @@ export class PID {
    */
   private postReceive(): boolean {
     this._processedCount++;
+    const metrics = this._metrics;
+    if (metrics !== null) {
+      metrics.processed++;
+      if (this._timing) {
+        metrics.recordDuration(performance.now() - this._receiveStart);
+      }
+    }
 
     // A fault may have suspended the actor: halt the loop until it is
     // restarted or reinstated, leaving queued messages in the mailbox.

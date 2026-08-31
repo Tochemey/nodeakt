@@ -23,6 +23,7 @@
  */
 
 import type { IsolateRoute } from "./actor.ref";
+import type { IsolateMetrics } from "./observability/metric.snapshot";
 import type { PID } from "./pid";
 import type { Props } from "./props";
 import type { SpawnOptions } from "./spawn.options";
@@ -83,6 +84,15 @@ export interface Placement {
    * succeeds idempotently. Pool-owning implementation only, like
    * {@link respawn}. */
   stopActor(name: string): Promise<void>;
+
+  /**
+   * Gathers each worker isolate's raw metrics for a machine-wide
+   * snapshot, one entry per live worker; a worker that drops out of the
+   * collection contributes `null`. The pool-owning implementation fans
+   * the request out over the control plane; a worker facade, which sees
+   * only its own isolate, answers with nothing.
+   */
+  collectMetrics(): Promise<(IsolateMetrics | null)[]>;
 
   /** Tears the placement down; only the implementation that owns the
    * pool does anything here. */

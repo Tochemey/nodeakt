@@ -29,7 +29,7 @@ import { newPath } from "../src/path";
 import { PID } from "../src/pid";
 import { PidTree } from "../src/pid.tree";
 
-const system = {} as ActorSystem;
+const system = { metricRegistry: () => null } as unknown as ActorSystem;
 
 const noop: Actor = {
   preStart(): void {},

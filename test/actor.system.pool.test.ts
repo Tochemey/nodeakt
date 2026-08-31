@@ -412,4 +412,28 @@ describe("ActorSystem multi-core", () => {
 
     await system.stop();
   }, 60_000);
+
+  it("merges metrics across worker isolates", async () => {
+    vi.stubEnv("NODEAKT_PARALLELISM", "2");
+    const system = new ActorSystem("metered", {
+      logger: discardLogger,
+      metrics: { enabled: true },
+    });
+    await system.start();
+
+    // The Props actor is placed on the worker isolate; asking it proves it
+    // is live there and has processed a message its own registry counted.
+    const placed = await system.spawn("counter", Props.create(Registered, "w"));
+    await expect(system.noSender().ask(placed, "ping", 10_000)).resolves.toBe("w:ping");
+
+    const snapshot = await system.collectMetrics();
+    // Main plus the one worker contribute; the worker's actor shows up in
+    // the machine-wide counts even though it lives on another isolate.
+    expect(snapshot.isolates).toBe(2);
+    expect(snapshot.actors.active).toBeGreaterThanOrEqual(1);
+    expect(snapshot.actors.startedTotal).toBeGreaterThanOrEqual(1);
+    expect(snapshot.messages.processedTotal).toBeGreaterThanOrEqual(1);
+
+    await system.stop();
+  }, 60_000);
 });

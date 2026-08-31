@@ -67,7 +67,16 @@ import type { Extension } from "./extension/extension";
 import { ExtensionRegistry } from "./extension/registry";
 import type { Logger } from "./logger";
 import { Deadletter, PostStart, RuntimeCommand, Terminated } from "./messages";
+import { MetricRegistry } from "./metric.registry";
 import { NoSender } from "./no.sender";
+import type { MetricsOptions } from "./observability/metric.options";
+import {
+  emptyMetricsSnapshot,
+  type IsolateGauges,
+  type IsolateMetrics,
+  type MetricsSnapshot,
+  mergeMetrics,
+} from "./observability/metric.snapshot";
 import { PassivationManager } from "./passivation.manager";
 import { isValidActorName, newPathAt, type Path, type PathAddress, parsePath } from "./path";
 import { PID } from "./pid";
@@ -239,6 +248,10 @@ export class ActorSystem {
   private readonly _logger: Logger;
   private readonly _events: EventStream;
 
+  /** The isolate's metrics, or null when metrics were not enabled; PIDs
+   * cache this reference and read it on the message hot path. */
+  private readonly _metricsRegistry: MetricRegistry | null;
+
   /** The fallback deadline for an ask or request whose own timeout is
    * omitted or non-positive; always a positive duration. */
   private readonly _askTimeout: number;
@@ -362,6 +375,10 @@ export class ActorSystem {
     this._events = new EventStream((err) => {
       this._logger.error("event subscriber failed", { error: err });
     });
+    this._metricsRegistry =
+      options?.metrics?.enabled === true
+        ? new MetricRegistry(this._events, options.metrics.processingDuration === true)
+        : null;
   }
 
   /** Returns the actor system name. */
@@ -635,6 +652,102 @@ export class ActorSystem {
    */
   deadletterPid(): PID | null {
     return this._deadletter;
+  }
+
+  /**
+   * Returns this isolate's metrics registry, or null when metrics were
+   * not enabled. A PID caches the reference at construction and reads it
+   * on the message hot path. Runtime plumbing for the message loop.
+   *
+   * @internal
+   */
+  metricRegistry(): MetricRegistry | null {
+    return this._metricsRegistry;
+  }
+
+  /**
+   * Returns the metrics configuration to enable on a worker isolate, or
+   * null when metrics are off, so every isolate counts its own actors for
+   * the machine-wide snapshot. Runtime plumbing for the worker boot.
+   *
+   * @internal
+   */
+  metricsConfig(): MetricsOptions | null {
+    const registry = this._metricsRegistry;
+    return registry === null ? null : { enabled: true, processingDuration: registry.timing };
+  }
+
+  /**
+   * Returns this isolate's raw metrics contribution, or null when metrics
+   * are off: the registry's counters plus the live-actor gauges this
+   * isolate reads from its own tree. The main isolate merges these across
+   * every isolate; a worker answers a metrics request with them.
+   *
+   * @internal
+   */
+  isolateMetrics(): IsolateMetrics | null {
+    const registry = this._metricsRegistry;
+    return registry === null ? null : registry.isolateMetrics(this.isolateGauges());
+  }
+
+  /**
+   * Returns a snapshot of the runtime's own metrics: actor counts,
+   * message throughput, mailbox depth, and dead letters. The snapshot is
+   * plain readonly data an adapter maps onto its backend from outside the
+   * runtime, which takes on no metrics dependency of its own.
+   *
+   * A system that never enabled metrics answers a valid, zeroed snapshot,
+   * so an adapter can be wired unconditionally.
+   *
+   * @throws The {@link ErrActorSystemNotStarted} sentinel when the system
+   * is not running.
+   */
+  async collectMetrics(): Promise<MetricsSnapshot> {
+    if (!this.isRunning()) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    const mine = this.isolateMetrics();
+    if (mine === null) {
+      return emptyMetricsSnapshot(this._name);
+    }
+
+    const placement = this._placement;
+    const workers = placement === null ? [] : await placement.collectMetrics();
+    return mergeMetrics(this._name, mine, workers);
+  }
+
+  /**
+   * Reads the live-actor gauges for a metrics snapshot: how many user
+   * actors are alive, how many of those are suspended, and their mailbox
+   * depth. A suspended actor is alive and is counted, so its retained
+   * backlog still shows up in the mailbox depth.
+   *
+   * @internal
+   */
+  private isolateGauges(): IsolateGauges {
+    let active = 0;
+    let suspended = 0;
+    let mailboxTotalDepth = 0;
+    let mailboxMaxDepth = 0;
+
+    // collectMetrics only reaches here on a running system, so the user
+    // guardian is set; every user actor is a descendant of it.
+    const guardian = this._userGuardian as PID;
+    for (const pid of this._tree.descendants(guardian)) {
+      active++;
+      if (pid.isSuspended()) {
+        suspended++;
+      }
+
+      const depth = pid.mailboxSize();
+      mailboxTotalDepth += depth;
+      if (depth > mailboxMaxDepth) {
+        mailboxMaxDepth = depth;
+      }
+    }
+
+    return { active, suspended, mailboxTotalDepth, mailboxMaxDepth };
   }
 
   /** Reports whether the system has been started and is not stopping. */

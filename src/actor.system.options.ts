@@ -25,6 +25,7 @@
 import type { ClusterOptions } from "./cluster.options";
 import type { Extension } from "./extension/extension";
 import type { Logger } from "./logger";
+import type { MetricsOptions } from "./observability/metric.options";
 import type { RemoteOptions } from "./remote.options";
 
 /** Options customizing an actor system. */
@@ -32,6 +33,11 @@ export interface ActorSystemOptions {
   /** The logger the runtime reports through; one JSON line per entry on
    * standard error at info level by default. */
   logger?: Logger;
+
+  /** Turns on the runtime's built-in metrics. Absent by default, in which
+   * case the system maintains no metrics state and the message hot path is
+   * untouched; read a snapshot with `ActorSystem.collectMetrics`. */
+  metrics?: MetricsOptions;
 
   /** Enables remoting on the system. Absent by default, in which case
    * the system is single-node and the transport never loads. */

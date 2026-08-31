@@ -42,6 +42,7 @@ import {
   CONTROL_CLAIMED,
   CONTROL_CONNECT,
   CONTROL_DISCONNECT,
+  CONTROL_METRICS,
   CONTROL_NAME_ADDED,
   CONTROL_NAME_FREED,
   CONTROL_PLACED,
@@ -54,6 +55,7 @@ import {
   WORKER_CLAIM,
   WORKER_CONTROLLED,
   WORKER_DEADLETTER,
+  WORKER_METRICS,
   WORKER_PLACE,
   WORKER_READY,
   WORKER_SPAWN_FAILED,
@@ -272,6 +274,9 @@ export class WorkerRuntime {
       // isolate alone (remoting lives there); a facade cannot order it.
       respawn: (name) => Promise.reject(new ActorNotFoundError(name)),
       stopActor: (name) => Promise.reject(new ActorNotFoundError(name)),
+      // A facade sees only its own isolate; the main isolate gathers the
+      // machine-wide snapshot by asking each worker directly.
+      collectMetrics: () => Promise.resolve([]),
       stop: () => Promise.resolve(),
     });
 
@@ -360,6 +365,11 @@ export class WorkerRuntime {
 
     if (message.kind === CONTROL_STOP_ACTOR) {
       await this.stopActor(message.seq, message.name);
+      return;
+    }
+
+    if (message.kind === CONTROL_METRICS) {
+      this.post({ kind: WORKER_METRICS, seq: message.seq, metrics: this._system.isolateMetrics() });
       return;
     }
 

@@ -60,6 +60,7 @@ function stubSystem(running = true): ActorSystem {
     isRunning: () => running,
     noSender: () => announcer,
     logger: () => discardLogger,
+    metricRegistry: () => null,
   } as unknown as ActorSystem;
 }
 

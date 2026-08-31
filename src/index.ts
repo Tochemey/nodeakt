@@ -113,6 +113,16 @@ export {
   PostStart,
   Terminated,
 } from "./messages";
+export type { MetricsOptions } from "./observability/metric.options";
+export type {
+  ActorFleetMetrics,
+  ActorMetrics,
+  HistogramBucket,
+  HistogramData,
+  MailboxMetrics,
+  MessageMetrics,
+  MetricsSnapshot,
+} from "./observability/metric.snapshot";
 export {
   DefaultPassivationTimeout,
   LongLivedStrategy,

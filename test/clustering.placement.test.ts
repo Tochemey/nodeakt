@@ -36,6 +36,7 @@ import { ErrActorAlreadyExists } from "../src/errors";
 import { PutCondition, RejectionReason, WriteKind } from "../src/kv/discriminants";
 import { ClusterUnavailableError, PartitionRebalancingError } from "../src/kv/errors";
 import type { Entry, ScanEntry, WriteApplied, WriteOp, WriteResult } from "../src/kv/ports";
+import type { IsolateMetrics } from "../src/observability/metric.snapshot";
 import type { PID } from "../src/pid";
 import type { Placement } from "../src/placement";
 import type { Props } from "../src/props";
@@ -137,6 +138,7 @@ class FakeInner implements Placement {
   readonly freed: string[] = [];
   readonly respawned: string[] = [];
   readonly stoppedActors: string[] = [];
+  metricsCalls: number = 0;
   stops: number = 0;
 
   claim(name: string): Promise<Error | null> {
@@ -182,6 +184,11 @@ class FakeInner implements Placement {
   stopActor(name: string): Promise<void> {
     this.stoppedActors.push(name);
     return Promise.resolve();
+  }
+
+  collectMetrics(): Promise<(IsolateMetrics | null)[]> {
+    this.metricsCalls++;
+    return Promise.resolve([]);
   }
 
   stop(): Promise<void> {
@@ -696,6 +703,8 @@ describe("ClusterPlacement delegation", () => {
     expect(h.placement.routeOf("x")).toBeUndefined();
     await expect(h.placement.respawn("x")).resolves.toBeUndefined();
     await expect(h.placement.stopActor("x")).resolves.toBeUndefined();
+    await expect(h.placement.collectMetrics()).resolves.toEqual([]);
+    expect(h.inner.metricsCalls).toBe(0);
 
     await h.placement.place("worker", FAKE_PROPS);
     h.inner.findResult = FAKE_PID;
@@ -705,8 +714,10 @@ describe("ClusterPlacement delegation", () => {
     expect(h.placement.routeOf("worker")).toBe(FAKE_ROUTE);
     await h.placement.respawn("worker");
     await h.placement.stopActor("worker");
+    await h.placement.collectMetrics();
     expect(h.inner.respawned).toEqual(["worker"]);
     expect(h.inner.stoppedActors).toEqual(["worker"]);
+    expect(h.inner.metricsCalls).toBe(1);
   });
 
   it("stops the wrapped placement and then writes no more records", async () => {
