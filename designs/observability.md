@@ -228,6 +228,59 @@ The main isolate merges its own `isolateSnapshot()` with every reply:
 
 A worker that dies mid-collection is absent from the merge; its counters are gone with it, which is the honest semantics for a crashed isolate. Collection does not fail because an isolate dropped: it resolves with the contributors that answered, and `isolates` reflects how many that was.
 
+## Cluster and remoting sections
+
+A single machine's snapshot describes the actors on it. A node in a cluster also has a transport and a membership view, and both are worth reporting. The snapshot carries them as two optional sections, present only when remoting or clustering is active, so a single-machine snapshot is unchanged.
+
+Metrics stay per node. Each node reports its own transport and its own view of the membership; the operator's backend rolls those up across nodes, the same way it already scrapes one endpoint per pod. The core never pulls a peer's metrics over the wire: a fleet-wide fan-out would put metric traffic on the transport that transport is built to keep free, and it would duplicate the aggregation every metrics backend already does.
+
+### The interface
+
+```ts
+/** This node's transport. */
+interface RemotingMetrics {
+  readonly peers: number;             // connected peers
+  readonly messagesSent: number;      // cumulative frames sent
+  readonly messagesReceived: number;  // cumulative frames received
+  readonly bytesSent: number;         // cumulative over this node's life
+  readonly bytesReceived: number;
+  readonly sendQueueBytes: number;    // currently queued for send
+}
+
+/** This node's view of the cluster membership. */
+interface ClusterMetrics {
+  readonly members: number;           // total known
+  readonly alive: number;
+  readonly suspect: number;
+  readonly dead: number;
+  readonly left: number;              // gracefully departed, distinct from dead
+  readonly isCoordinator: boolean;
+  readonly coordinatorChanges: number;  // times this node's coordinator changed
+  readonly relocationsTotal: number;    // actor recreations this node has driven
+}
+
+interface MetricsSnapshot {
+  // ...existing fields...
+  readonly remoting?: RemotingMetrics;  // present when remoting is enabled
+  readonly cluster?: ClusterMetrics;    // present when clustering is enabled
+}
+```
+
+### The cost posture
+
+These sections hold to the same bar as Tier 0 through Tier 2: the only per-message work is counter increments, which are within noise, and everything else is pulled at collection or derived from membership transitions. Nothing reads a clock and nothing makes a cross-isolate or cross-node call on any path. The clock-bearing latency histogram remains the single opt-in signal, because a clock read is the one genuinely expensive per-message operation; a counter increment is not.
+
+- **Bytes come from the socket.** The runtime already maintains a cumulative read and written byte count on every socket. The transport sums those across its live connections at collection and folds a connection's final counts into a per-node accumulator when it closes, so `bytesSent` and `bytesReceived` are monotonic over the node's life without touching the message path at all. A connection closing is a rare event, not the hot path.
+- **Message counts are a frame-level increment.** `messagesSent` and `messagesReceived` count frames where the transport already accounts each frame for flow control: it writes queued bytes per frame on send and loops per frame on receive, so the added increment sits in that same tier. It is a non-boxed integer add, the same posture as the throughput counter that is already always-on when metrics are enabled and benches within noise. Counts and bytes are both standard transport signals and answer different questions: bytes are bandwidth, counts are the operation rate, and their ratio is the average message size.
+- **Queue depth and peer count read state that already exists.** `sendQueueBytes` sums the per-connection queued-and-in-flight bytes the flow controller already tracks; `peers` is the size of the peer table. Both are read at collection.
+- **The cluster section is pulled and event-derived.** `members`, `alive`, `suspect`, `dead`, `left`, and `isCoordinator` are counted from the membership state at collection, and membership gossip is off the message path to begin with. `coordinatorChanges` and `relocationsTotal` are counters bumped on membership transitions, which are node-scale events, never per-message operations.
+
+The proof is the standing rule: the tell-throughput benchmark ships off against on, and the transport counters must land within noise. A counter that measurably moves throughput is a signal to fix the hot path, not to drop the metric.
+
+### Collecting them
+
+Remoting and the cluster engine live on the main isolate, so both sections are read from the main isolate alone and attached to the snapshot after the isolate merge, the way dead letters already are. The multi-core merge is unchanged: worker isolates carry neither a transport nor a membership view, so they contribute nothing here.
+
 ## Performance and GC posture
 
 The design is built so the cost is proportional to what is switched on.

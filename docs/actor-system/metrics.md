@@ -48,12 +48,26 @@ interface MetricsSnapshot {
   messages: MessageMetrics;
   mailbox: MailboxMetrics;
   deadlettersTotal: number;
+  cluster?: ClusterMetrics;
 }
 ```
 
 `ActorFleetMetrics` carries the actor counts: the `active` and `suspended` gauges, and the `startedTotal`, `stoppedTotal`, `restartedTotal`, and `passivatedTotal` counters. `MessageMetrics` carries `processedTotal`, the count of messages the fleet has handled, and, when `processingDuration` is on, a `processingDurationMs` distribution. `MailboxMetrics` carries mailbox depth across the fleet, both the summed `totalDepth` and the deepest single mailbox.
 
 The distribution, when present, is a `HistogramData`: a total `count`, a `sum` of milliseconds, and cumulative `HistogramBucket` entries by upper bound.
+
+On a clustered node the snapshot also carries a `cluster` section, this node's own view of the membership. It is metrics per node: each node reports its own view, and the backend aggregates across nodes the way it already scrapes one endpoint per pod.
+
+```ts
+interface ClusterMetrics {
+  members: number;      // members this node knows, in every state
+  alive: number;
+  suspect: number;
+  dead: number;         // recently dead, within the retention window
+  left: number;         // gracefully departed, within the retention window
+  isCoordinator: boolean;
+}
+```
 
 The fleet snapshot carries no actor identity, so it never turns into a high-cardinality time series. Calling `collectMetrics` on a system that never enabled metrics resolves to a valid, zeroed snapshot, so an adapter can be wired unconditionally; calling it on a system that is not running rejects with `ErrActorSystemNotStarted`.
 

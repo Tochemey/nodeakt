@@ -116,6 +116,7 @@ export type { MetricsOptions } from "./observability/metric.options";
 export type {
   ActorFleetMetrics,
   ActorMetrics,
+  ClusterMetrics,
   HistogramBucket,
   HistogramData,
   MailboxMetrics,

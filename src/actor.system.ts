@@ -715,7 +715,13 @@ export class ActorSystem {
 
     const placement = this._placement;
     const workers = placement === null ? [] : await placement.collectMetrics();
-    return mergeMetrics(this._name, mine, workers);
+    const snapshot = mergeMetrics(this._name, mine, workers);
+
+    // Remoting and the cluster engine live on this isolate, so their sections
+    // are read here and attached after the isolate merge, the way dead letters
+    // are. A worker isolate carries neither, so the merge never touches them.
+    const clusterNode = this._clusterNode;
+    return clusterNode === null ? snapshot : { ...snapshot, cluster: clusterNode.metrics() };
   }
 
   /**

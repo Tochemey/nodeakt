@@ -43,6 +43,7 @@ import {
 } from "../src/errors";
 import { EventStream } from "../src/eventstream";
 import type { ClusterMember } from "../src/kv/ports";
+import type { MetricsSnapshot } from "../src/observability/metric.snapshot";
 import { LongLivedStrategy } from "../src/passivation";
 import type { PID } from "../src/pid";
 import { Props } from "../src/props";
@@ -186,6 +187,39 @@ describe("ActorSystem clustering", () => {
         new ActorSystem("orders", { cluster: { discovery: new StaticDiscovery([]) } }),
     ).toThrow(ErrClusterRequiresRemote);
   });
+
+  it("reports this node's membership view in the metrics snapshot", async (): Promise<void> => {
+    const system: ActorSystem = new ActorSystem("orders", {
+      logger: discardLogger,
+      remote: { host: "127.0.0.1", port: 0 },
+      metrics: { enabled: true },
+      cluster: {
+        discovery: new StaticDiscovery([]),
+        gossipPort: 0,
+        dataPort: 0,
+        bootstrapTimeout: 0,
+        replicaCount: 1,
+        writeQuorum: 1,
+        minimumMemberQuorum: 1,
+      },
+    });
+    running.push(system);
+    await system.start();
+
+    await eventually(async (): Promise<boolean> => {
+      const snapshot: MetricsSnapshot = await system.collectMetrics();
+      return snapshot.cluster?.alive === 1;
+    }, 5_000);
+
+    const snapshot: MetricsSnapshot = await system.collectMetrics();
+    expect(snapshot.cluster).toBeDefined();
+    expect(snapshot.cluster?.members).toBe(1);
+    expect(snapshot.cluster?.alive).toBe(1);
+    expect(snapshot.cluster?.suspect).toBe(0);
+    expect(snapshot.cluster?.dead).toBe(0);
+    expect(snapshot.cluster?.left).toBe(0);
+    expect(snapshot.cluster?.isCoordinator).toBe(true);
+  }, 30_000);
 
   it("records a clustered placement at the node's data address and frees it on stop", async (): Promise<void> => {
     // One isolate, so the placement lands on the main isolate and its own stop

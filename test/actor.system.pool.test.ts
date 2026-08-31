@@ -320,10 +320,18 @@ describe("ActorSystem multi-core", () => {
     await expect(system.spawn("claimed", new Probe())).rejects.toBe(ErrActorAlreadyExists);
     await expect(me().ask(facade, "spawn|claimed", 15_000)).resolves.toContain("refused:");
 
-    // And a facade finds an actor living on the main isolate.
+    // And a facade finds an actor living on the main isolate. The worker learns
+    // the just-claimed name through its warm view, which the synchronous
+    // actorOf reads, so retry until it resolves "central" rather than replying
+    // "missing"; the ask to a silent Probe then times out, ok:false.
     await system.spawn("central", new Probe());
-    const central = (await me().ask(facade, "find|central|ignored", 15_000)) as { ok: boolean };
-    expect(central.ok).toBe(false);
+    await expect
+      .poll(
+        async () =>
+          ((await me().ask(facade, "find|central|ignored", 15_000)) as { ok?: boolean }).ok,
+        { timeout: 30_000 },
+      )
+      .toBe(false);
 
     await system.stop();
   }, 60_000);

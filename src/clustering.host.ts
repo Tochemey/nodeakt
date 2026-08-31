@@ -39,6 +39,8 @@ import { createRandom } from "./membership/random";
 import { Swim } from "./membership/swim";
 import { TcpMembershipTransport } from "./membership/transport";
 import type { MemberRecord } from "./membership/view";
+import { STATE_ALIVE, STATE_DEAD, STATE_LEFT, STATE_SUSPECT } from "./membership/wire";
+import type { ClusterMetrics } from "./observability/metric.snapshot";
 
 /** Bind host used when a node names none; a multi-host deployment must set a peer-reachable address. */
 const DEFAULT_BIND_HOST: string = "127.0.0.1";
@@ -266,6 +268,31 @@ export class ClusterNode {
    * the one node every view agrees on, the anchor a singleton is pinned to. */
   coordinator(): string {
     return this.#view.coordinator();
+  }
+
+  /**
+   * This node's contribution to the cluster metrics section: a count of the
+   * members it knows by membership state, and whether it is the coordinator.
+   * Read from the membership state at collection, never on the message path.
+   *
+   * @internal
+   */
+  metrics(): ClusterMetrics {
+    const tally: number[] = [0, 0, 0, 0];
+    const records: readonly MemberRecord[] = this.#swim.members();
+    for (const record of records) {
+      const state: number = record.state;
+      tally[state] = (tally[state] as number) + 1;
+    }
+
+    return {
+      members: records.length,
+      alive: tally[STATE_ALIVE] as number,
+      suspect: tally[STATE_SUSPECT] as number,
+      dead: tally[STATE_DEAD] as number,
+      left: tally[STATE_LEFT] as number,
+      isCoordinator: this.#view.coordinator() === this.#address,
+    };
   }
 
   /**

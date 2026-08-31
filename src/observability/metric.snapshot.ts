@@ -109,6 +109,32 @@ export interface MailboxMetrics {
 }
 
 /**
+ * ClusterMetrics is this node's view of the cluster membership: how many
+ * members it knows and in what state, and whether it is the coordinator.
+ * Present only on a clustered node, and read from the membership state at
+ * collection, never on the message path.
+ */
+export interface ClusterMetrics {
+  /** The members this node knows of, in every state. */
+  readonly members: number;
+
+  /** Members this node sees as alive. */
+  readonly alive: number;
+
+  /** Members this node currently suspects. */
+  readonly suspect: number;
+
+  /** Members recently declared dead, still within the retention window. */
+  readonly dead: number;
+
+  /** Members that left gracefully, still within the retention window. */
+  readonly left: number;
+
+  /** Whether this node is the cluster coordinator. */
+  readonly isCoordinator: boolean;
+}
+
+/**
  * MetricsSnapshot is a point-in-time, machine-wide view of the runtime's
  * own state: the calling isolate merged with every worker isolate. It is
  * plain readonly data with no methods and no vendor types, so an adapter
@@ -135,6 +161,9 @@ export interface MetricsSnapshot {
 
   /** The count of dead letters over the system's life. */
   readonly deadlettersTotal: number;
+
+  /** This node's cluster membership view; absent on an unclustered system. */
+  readonly cluster?: ClusterMetrics;
 }
 
 /**
