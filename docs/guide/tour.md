@@ -171,6 +171,25 @@ speedup: 5.7x
 
 Core count, timings, and speedup depend on the machine. Hybrid performance/efficiency cores will not scale linearly; that is honest.
 
+## Idle actors reclaim themselves: `passivation`
+
+A presence server keeps one session actor per online user. Each session holds that user's in-memory state and passivates itself after an idle window, so idle users cost nothing; an active user's session stays put, and a returning user opens a fresh one. This is the pattern for per-entity actors (sessions, connections, device shadows, carts). The default is time-based at two minutes; the example sets a short window so a session comes and goes while you watch.
+
+[passivation/main.ts](https://github.com/Tochemey/nodeakt/blob/main/examples/passivation/main.ts), `make passivation`
+
+```text
+session opened for alice
+alice active: 3 actions
+still open after staying active: 5 actions
+alice goes idle...
+passivated: alice was idle, so her session's memory is reclaimed
+session closed for alice; 5 action(s) reclaimed
+actorOf("session-alice") -> absent
+alice returns: 0 actions on a fresh session
+```
+
+Nobody stops the session by hand: it stays alive while active, and the runtime reclaims it once idle. `postStop` runs on passivation too, the place to flush before the state is gone. A returning user gets a new instance with reset state, so passivation is for reclaimable memory, not durable data. Opt a specific actor out with a `LongLivedStrategy`.
+
 ## The runtime reports on itself: `metrics`
 
 Turn metrics on, queue a burst of messages that outruns one busy worker, and read `collectMetrics()` on a timer. The reporter is a plain function over the returned snapshot: no vendor SDK, no dependency the runtime pulled in. `processingDuration` adds the latency histogram, and the reporter turns it into an average and a couple of percentiles read straight off the buckets.

@@ -6,7 +6,7 @@
 TSX := node_modules/.bin/tsx
 
 .DEFAULT_GOAL := help
-.PHONY: help helloworld behaviors chat supervision iot reentrancy pipeto scheduling watch stash props multicore metrics remoting cluster actors k8s bench bench-baseline
+.PHONY: help helloworld behaviors chat supervision iot reentrancy pipeto scheduling watch stash props multicore passivation metrics remoting cluster actors k8s bench bench-baseline
 
 help: ## list the available example targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -47,6 +47,9 @@ props: ## construction is data (Props.create)
 
 multicore: ## every core, invisibly (Props actors in parallel)
 	@$(TSX) examples/multicore/main.ts
+
+passivation: ## idle actors passivate to reclaim memory; a session actor per user
+	@$(TSX) examples/passivation/main.ts
 
 metrics: ## the runtime reports on itself; scrape collectMetrics on a timer
 	@$(TSX) examples/metrics/main.ts
