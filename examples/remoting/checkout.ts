@@ -38,7 +38,7 @@
  */
 
 import type { Actor, PID, ReceiveContext } from "../../src/index";
-import { ActorSystem, PostStart, Terminated, TextLogger } from "../../src/index";
+import { ActorSystem, LongLivedStrategy, PostStart, Terminated, TextLogger } from "../../src/index";
 import { advertisedHost } from "./host";
 import { ChargeCard, Declined, Receipt } from "./messages";
 
@@ -257,7 +257,11 @@ const system: ActorSystem = new ActorSystem("checkout", {
   remote: { host, port },
 });
 await system.start();
-await system.spawn("desk", new CheckoutDesk(system, paymentsHost, paymentsPort));
+// A service actor that idles between orders: long-lived so it never
+// passivates out from under the node.
+await system.spawn("desk", new CheckoutDesk(system, paymentsHost, paymentsPort), {
+  passivationStrategy: new LongLivedStrategy(),
+});
 
 logger.info(
   `[checkout] up at ${host}:${system.port()}, paying through ${paymentsHost}:${paymentsPort}`,

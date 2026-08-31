@@ -57,13 +57,6 @@ export const ConsistentHashRouting: RoutingStrategy = "consistentHash";
  */
 export type RoutingKeyFunc = (message: unknown) => string | number;
 
-/**
- * RouteeDirective is how a router handles a routee that fails while
- * processing a message: restart it in place, stop it (the pool
- * shrinks), or resume it past the failure with its state kept.
- */
-export type RouteeDirective = "restart" | "stop" | "resume";
-
 /** Options configuring a router being spawned. */
 export interface RouterOptions {
   /** The routing strategy; {@link RoundRobinRouting} when omitted. */
@@ -75,8 +68,4 @@ export interface RouterOptions {
    * otherwise.
    */
   routingKey?: RoutingKeyFunc;
-
-  /** How a failing routee is handled; `stop` when omitted, so the pool
-   * shrinks. */
-  directive?: RouteeDirective;
 }

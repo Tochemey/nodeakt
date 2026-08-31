@@ -6,7 +6,7 @@ A cluster singleton is an actor with **exactly one live instance across the whol
 const ref = await system.spawnSingleton("sequencer", Props.create(Sequencer));
 ```
 
-A singleton is not a new kind of actor. It is an ordinary named, always-relocatable actor with three guarantees.
+A singleton is not a new kind of actor. It is an ordinary named, always-relocatable actor with three guarantees. It is also spawned long-lived, so unlike an ordinary actor it never [passivates](../actor/passivation.md) on an idle window: a quiet period cannot stop the one instance out from under the cluster.
 
 ## Idempotent to create
 

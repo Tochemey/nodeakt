@@ -43,6 +43,7 @@ import {
 } from "../src/errors";
 import { EventStream } from "../src/eventstream";
 import type { ClusterMember } from "../src/kv/ports";
+import { LongLivedStrategy } from "../src/passivation";
 import type { PID } from "../src/pid";
 import { Props } from "../src/props";
 import { registerActor } from "../src/registration";
@@ -323,6 +324,10 @@ describe("ActorSystem clustering", () => {
     const first: PID = await system.spawnSingleton("sequencer", Props.create(Registered, "one"));
     expect(await system.noSender().ask(first, "hi", 5000)).toBe("one:hi");
     expect(await registry.getActor("sequencer")).toBe(node.address);
+
+    // A singleton is cluster infrastructure: it is forced long-lived so it
+    // never passivates out from under the cluster.
+    expect(first.passivationStrategy()).toBeInstanceOf(LongLivedStrategy);
 
     // Idempotent: a later create hands back the SAME instance rather than a duplicate
     // error, and the loser's props are ignored (the winner's "one" answers, not "two").

@@ -26,13 +26,15 @@
  * Passivation stops idle actors to reclaim their resources. An actor's
  * strategy decides when it is passivated; pick one per actor at spawn
  * time. Passivation is a graceful stop: pending messages are processed,
- * `postStop` runs, and the actor is removed from the system. It is
- * strictly opt-in: an actor spawned without a strategy lives until it is
+ * `postStop` runs, and the actor is removed from the system. An actor
+ * spawned without a strategy passivates after {@link DefaultPassivationTimeout}
+ * of inactivity; pass a {@link LongLivedStrategy} to opt out and run until
  * explicitly stopped.
  */
 
-/** Suggested idle timeout for actors that opt into time-based
- * passivation: `new TimeBasedStrategy(DefaultPassivationTimeout)`. */
+/** The idle duration, in milliseconds, after which an actor spawned
+ * without an explicit strategy passivates: the timeout of the
+ * {@link defaultPassivationStrategy}. */
 export const DefaultPassivationTimeout = 120_000;
 
 /**
@@ -88,14 +90,16 @@ export type PassivationStrategy =
   | LongLivedStrategy;
 
 /**
- * The strategy assigned to actors spawned without an explicit one: long
- * lived, never passivated. Silently stopping an actor after an idle
- * window is surprising as a default, so passivation must be chosen
- * deliberately per actor.
+ * The strategy assigned to actors spawned without an explicit one:
+ * time-based passivation after {@link DefaultPassivationTimeout} of
+ * inactivity. An idle actor is stopped to reclaim its resources unless it
+ * opts out with a {@link LongLivedStrategy}.
  *
  * @internal
  */
-export const defaultPassivationStrategy: PassivationStrategy = new LongLivedStrategy();
+export const defaultPassivationStrategy: PassivationStrategy = new TimeBasedStrategy(
+  DefaultPassivationTimeout,
+);
 
 /**
  * Discriminants for a {@link SerializedPassivation}, the one place each is

@@ -77,6 +77,7 @@ import {
   type MetricsSnapshot,
   mergeMetrics,
 } from "./observability/metric.snapshot";
+import { LongLivedStrategy } from "./passivation";
 import { PassivationManager } from "./passivation.manager";
 import { isValidActorName, newPathAt, type Path, type PathAddress, parsePath } from "./path";
 import { PID } from "./pid";
@@ -803,9 +804,10 @@ export class ActorSystem {
       };
     }
 
-    // Runtime actors rely on the long-lived default strategy and never
-    // passivate. The tree records that the system and user guardians are
-    // children of the root guardian and that the NoSender actor is a
+    // Runtime actors are created here through configPID, which never
+    // schedules passivation, so they never passivate regardless of the
+    // default strategy. The tree records that the system and user guardians
+    // are children of the root guardian and that the NoSender actor is a
     // child of the system guardian; guardians are supervision parents
     // only, so they never appear in the path of an actor beneath them.
     this._rootGuardian = await this.configPID(rootGuardianName, new RootGuardian(), null);
@@ -1388,11 +1390,11 @@ export class ActorSystem {
    * Two management messages are consumed by the router itself:
    * `GetRoutees`, answered with a `Routees` message listing the live
    * routees, and `AdjustRouterPoolSize`, which grows or shrinks the
-   * pool in place. A routee that fails while processing is handled by
-   * the routee directive chosen at spawn time, `stop` by default, so
-   * the pool shrinks; a dead routee leaves the rotation, and once no
-   * routee is left every subsequent send becomes a dead letter until
-   * `AdjustRouterPoolSize` restores capacity.
+   * pool in place. A routee that fails while processing escalates to the
+   * router, which drops it from the pool, so the pool shrinks; a dead
+   * routee leaves the rotation, and once no routee is left every
+   * subsequent send becomes a dead letter until `AdjustRouterPoolSize`
+   * restores capacity.
    *
    * ```ts
    * const router = await system.spawnRouter("workers", 8, Props.create(Worker), {
@@ -1406,15 +1408,14 @@ export class ActorSystem {
    * @param poolSize - How many routees to start with; a positive
    * integer.
    * @param routees - How to construct each routee, as `Props`.
-   * @param options - The routing strategy, the routing key extractor of
-   * a consistent-hash router, and the routee directive.
+   * @param options - The routing strategy and the routing key extractor
+   * of a consistent-hash router.
    *
    * @returns A promise of the router's PID. It rejects with everything
    * {@link spawn} rejects with, a `TypeError` when `routees` is not a
    * `Props`, and the {@link ErrInvalidPoolSize},
-   * {@link ErrInvalidRoutingStrategy}, {@link ErrRoutingKeyRequired},
-   * and {@link ErrInvalidRouteeDirective} sentinels when the
-   * configuration is invalid.
+   * {@link ErrInvalidRoutingStrategy}, and {@link ErrRoutingKeyRequired}
+   * sentinels when the configuration is invalid.
    */
   async spawnRouter(
     name: string,
@@ -1426,7 +1427,11 @@ export class ActorSystem {
       throw ErrActorSystemNotStarted;
     }
 
-    return this.spawn(name, createRouter(poolSize, routees, options));
+    // A router is standing infrastructure that owns a pool: it must outlive
+    // idle windows, so it never passivates, just like its routees.
+    return this.spawn(name, createRouter(poolSize, routees, options), {
+      passivationStrategy: new LongLivedStrategy(),
+    });
   }
 
   /**
@@ -1543,6 +1548,9 @@ export class ActorSystem {
       ...options,
       relocatable: true,
       singleton: true,
+      // A singleton is cluster infrastructure that must stay available, so it
+      // never passivates, whatever the caller passed.
+      passivationStrategy: new LongLivedStrategy(),
     };
 
     for (let attempt: number = 0; attempt < SINGLETON_CLAIM_ATTEMPTS; attempt++) {

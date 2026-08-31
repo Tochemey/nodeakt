@@ -12,7 +12,7 @@ const router = await system.spawnRouter("workers", 8, Props.create(Worker), {
 system.noSender().tell(router, new Job(42)); // routed to one routee
 ```
 
-`spawnRouter(name, poolSize, routees, options?)` creates and starts the router. The router is a real actor: it lives under the given unique name like any `spawn`, it appears in the tree, and `system.actorOf(name)` resolves it. `poolSize` is a positive integer; `routees` is `Props`, so each routee is constructed fresh from the same recipe. Everything `spawn` rejects with applies, plus `ErrInvalidPoolSize` for a bad pool size, `ErrInvalidRoutingStrategy` for an unknown strategy, `ErrRoutingKeyRequired` for consistent hashing without a routing key extractor, and `ErrInvalidRouteeDirective` for an unknown routee directive.
+`spawnRouter(name, poolSize, routees, options?)` creates and starts the router. The router is a real actor: it lives under the given unique name like any `spawn`, it appears in the tree, and `system.actorOf(name)` resolves it. `poolSize` is a positive integer; `routees` is `Props`, so each routee is constructed fresh from the same recipe. Everything `spawn` rejects with applies, plus `ErrInvalidPoolSize` for a bad pool size, `ErrInvalidRoutingStrategy` for an unknown strategy, and `ErrRoutingKeyRequired` for consistent hashing without a routing key extractor.
 
 ## Strategies
 
@@ -67,15 +67,9 @@ await system.noSender().ask(router, new AdjustRouterPoolSize(16), 1_000);
 
 ## Failing routees
 
-A routee that throws while processing is handled by the routee directive chosen at spawn time, `RouterOptions.directive`, a `RouteeDirective`:
+A routee that throws while processing escalates the failure to the router, which drops it from the pool. Routees are spawned long-lived, so they never passivate; the only way one leaves the pool is by dying, whether it failed, was stopped, or its host went away.
 
-| Value | Effect |
-| --- | --- |
-| `"stop"` (default) | The failing routee stops and the pool shrinks. |
-| `"restart"` | The failing routee is restarted in place and stays in the rotation. |
-| `"resume"` | The failing routee moves past the failure with its state kept. |
-
-A dead routee leaves the rotation as soon as its death is observed. A pool that reaches zero routees matches the send-path rules: every subsequent send becomes a dead letter carrying `ErrDead` as the reason (and an ask rejects with the same sentinel), until `AdjustRouterPoolSize` restores capacity explicitly.
+A dead routee leaves the rotation as soon as its death is observed, and the pool shrinks. A pool that reaches zero routees matches the send-path rules: every subsequent send becomes a dead letter carrying `ErrDead` as the reason (and an ask rejects with the same sentinel), until `AdjustRouterPoolSize` restores capacity explicitly.
 
 ## Lifecycle
 

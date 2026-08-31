@@ -143,9 +143,6 @@ export const ErrRoutingKeyRequired: Error = new Error(
   "consistent hashing requires a routing key extractor",
 );
 
-/** Raised when spawning a router with an unknown routee directive. */
-export const ErrInvalidRouteeDirective: Error = new Error("invalid routee directive");
-
 /** Rejects an ask or request sent through a fan-out router: a
  * broadcast has no single answer. */
 export const ErrFanOutAsk: Error = new Error("a fan-out router cannot answer an ask");

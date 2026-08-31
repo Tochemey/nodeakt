@@ -80,6 +80,76 @@ interface ActorMetrics {
 }
 ```
 
-## Wiring a backend
+## Report on a timer
 
-Because `collectMetrics` returns plain data, an adapter is a few lines you own, outside the runtime. Read the snapshot on a timer, or from your metrics backend's own collection callback, and record each field as a counter or gauge there. The runtime takes on no metrics dependency, so you are free to choose the backend and keep it out of the core.
+Because `collectMetrics` returns plain data, the simplest adapter is a few lines you own: read the snapshot on an interval and do something with it. This is a whole working reporter, no dependency involved:
+
+```ts
+const reporter = setInterval(() => {
+  void system.collectMetrics().then((snapshot) => {
+    console.log(
+      `active=${snapshot.actors.active}`,
+      `processed=${snapshot.messages.processedTotal}`,
+      `mailbox=${snapshot.mailbox.totalDepth}`,
+      `deadletters=${snapshot.deadlettersTotal}`,
+    );
+  });
+}, 1_000);
+
+// on shutdown
+clearInterval(reporter);
+```
+
+When `processingDuration` is on, the snapshot also carries the latency distribution, and you read a percentile straight off the cumulative buckets: walk them in order and take the upper bound of the first bucket whose running `count` reaches your target rank.
+
+```ts
+function quantileMs(histogram: HistogramData, q: number): number {
+  const target = q * histogram.count;
+  for (const bucket of histogram.buckets) {
+    if (bucket.count >= target) {
+      return bucket.leMs;
+    }
+  }
+
+  return Number.POSITIVE_INFINITY;
+}
+```
+
+The [metrics example](https://github.com/Tochemey/nodeakt/blob/main/examples/metrics/main.ts) (`make metrics`) puts both together: it drives one busy worker with a burst of messages and prints active count, throughput, mailbox depth, and the latency average and percentiles as the backlog fills and drains.
+
+## An OpenTelemetry adapter, in your own code
+
+The runtime takes on no metrics dependency, so a vendor adapter lives outside the core, in a file you own that adds the vendor SDK itself. OpenTelemetry pulls on its own schedule through a collection callback, which lines up exactly with a pull-based snapshot: scrape once per callback and fan the numbers out across the instruments.
+
+```ts
+// your-app/otel.ts: nodeakt does not depend on this; you add
+// @opentelemetry/api in your own project and keep the wiring here.
+import { metrics } from "@opentelemetry/api";
+import type { ActorSystem } from "@tochemey/nodeakt";
+
+export function wireOpenTelemetry(system: ActorSystem): void {
+  const meter = metrics.getMeter("nodeakt");
+
+  const active = meter.createObservableGauge("nodeakt.actors.active");
+  const suspended = meter.createObservableGauge("nodeakt.actors.suspended");
+  const processed = meter.createObservableCounter("nodeakt.messages.processed");
+  const mailbox = meter.createObservableGauge("nodeakt.mailbox.depth");
+  const deadletters = meter.createObservableCounter("nodeakt.deadletters");
+
+  // One batch callback scrapes once and observes every instrument.
+  // OpenTelemetry decides when it runs; the runtime just answers.
+  meter.addBatchObservableCallback(
+    async (batch) => {
+      const snapshot = await system.collectMetrics();
+      batch.observe(active, snapshot.actors.active);
+      batch.observe(suspended, snapshot.actors.suspended);
+      batch.observe(processed, snapshot.messages.processedTotal);
+      batch.observe(mailbox, snapshot.mailbox.totalDepth);
+      batch.observe(deadletters, snapshot.deadlettersTotal);
+    },
+    [active, suspended, processed, mailbox, deadletters],
+  );
+}
+```
+
+The processing-duration histogram needs a different mapping: its buckets arrive already aggregated, so you do not re-record them into an OpenTelemetry histogram (that instrument expects raw observations). Expose each cumulative bucket as its own observable gauge keyed by the `leMs` upper bound, which is the shape a Prometheus histogram exports anyway, or publish the average from `sum / count` alongside the percentiles the reporter above computes. Either way the mapping stays in your adapter, and the core keeps handing out nothing but numbers.

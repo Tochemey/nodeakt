@@ -34,7 +34,7 @@ import {
   ErrReservedName,
 } from "../src/errors";
 import { PostStart } from "../src/messages";
-import { LongLivedStrategy, TimeBasedStrategy } from "../src/passivation";
+import { DefaultPassivationTimeout, TimeBasedStrategy } from "../src/passivation";
 import type { PID } from "../src/pid";
 import type { ReceiveContext } from "../src/receive.context";
 import { noSenderName, rootGuardianName, userGuardianName } from "../src/reserved";
@@ -275,12 +275,14 @@ describe("ActorSystem spawn", () => {
     await system.stop();
   });
 
-  it("defaults spawned actors to a long-lived strategy", async () => {
+  it("defaults spawned actors to time-based passivation", async () => {
     const system = new ActorSystem("sys");
     await system.start();
 
     const pid = await system.spawn("worker", new Collector());
-    expect(pid.passivationStrategy()).toBeInstanceOf(LongLivedStrategy);
+    const strategy = pid.passivationStrategy();
+    expect(strategy).toBeInstanceOf(TimeBasedStrategy);
+    expect((strategy as TimeBasedStrategy).timeout).toBe(DefaultPassivationTimeout);
 
     await system.stop();
   });

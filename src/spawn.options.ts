@@ -33,8 +33,9 @@ export interface SpawnOptions {
   /** The mailbox backing the actor; an unbounded FIFO one when omitted. */
   mailbox?: Mailbox;
 
-  /** The actor's passivation strategy; long lived (never passivated)
-   * when omitted. */
+  /** The actor's passivation strategy; time-based passivation after
+   * `DefaultPassivationTimeout` of inactivity when omitted. Pass a
+   * `LongLivedStrategy` to run until explicitly stopped. */
   passivationStrategy?: PassivationStrategy;
 
   /**
