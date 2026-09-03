@@ -26,6 +26,7 @@ import { afterAll, describe, it } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem } from "../src/actor.system";
 import { BoundedMailbox } from "../src/bounded.mailbox";
+import { discardLogger } from "../src/discard.logger";
 import { UnboundedFairMailbox } from "../src/fair.mailbox";
 import type { PID } from "../src/pid";
 import { UnboundedSegmentedMailbox } from "../src/segmented.mailbox";
@@ -101,7 +102,7 @@ class SilentActor implements Actor {
   postStop(): void {}
 }
 
-const system = new ActorSystem("bench");
+const system = new ActorSystem("bench", { logger: discardLogger });
 await system.start();
 
 afterAll(async () => {

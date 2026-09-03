@@ -1,6 +1,6 @@
 # Passivation
 
-Passivation is a graceful stop of an idle actor: queued messages drain, `postStop` runs, and the actor is removed. You choose it per actor. An actor spawned without a strategy is long-lived and runs until it is explicitly stopped.
+Passivation is a graceful stop of an idle actor: queued messages drain, `postStop` runs, and the actor is removed. An actor spawned without a strategy passivates after `DefaultPassivationTimeout` of inactivity; pass a `LongLivedStrategy` to opt out and run until it is explicitly stopped.
 
 Passivation strategies are live objects. They cannot ride a [`Props`](../multi-core/index.md) spawn.
 
@@ -16,11 +16,11 @@ await system.spawn("cache", new Cache(), {
 
 | Class | Passivates when |
 | --- | --- |
-| `LongLivedStrategy` (default) | Never. |
-| `TimeBasedStrategy(timeout)` | The actor has processed no message for `timeout` milliseconds. `timeout` must be a positive finite number; otherwise the constructor throws `RangeError`. |
+| `TimeBasedStrategy(timeout)` (default) | The actor has processed no message for `timeout` milliseconds. `timeout` must be a positive finite number; otherwise the constructor throws `RangeError`. |
 | `MessagesCountBasedStrategy(maxMessages)` | The actor has processed `maxMessages` messages. `maxMessages` must be a positive integer; otherwise `RangeError`. |
+| `LongLivedStrategy` | Never; the actor runs until it is explicitly stopped. |
 
-`DefaultPassivationTimeout` is `120_000` (two minutes). It is a suggested idle window, not applied unless you construct a `TimeBasedStrategy` with it.
+An actor spawned without an explicit strategy gets a `TimeBasedStrategy(DefaultPassivationTimeout)`. `DefaultPassivationTimeout` is `120_000` (two minutes).
 
 `PassivationStrategy` is the union of these three classes. It is not an open interface: the runtime only schedules the strategies above.
 

@@ -95,7 +95,7 @@ An [`ActorStarted`](../actor-system/events.md) event is published as the actor b
 | Option                | Default                                | Notes                                                                                                                  |
 |-----------------------|----------------------------------------|------------------------------------------------------------------------------------------------------------------------|
 | `mailbox`             | `UnboundedMailbox`                     | The queue backing the actor. Live object, refused on `Props` spawns. See [Mailboxes](mailboxes.md).                    |
-| `passivationStrategy` | `LongLivedStrategy` (never passivated) | When the actor stops itself after idleness. Live object, refused on `Props` spawns. See [Passivation](passivation.md). |
+| `passivationStrategy` | `TimeBasedStrategy` (2 min idle)        | Passivates the actor after `DefaultPassivationTimeout` of idleness; pass `LongLivedStrategy` to opt out. Live object, refused on `Props` spawns. See [Passivation](passivation.md). |
 | `supervisor`          | any failure **stops** the actor        | How a failure in `receive` is handled. Live object, refused on `Props` spawns. See [Supervision](supervision.md).      |
 | `reentrancy`          | requests disabled                      | Whether the actor may issue non-parking [`request`](reentrancy.md)s. Data, allowed on `Props` spawns.                  |
 

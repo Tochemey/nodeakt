@@ -25,7 +25,7 @@
 import { connect, type Socket } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { DEFAULT_CHUNK_SIZE } from "./chunk";
-import { ErrConnClosed } from "./conn";
+import { type ConnCounters, ConnTotals, ErrConnClosed } from "./conn";
 import {
   type DataEnvelope,
   type Hello,
@@ -189,6 +189,10 @@ export class Peer {
   private _generation: number = 0;
   private _closed: boolean = false;
 
+  /** Totals of the sessions this peer has closed, folded in as each
+   * lane closes so its counters stay monotonic across redials. */
+  private readonly _closedTotals: ConnTotals = new ConnTotals();
+
   constructor(
     host: string,
     port: number,
@@ -226,6 +230,34 @@ export class Peer {
 
   get closed(): boolean {
     return this._closed;
+  }
+
+  /** Bytes accepted for sending and not yet handed to the kernel, across every live lane. */
+  get outstandingBytes(): number {
+    let total: number = 0;
+    for (const lane of this._lanes) {
+      if (lane.session !== null) {
+        total += lane.session.outstandingBytes;
+      }
+    }
+
+    return total;
+  }
+
+  /**
+   * The cumulative frame and byte totals over every session this peer
+   * has held: its live lanes now, plus every session that has closed.
+   */
+  counters(): ConnCounters {
+    const totals: ConnTotals = new ConnTotals();
+    totals.add(this._closedTotals);
+    for (const lane of this._lanes) {
+      if (lane.session !== null) {
+        totals.add(lane.session.counters());
+      }
+    }
+
+    return totals;
   }
 
   /**
@@ -494,6 +526,7 @@ export class Peer {
   }
 
   private onLaneClose(lane: LaneState, session: Session, error: Error | null): void {
+    this._closedTotals.add(session.counters());
     if (lane.session === session) {
       lane.session = null;
     }

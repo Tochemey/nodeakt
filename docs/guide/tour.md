@@ -171,6 +171,44 @@ speedup: 5.7x
 
 Core count, timings, and speedup depend on the machine. Hybrid performance/efficiency cores will not scale linearly; that is honest.
 
+## Idle actors reclaim themselves: `passivation`
+
+A presence server keeps one session actor per online user. Each session holds that user's in-memory state and passivates itself after an idle window, so idle users cost nothing; an active user's session stays put, and a returning user opens a fresh one. This is the pattern for per-entity actors (sessions, connections, device shadows, carts). The default is time-based at two minutes; the example sets a short window so a session comes and goes while you watch.
+
+[passivation/main.ts](https://github.com/Tochemey/nodeakt/blob/main/examples/passivation/main.ts), `make passivation`
+
+```text
+session opened for alice
+alice active: 3 actions
+still open after staying active: 5 actions
+alice goes idle...
+passivated: alice was idle, so her session's memory is reclaimed
+session closed for alice; 5 action(s) reclaimed
+actorOf("session-alice") -> absent
+alice returns: 0 actions on a fresh session
+```
+
+Nobody stops the session by hand: it stays alive while active, and the runtime reclaims it once idle. `postStop` runs on passivation too, the place to flush before the state is gone. A returning user gets a new instance with reset state, so passivation is for reclaimable memory, not durable data. Opt a specific actor out with a `LongLivedStrategy`.
+
+## The runtime reports on itself: `metrics`
+
+Turn metrics on, queue a burst of messages that outruns one busy worker, and read `collectMetrics()` on a timer. The reporter is a plain function over the returned snapshot: no vendor SDK, no dependency the runtime pulled in. `processingDuration` adds the latency histogram, and the reporter turns it into an average and a couple of percentiles read straight off the buckets.
+
+[metrics/main.ts](https://github.com/Tochemey/nodeakt/blob/main/examples/metrics/main.ts), `make metrics`
+
+```text
+enqueuing 40000 messages, then watching the backlog drain
+active=1  processed=2049   mailbox=37952  maxDepth=37952  deadletters=0  avg=0.278ms  p50=0.25ms  p95=0.5ms
+active=1  processed=10241  mailbox=29760  maxDepth=29760  deadletters=0  avg=0.332ms  p50=0.25ms  p95=0.5ms
+active=1  processed=24577  mailbox=15424  maxDepth=15424  deadletters=0  avg=0.186ms  p50=0.05ms  p95=0.5ms
+active=1  processed=36865  mailbox=3136   maxDepth=3136   deadletters=0  avg=0.148ms  p50=0.05ms  p95=0.5ms
+final fleet snapshot:
+active=1  processed=40001  mailbox=0      maxDepth=0      deadletters=0  avg=0.142ms  p50=0.05ms  p95=0.5ms
+worker: processed=40001 mailbox=0 restarts=0
+```
+
+The mailbox jumps to the full backlog, then drains to zero as the worker catches up. Counts are exact; the latency numbers depend on the machine. The [Metrics](../actor-system/metrics.md) guide shows the snapshot in full and sketches an OpenTelemetry adapter you keep in your own code.
+
 ## Across machines: `remoting`
 
 A checkout node and a payments node as two Docker Compose services, each one actor system. The checkout desk resolves the payments actor with `remoteLookup`, charges through it with an `ask` piped back to its own mailbox, and `watch`es it, so the payments actor stopping, or its whole node dying, arrives as the same `Terminated` message. The desk queues orders through the outage and flushes them when the node returns.

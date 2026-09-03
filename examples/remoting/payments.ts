@@ -35,7 +35,7 @@
  */
 
 import type { Actor, PID, ReceiveContext } from "../../src/index";
-import { ActorSystem, TextLogger } from "../../src/index";
+import { ActorSystem, LongLivedStrategy, TextLogger } from "../../src/index";
 import { advertisedHost } from "./host";
 import { ChargeCard, Declined, Receipt } from "./messages";
 
@@ -109,7 +109,11 @@ const system: ActorSystem = new ActorSystem("payments", {
   remote: { host, port },
 });
 await system.start();
-let payments: PID = await system.spawn("payments", new PaymentsActor());
+// A service actor that idles between charges: long-lived so it never
+// passivates out from under the node.
+let payments: PID = await system.spawn("payments", new PaymentsActor(), {
+  passivationStrategy: new LongLivedStrategy(),
+});
 
 logger.info(`[payments] up: ${payments.path().toString()}`);
 
@@ -136,7 +140,9 @@ async function maintenance(): Promise<void> {
   logger.info("[payments] maintenance: stopping the payments actor; the node stays up");
   await payments.shutdown();
   await pause(MAINTENANCE_MS);
-  payments = await system.spawn("payments", new PaymentsActor());
+  payments = await system.spawn("payments", new PaymentsActor(), {
+    passivationStrategy: new LongLivedStrategy(),
+  });
   logger.info(`[payments] maintenance done: ${payments.path().toString()}`);
 }
 

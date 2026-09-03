@@ -131,7 +131,7 @@ Paths are immutable for the actor's life, including across supervisor restarts. 
 Passed to `system.spawn` or `ctx.spawn` / `pid.spawnChild`:
 
 - [Mailbox](mailboxes.md): default unbounded FIFO
-- [Passivation](passivation.md): default long-lived (never passivated)
+- [Passivation](passivation.md): default time-based, passivated after `DefaultPassivationTimeout` idle
 - [Supervisor](supervision.md): default, any failure stops the actor
 - [Reentrancy](reentrancy.md): default, `request` disabled
 

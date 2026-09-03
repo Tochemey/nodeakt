@@ -320,10 +320,18 @@ describe("ActorSystem multi-core", () => {
     await expect(system.spawn("claimed", new Probe())).rejects.toBe(ErrActorAlreadyExists);
     await expect(me().ask(facade, "spawn|claimed", 15_000)).resolves.toContain("refused:");
 
-    // And a facade finds an actor living on the main isolate.
+    // And a facade finds an actor living on the main isolate. The worker learns
+    // the just-claimed name through its warm view, which the synchronous
+    // actorOf reads, so retry until it resolves "central" rather than replying
+    // "missing"; the ask to a silent Probe then times out, ok:false.
     await system.spawn("central", new Probe());
-    const central = (await me().ask(facade, "find|central|ignored", 15_000)) as { ok: boolean };
-    expect(central.ok).toBe(false);
+    await expect
+      .poll(
+        async () =>
+          ((await me().ask(facade, "find|central|ignored", 15_000)) as { ok?: boolean }).ok,
+        { timeout: 30_000 },
+      )
+      .toBe(false);
 
     await system.stop();
   }, 60_000);
@@ -409,6 +417,30 @@ describe("ActorSystem multi-core", () => {
 
     await expect(system.spawn("fragile", new Exploding())).rejects.toThrow();
     await expect(system.spawn("fragile", new Probe())).resolves.toBeDefined();
+
+    await system.stop();
+  }, 60_000);
+
+  it("merges metrics across worker isolates", async () => {
+    vi.stubEnv("NODEAKT_PARALLELISM", "2");
+    const system = new ActorSystem("metered", {
+      logger: discardLogger,
+      metrics: { enabled: true },
+    });
+    await system.start();
+
+    // The Props actor is placed on the worker isolate; asking it proves it
+    // is live there and has processed a message its own registry counted.
+    const placed = await system.spawn("counter", Props.create(Registered, "w"));
+    await expect(system.noSender().ask(placed, "ping", 10_000)).resolves.toBe("w:ping");
+
+    const snapshot = await system.collectMetrics();
+    // Main plus the one worker contribute; the worker's actor shows up in
+    // the machine-wide counts even though it lives on another isolate.
+    expect(snapshot.isolates).toBe(2);
+    expect(snapshot.actors.active).toBeGreaterThanOrEqual(1);
+    expect(snapshot.actors.startedTotal).toBeGreaterThanOrEqual(1);
+    expect(snapshot.messages.processedTotal).toBeGreaterThanOrEqual(1);
 
     await system.stop();
   }, 60_000);

@@ -53,6 +53,7 @@ export default defineConfig({
           { text: "Logging", link: "/actor-system/logging" },
           { text: "Events and dead letters", link: "/actor-system/events" },
           { text: "Extensions", link: "/actor-system/extensions" },
+          { text: "Metrics", link: "/actor-system/metrics" },
         ],
       },
       {

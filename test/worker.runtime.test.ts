@@ -479,6 +479,40 @@ describe("WorkerRuntime", () => {
     bare.port2.close();
   });
 
+  it("answers a metrics request and gathers no siblings through its facade", async () => {
+    const metered = new ActorSystem("sys", {
+      logger: discardLogger,
+      metrics: { enabled: true },
+    });
+    await metered.start();
+
+    const channel = new MessageChannel();
+    const inbox: WorkerMessage[] = [];
+    channel.port1.on("message", (message: unknown) => {
+      inbox.push(message as WorkerMessage);
+    });
+    const meteredRuntime = new WorkerRuntime(metered, new MessageRegistry(), channel.port2, 1);
+
+    channel.port1.postMessage({ kind: "metrics", seq: 7 });
+    await expect.poll(() => inbox.some((m) => m.kind === "metrics-reply")).toBe(true);
+    const reply = inbox.find((m) => m.kind === "metrics-reply") as WorkerMessage;
+    expect(reply.kind).toBe("metrics-reply");
+    if (reply.kind === "metrics-reply") {
+      expect(reply.seq).toBe(7);
+      expect(reply.metrics).not.toBeNull();
+    }
+
+    // A facade sees only its own isolate: collectMetrics merges it with an
+    // empty set of workers through the facade placement.
+    const snapshot = await metered.collectMetrics();
+    expect(snapshot.isolates).toBe(1);
+
+    meteredRuntime.mesh().close();
+    channel.port1.close();
+    channel.port2.close();
+    await metered.stop();
+  });
+
   it("announces the stop of a placed actor so its name frees", async () => {
     post({ kind: "spawn", seq: 1, name: "leaver", recipe: { module: echoModule, actor: "Echo" } });
     await receivedWhere((m) => m.kind === "spawned");

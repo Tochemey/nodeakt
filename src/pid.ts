@@ -59,6 +59,8 @@ import {
   RuntimeCommand,
   Terminated,
 } from "./messages";
+import type { MetricRegistry } from "./metric.registry";
+import type { ActorMetrics } from "./observability/metric.snapshot";
 import {
   defaultPassivationStrategy,
   MessagesCountBasedStrategy,
@@ -168,6 +170,30 @@ function pause(ms: number): Promise<void> {
 }
 
 /**
+ * The fault history an actor accumulates once it has failed: how many
+ * times it restarted, its run of consecutive faults, and when the last
+ * one happened. Created on the first fault, so an actor that never fails
+ * carries one null field for all three.
+ */
+interface FaultHistory {
+  restarts: number;
+  consecutive: number;
+  lastAt: number;
+}
+
+/**
+ * What waits on an actor's lifecycle: the shutdown in flight, the callers
+ * parked until its receive loop reports idle, and the listeners told when
+ * its stop completes. Created on first use, so an actor that is simply
+ * running carries one null field for all three.
+ */
+interface LifecycleWaits {
+  shutdown: Promise<void> | null;
+  idle: Array<() => void> | null;
+  stopped: Array<() => void> | null;
+}
+
+/**
  * PID is the process identity of a running actor: the runtime handle that
  * owns the actor instance, its mailbox, and its behavior state, and the
  * only way to interact with the actor.
@@ -188,6 +214,11 @@ export class PID {
   private readonly _mailbox: Mailbox;
   private readonly _path: Path;
   private readonly _actorSystem: ActorSystem;
+
+  /** This isolate's metrics, cached from the system at construction, or
+   * null when metrics are off; read on the message hot path, where its
+   * timing flag also gates the per-message clock read. */
+  private readonly _metrics: MetricRegistry | null;
 
   /** Created on first behavior switch; most actors never need one. */
   private _behaviorStack: BehaviorStack | null = null;
@@ -214,14 +245,9 @@ export class PID {
   /** Whether this PID is registered in the hierarchy tree. */
   private _inTree = false;
 
-  private _shutdown: Promise<void> | null = null;
-
-  /** Created on first idle wait; only shutdown and restart ever park. */
-  private _idleResolvers: Array<() => void> | null = null;
-
-  /** Created on first {@link onStopped} registration; invoked once when
-   * shutdown completes. */
-  private _stopListeners: Array<() => void> | null = null;
+  /** Created on the first shutdown, idle wait, or {@link onStopped}
+   * registration; most running actors never need one. */
+  private _waits: LifecycleWaits | null = null;
 
   /** The transport of a PID whose actor lives on another isolate; null
    * for every local actor, so the hot paths pay one predictable null
@@ -231,9 +257,9 @@ export class PID {
 
   private _latestActivity = 0;
   private _processedCount = 0;
-  private _restartCount = 0;
-  private _consecutiveFaults = 0;
-  private _lastFaultAt = 0;
+
+  /** Created on the first fault; an actor that never fails has none. */
+  private _faults: FaultHistory | null = null;
   private readonly _supervisor: Supervisor;
   private readonly _passivationStrategy: PassivationStrategy;
 
@@ -247,10 +273,11 @@ export class PID {
    * type is resolved once here instead of once per message. */
   private readonly _maxMessages: number;
 
-  /** Whether an active time-based passivation schedule consults
-   * {@link latestActivity}; the drain-end clock read is skipped
-   * otherwise. Toggled by the passivation scheduler. */
-  private _trackActivity = false;
+  /** This actor's slot in the passivation scheduler's heap, or -1 while
+   * it is not scheduled: the scheduler's only per-actor bookkeeping, and
+   * what gates the drain-end clock read, since only a scheduled actor's
+   * idleness is ever consulted. */
+  private _passivationSlot = -1;
 
   /** The actor's request bookkeeping; null unless the actor was spawned
    * with reentrancy enabled. */
@@ -276,6 +303,7 @@ export class PID {
     this._actor = actor;
     this._path = path;
     this._actorSystem = actorSystem;
+    this._metrics = actorSystem.metricRegistry();
     this._mailbox = options?.mailbox ?? new UnboundedMailbox();
     this._supervisor = options?.supervisor ?? defaultSupervisor;
     this._passivationStrategy = options?.passivationStrategy ?? defaultPassivationStrategy;
@@ -355,7 +383,7 @@ export class PID {
 
   /** Returns the number of times the actor has been restarted. */
   restartCount(): number {
-    return this._restartCount;
+    return this._faults === null ? 0 : this._faults.restarts;
   }
 
   /**
@@ -401,9 +429,38 @@ export class PID {
     return this._stash?.len() ?? 0;
   }
 
+  /** Returns the current depth of the actor's mailbox. Runtime plumbing
+   * for the metrics gauges; developers read it through {@link metrics}.
+   *
+   * @internal
+   */
+  mailboxSize(): number {
+    return this._mailbox.len();
+  }
+
   /** Returns the passivation strategy configured for this actor. */
   passivationStrategy(): PassivationStrategy {
     return this._passivationStrategy;
+  }
+
+  /**
+   * Returns a snapshot of this actor's own metrics, read on demand from
+   * the fields it already keeps: its processed and restart counts, its
+   * mailbox and stash depth, its child count, when it was last active,
+   * and whether it is suspended. It is introspection for one actor, never
+   * a fleet time series, and does not require the system's metrics option.
+   */
+  metrics(): ActorMetrics {
+    return {
+      path: this._path.toString(),
+      processedCount: this._processedCount,
+      restartCount: this.restartCount(),
+      mailboxSize: this.mailboxSize(),
+      stashSize: this.stashSize(),
+      childrenCount: this.children().length,
+      lastActivity: this._latestActivity,
+      suspended: this._suspended,
+    };
   }
 
   /**
@@ -429,7 +486,10 @@ export class PID {
     this._running = true;
     this._latestActivity = Date.now();
     this.tree().addNode(this._parent, this);
-    this._actorSystem.logger().debug("actor started", { actor: this._path.toString() });
+    // Debug fields are built lazily: the path string is only materialized
+    // (and cached on the path) when the level is on, so an idle actor on a
+    // quiet logger never pays for one.
+    this._actorSystem.logger().debug("actor started", () => ({ actor: this._path.toString() }));
 
     if (this.canEmit()) {
       this._actorSystem.publishEvent(new ActorStarted(this._path.toString(), Date.now()));
@@ -462,21 +522,25 @@ export class PID {
       );
     }
 
-    if (this._shutdown !== null) {
-      return this._shutdown;
+    const pending = this._waits?.shutdown;
+    if (pending !== undefined && pending !== null) {
+      return pending;
     }
 
     if (!this._running) {
       return Promise.resolve();
     }
 
-    this._shutdown = this.doShutdown();
-    return this._shutdown;
+    const shutdown = this.doShutdown();
+    this.waits().shutdown = shutdown;
+    return shutdown;
   }
 
   private async doShutdown(): Promise<void> {
     this._stopping = true;
-    this._actorSystem.logger().debug("shutting down actor", { actor: this._path.toString() });
+    this._actorSystem
+      .logger()
+      .debug("shutting down actor", () => ({ actor: this._path.toString() }));
 
     // The receive loop may still be draining the backlog accepted before
     // the stopping flag was set, possibly parked on an async behavior or
@@ -495,10 +559,10 @@ export class PID {
     // runs its own cleanup.
     const children = this.tree().children(this);
     if (children.length > 0) {
-      this._actorSystem.logger().debug("stopping children", {
+      this._actorSystem.logger().debug("stopping children", () => ({
         actor: this._path.toString(),
         children: children.length,
-      });
+      }));
       await Promise.all(children.map((child) => child.shutdown()));
     }
 
@@ -506,10 +570,10 @@ export class PID {
     // a watchee that stops from here on does not try to notify a dying watcher.
     const watchees = this.tree().watchees(this);
     if (watchees.length > 0) {
-      this._actorSystem.logger().debug("releasing watched actors", {
+      this._actorSystem.logger().debug("releasing watched actors", () => ({
         actor: this._path.toString(),
         watched: watchees.length,
-      });
+      }));
 
       for (const watchee of watchees) {
         this.tree().removeWatcher(watchee, this);
@@ -523,10 +587,10 @@ export class PID {
     // before the actor is torn down.
     const watchers = this.tree().watchers(this);
     if (watchers.length > 0) {
-      this._actorSystem.logger().debug("notifying watchers", {
+      this._actorSystem.logger().debug("notifying watchers", () => ({
         actor: this._path.toString(),
         watchers: watchers.length,
-      });
+      }));
       const terminated = new Terminated(this._path.toString());
 
       for (const watcher of watchers) {
@@ -536,15 +600,16 @@ export class PID {
 
     // The death notice is out; tear the actor down and mark it stopped.
     this.reset();
-    this._actorSystem.logger().debug("actor stopped", { actor: this._path.toString() });
+    this._actorSystem.logger().debug("actor stopped", () => ({ actor: this._path.toString() }));
 
     if (this.canEmit()) {
       this._actorSystem.publishEvent(new ActorStopped(this._path.toString(), Date.now()));
     }
 
-    const listeners = this._stopListeners;
-    if (listeners !== null) {
-      this._stopListeners = null;
+    const waits = this._waits;
+    if (waits !== null && waits.stopped !== null) {
+      const listeners = waits.stopped;
+      waits.stopped = null;
       for (const listener of listeners) {
         listener();
       }
@@ -650,12 +715,12 @@ export class PID {
       await this.runPreStart();
 
       this._suspended = false;
-      this._restartCount++;
+      this.faultHistory().restarts++;
       this._latestActivity = Date.now();
-      this._actorSystem.logger().debug("actor restarted", {
+      this._actorSystem.logger().debug("actor restarted", () => ({
         actor: this._path.toString(),
-        restarts: this._restartCount,
-      });
+        restarts: this.restartCount(),
+      }));
 
       if (this.canEmit()) {
         this._actorSystem.publishEvent(new ActorRestarted(this._path.toString(), Date.now()));
@@ -1177,10 +1242,10 @@ export class PID {
    * alive.
    */
   watch(cid: PID): void {
-    this._actorSystem.logger().debug("watching actor", {
+    this._actorSystem.logger().debug("watching actor", () => ({
       watcher: this._path.toString(),
       watched: cid._path.toString(),
-    });
+    }));
 
     const route = cid._route;
     if (route !== null) {
@@ -1197,10 +1262,10 @@ export class PID {
 
   /** Cancels a {@link watch} registration on `cid`. */
   unWatch(cid: PID): void {
-    this._actorSystem.logger().debug("unwatching actor", {
+    this._actorSystem.logger().debug("unwatching actor", () => ({
       watcher: this._path.toString(),
       watched: cid._path.toString(),
-    });
+    }));
 
     const route = cid._route;
     if (route !== null) {
@@ -1222,11 +1287,9 @@ export class PID {
    * @internal
    */
   onStopped(listener: () => void): void {
-    if (this._stopListeners === null) {
-      this._stopListeners = [];
-    }
-
-    this._stopListeners.push(listener);
+    const waits = this.waits();
+    waits.stopped ??= [];
+    waits.stopped.push(listener);
   }
 
   /**
@@ -1465,9 +1528,9 @@ export class PID {
       const ctx = this._mailbox.dequeue();
       if (ctx === undefined) {
         // The drain is complete: this is the moment idleness starts, so
-        // the clock is read once here, only for actors whose passivation
-        // consults it, instead of once per message.
-        if (this._trackActivity) {
+        // the clock is read once here, only for actors on the passivation
+        // schedule (the ones whose idleness is consulted), not per message.
+        if (this._passivationSlot >= 0) {
           this._latestActivity = Date.now();
         }
 
@@ -1483,6 +1546,11 @@ export class PID {
       // Panicking message is a failing child's supervision request.
       if (ctx.message instanceof RuntimeCommand) {
         this._processedCount++;
+        const metrics = this._metrics;
+        if (metrics !== null) {
+          metrics.processed++;
+        }
+
         const msg = ctx.message;
 
         if (msg instanceof RequestReply) {
@@ -1514,6 +1582,11 @@ export class PID {
         continue;
       }
 
+      // The clock is read only when the histogram is on; the start rides
+      // the loop as a local and follows an async behavior into its
+      // settlement, so the actor itself carries no per-message state.
+      const receiveStart = this._metrics?.timing ? performance.now() : 0;
+
       let result: unknown;
 
       try {
@@ -1528,11 +1601,11 @@ export class PID {
       // in a separate method so this loop body captures nothing and a
       // synchronous drain allocates nothing per message.
       if (result instanceof Promise) {
-        this.parkOn(result, ctx, processed);
+        this.parkOn(result, ctx, processed, receiveStart);
         return;
       }
 
-      if (!this.postReceive()) {
+      if (!this.postReceive(receiveStart)) {
         return;
       }
 
@@ -1549,19 +1622,24 @@ export class PID {
 
   /** Parks the receive loop on a pending behavior and resumes it from
    * the settlement, routing a rejection through fault handling. */
-  private parkOn(pending: Promise<unknown>, ctx: ReceiveContext, processed: number): void {
+  private parkOn(
+    pending: Promise<unknown>,
+    ctx: ReceiveContext,
+    processed: number,
+    receiveStart: number,
+  ): void {
     pending.then(
-      () => this.resumeLoop(ctx, processed),
+      () => this.resumeLoop(ctx, processed, receiveStart),
       (err: unknown) => {
         this.handleFault(err, ctx);
-        this.resumeLoop(ctx, processed);
+        this.resumeLoop(ctx, processed, receiveStart);
       },
     );
   }
 
   /** Continues the receive loop after an asynchronous behavior settles. */
-  private resumeLoop(ctx: ReceiveContext, processed: number): void {
-    if (!this.postReceive()) {
+  private resumeLoop(ctx: ReceiveContext, processed: number, receiveStart: number): void {
+    if (!this.postReceive(receiveStart)) {
       return;
     }
 
@@ -1578,12 +1656,20 @@ export class PID {
   }
 
   /**
-   * Bookkeeping after a behavior settles: counts the message, halts the
-   * loop when a fault suspended the actor, and applies a count-based
-   * passivation budget. Returns whether the loop may continue.
+   * Bookkeeping after a behavior settles: counts the message, records its
+   * duration from `receiveStart` when timing is on, halts the loop when a
+   * fault suspended the actor, and applies a count-based passivation
+   * budget. Returns whether the loop may continue.
    */
-  private postReceive(): boolean {
+  private postReceive(receiveStart: number): boolean {
     this._processedCount++;
+    const metrics = this._metrics;
+    if (metrics !== null) {
+      metrics.processed++;
+      if (metrics.timing) {
+        metrics.recordDuration(performance.now() - receiveStart);
+      }
+    }
 
     // A fault may have suspended the actor: halt the loop until it is
     // restarted or reinstated, leaving queued messages in the mailbox.
@@ -1770,14 +1856,37 @@ export class PID {
    */
   private recordFault(window: number): number {
     const now = Date.now();
+    const faults = this.faultHistory();
 
-    if (window > 0 && this._lastFaultAt > 0 && now - this._lastFaultAt > window) {
-      this._consecutiveFaults = 0;
+    if (window > 0 && faults.lastAt > 0 && now - faults.lastAt > window) {
+      faults.consecutive = 0;
     }
 
-    this._lastFaultAt = now;
-    this._consecutiveFaults++;
-    return this._consecutiveFaults;
+    faults.lastAt = now;
+    faults.consecutive++;
+    return faults.consecutive;
+  }
+
+  /** The actor's fault history, created on first use. */
+  private faultHistory(): FaultHistory {
+    let faults = this._faults;
+    if (faults === null) {
+      faults = { restarts: 0, consecutive: 0, lastAt: 0 };
+      this._faults = faults;
+    }
+
+    return faults;
+  }
+
+  /** What waits on the actor's lifecycle, created on first use. */
+  private waits(): LifecycleWaits {
+    let waits = this._waits;
+    if (waits === null) {
+      waits = { shutdown: null, idle: null, stopped: null };
+      this._waits = waits;
+    }
+
+    return waits;
   }
 
   /** Puts the actor in suspension: it holds its state but accepts and
@@ -1820,19 +1929,21 @@ export class PID {
   /** Parks the caller until the receive loop reports idle. */
   private awaitIdle(): Promise<void> {
     return new Promise<void>((resolve) => {
-      this._idleResolvers ??= [];
-      this._idleResolvers.push(resolve);
+      const waits = this.waits();
+      waits.idle ??= [];
+      waits.idle.push(resolve);
     });
   }
 
   /** Wakes the parked shutdown or restart once the receive loop exits. */
   private notifyIdle(): void {
-    const resolvers = this._idleResolvers;
-    if (resolvers === null) {
+    const waits = this._waits;
+    if (waits === null || waits.idle === null) {
       return;
     }
 
-    this._idleResolvers = null;
+    const resolvers = waits.idle;
+    waits.idle = null;
 
     for (const resolve of resolvers) {
       resolve();
@@ -1893,20 +2004,24 @@ export class PID {
   }
 
   /**
-   * Turns the drain-end activity clock on or off. Runtime plumbing for
-   * the passivation scheduler: only a time-based schedule consults
-   * {@link latestActivity}, so the clock is read only while one is
-   * active. Enabling counts as activity, so a schedule attached to a
-   * long-running actor starts from a fresh timestamp.
+   * Returns this actor's slot in the passivation scheduler's heap, or -1
+   * while it is not scheduled. Runtime plumbing for the scheduler, which
+   * keeps the slot here instead of in a lookup table of its own; while
+   * the actor is scheduled, each mailbox drain also stamps
+   * {@link latestActivity}, which is what the scheduler consults.
    *
    * @internal
    */
-  setActivityTracking(enabled: boolean): void {
-    this._trackActivity = enabled;
+  passivationSlot(): number {
+    return this._passivationSlot;
+  }
 
-    if (enabled) {
-      this._latestActivity = Date.now();
-    }
+  /** Records the actor's scheduler slot; see {@link passivationSlot}.
+   *
+   * @internal
+   */
+  setPassivationSlot(slot: number): void {
+    this._passivationSlot = slot;
   }
 
   /** @internal */

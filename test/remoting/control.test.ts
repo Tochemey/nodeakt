@@ -388,6 +388,7 @@ describe("remoteStop", () => {
           orders.push(`stop:${name}`);
           return Promise.resolve();
         },
+        collectMetrics: () => Promise.resolve([]),
         stop: (): Promise<void> => Promise.resolve(),
       });
 
@@ -414,6 +415,7 @@ describe("remoteStop", () => {
           name === "placed" ? route : undefined,
         respawn: (): Promise<void> => Promise.reject(new Error("worker went away")),
         stopActor: (): Promise<void> => Promise.reject(new Error("worker went away")),
+        collectMetrics: () => Promise.resolve([]),
         stop: (): Promise<void> => Promise.resolve(),
       });
 

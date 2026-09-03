@@ -30,6 +30,7 @@ import type { ClusterResolver } from "./clustering.resolver";
 import { parseHostPort } from "./clustering.transport";
 import { ErrActorAlreadyExists } from "./errors";
 import { ClusterUnavailableError, PartitionRebalancingError } from "./kv/errors";
+import type { IsolateMetrics } from "./observability/metric.snapshot";
 import type { PID } from "./pid";
 import type { Placement } from "./placement";
 import type { Props } from "./props";
@@ -387,6 +388,13 @@ export class ClusterPlacement implements Placement {
   stopActor(name: string): Promise<void> {
     const inner: Placement | null = this.#inner;
     return inner === null ? Promise.resolve() : inner.stopActor(name);
+  }
+
+  /** Gathers each worker's metrics through the wrapped placement; none
+   * before boot, when no worker isolate exists yet. */
+  collectMetrics(): Promise<(IsolateMetrics | null)[]> {
+    const inner: Placement | null = this.#inner;
+    return inner === null ? Promise.resolve([]) : inner.collectMetrics();
   }
 
   /** Tears the wrapped placement down and blocks further record deletions. */

@@ -55,7 +55,10 @@ if (parentPort !== null && boot !== null) {
       await applySetup(registry, boot.setup);
     }
 
-    const system = new ActorSystem(boot.systemName, boot.quiet ? { logger: discardLogger } : {});
+    const system = new ActorSystem(boot.systemName, {
+      ...(boot.quiet ? { logger: discardLogger } : {}),
+      ...(boot.metrics !== null ? { metrics: boot.metrics } : {}),
+    });
     // The facade adopts the node's advertised address before any actor
     // exists, so paths minted on this isolate are canonical for the
     // whole node and inbound envelopes resolve here.

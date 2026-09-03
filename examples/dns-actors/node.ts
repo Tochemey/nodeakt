@@ -35,7 +35,14 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { ActorSystem, DnsDiscovery, DnsRecordType, Props, TextLogger } from "../../src/index";
+import {
+  ActorSystem,
+  DnsDiscovery,
+  DnsRecordType,
+  LongLivedStrategy,
+  Props,
+  TextLogger,
+} from "../../src/index";
 import { Greet, WhereAreYou, Worker } from "./worker.actor.js";
 
 /** Reads a required string environment variable, failing fast when it is absent. */
@@ -151,7 +158,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (request.method === "PUT" && route === "workers" && name !== undefined) {
-    const pid = await system.spawn(name, Props.create(Worker, region));
+    // Workers are reached by name across the cluster long after they are
+    // created, so they are long-lived: an idle window must not passivate one.
+    const pid = await system.spawn(name, Props.create(Worker, region), {
+      passivationStrategy: new LongLivedStrategy(),
+    });
     json(response, 201, { name, host: system.host(), path: pid.path().toString() });
     return;
   }
@@ -159,6 +170,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (request.method === "PUT" && route === "spread" && name !== undefined) {
     const pid = await system.spawnOn(name, Props.create(Worker, region), {
       strategy: "roundRobin",
+      passivationStrategy: new LongLivedStrategy(),
     });
     json(response, 201, { name, path: pid.path().toString() });
     return;

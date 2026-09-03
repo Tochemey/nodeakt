@@ -126,10 +126,10 @@ describe("PassivationManager", () => {
   it("passivates an idle actor after its timeout", async () => {
     const manager = new PassivationManager();
     const actor = new Collector();
-    const pid = makePid(actor);
+    const pid = makePid(actor, new TimeBasedStrategy(40));
     await pid.start();
 
-    manager.register(pid, new TimeBasedStrategy(40));
+    manager.register(pid);
 
     await expect.poll(() => pid.isRunning(), { timeout: 2000 }).toBe(false);
     expect(actor.stopped).toBe(1);
@@ -141,10 +141,10 @@ describe("PassivationManager", () => {
   it("does not passivate an actor that keeps receiving messages", async () => {
     const manager = new PassivationManager();
     const actor = new Collector();
-    const pid = makePid(actor);
+    const pid = makePid(actor, new TimeBasedStrategy(60));
     await pid.start();
 
-    manager.register(pid, new TimeBasedStrategy(60));
+    manager.register(pid);
 
     const ping = setInterval(() => external.tell(pid, "ping"), 15);
     await pause(200);
@@ -161,10 +161,10 @@ describe("PassivationManager", () => {
   it("unregister cancels a pending passivation", async () => {
     const manager = new PassivationManager();
     const actor = new Collector();
-    const pid = makePid(actor);
+    const pid = makePid(actor, new TimeBasedStrategy(40));
     await pid.start();
 
-    manager.register(pid, new TimeBasedStrategy(40));
+    manager.register(pid);
     manager.unregister(pid);
 
     await pause(120);
@@ -181,7 +181,7 @@ describe("PassivationManager", () => {
     const pid = makePid(actor, new LongLivedStrategy());
     await pid.start();
 
-    manager.register(pid, pid.passivationStrategy());
+    manager.register(pid);
 
     await pause(100);
     expect(pid.isRunning()).toBe(true);
@@ -193,10 +193,10 @@ describe("PassivationManager", () => {
   it("stop cancels every pending passivation", async () => {
     const manager = new PassivationManager();
     const actor = new Collector();
-    const pid = makePid(actor);
+    const pid = makePid(actor, new TimeBasedStrategy(40));
     await pid.start();
 
-    manager.register(pid, new TimeBasedStrategy(40));
+    manager.register(pid);
     manager.stop();
 
     await pause(120);
@@ -240,22 +240,22 @@ describe("message-count passivation", () => {
 });
 
 describe("PassivationManager scheduling", () => {
-  async function startPid(actor: Actor): Promise<PID> {
-    const pid = makePid(actor);
+  async function startPid(actor: Actor, strategy?: PassivationStrategy): Promise<PID> {
+    const pid = makePid(actor, strategy);
     await pid.start();
     return pid;
   }
 
   it("re-arms the shared timer for each earlier deadline", async () => {
     const manager = new PassivationManager();
-    const slow = await startPid(new Collector());
-    const mid = await startPid(new Collector());
-    const fast = await startPid(new Collector());
+    const slow = await startPid(new Collector(), new TimeBasedStrategy(240));
+    const mid = await startPid(new Collector(), new TimeBasedStrategy(140));
+    const fast = await startPid(new Collector(), new TimeBasedStrategy(40));
 
     // Latest-first registration, so every registration re-arms the timer.
-    manager.register(slow, new TimeBasedStrategy(240));
-    manager.register(mid, new TimeBasedStrategy(140));
-    manager.register(fast, new TimeBasedStrategy(40));
+    manager.register(slow);
+    manager.register(mid);
+    manager.register(fast);
 
     await expect.poll(() => fast.isRunning(), { timeout: 2000 }).toBe(false);
     expect(mid.isRunning()).toBe(true);
@@ -269,16 +269,13 @@ describe("PassivationManager scheduling", () => {
 
   it("drains due entries in deadline order through the shared heap", async () => {
     const manager = new PassivationManager();
-    const pids = await Promise.all([
-      startPid(new Collector()),
-      startPid(new Collector()),
-      startPid(new Collector()),
-      startPid(new Collector()),
-    ]);
     const timeouts = [40, 200, 120, 300];
+    const pids = await Promise.all(
+      timeouts.map((timeout) => startPid(new Collector(), new TimeBasedStrategy(timeout))),
+    );
 
-    for (let i = 0; i < pids.length; i++) {
-      manager.register(pids[i] as PID, new TimeBasedStrategy(timeouts[i] as number));
+    for (const pid of pids) {
+      manager.register(pid);
     }
 
     for (const pid of pids) {
@@ -290,15 +287,15 @@ describe("PassivationManager scheduling", () => {
 
   it("unregister removes an entry from the middle of the schedule", async () => {
     const manager = new PassivationManager();
-    const fast = await startPid(new Collector());
-    const kept = await startPid(new Collector());
-    const third = await startPid(new Collector());
-    const fourth = await startPid(new Collector());
+    const fast = await startPid(new Collector(), new TimeBasedStrategy(40));
+    const kept = await startPid(new Collector(), new TimeBasedStrategy(120));
+    const third = await startPid(new Collector(), new TimeBasedStrategy(200));
+    const fourth = await startPid(new Collector(), new TimeBasedStrategy(300));
 
-    manager.register(fast, new TimeBasedStrategy(40));
-    manager.register(kept, new TimeBasedStrategy(120));
-    manager.register(third, new TimeBasedStrategy(200));
-    manager.register(fourth, new TimeBasedStrategy(300));
+    manager.register(fast);
+    manager.register(kept);
+    manager.register(third);
+    manager.register(fourth);
 
     manager.unregister(kept);
 
@@ -313,11 +310,11 @@ describe("PassivationManager scheduling", () => {
 
   it("prunes an entry whose actor already stopped", async () => {
     const manager = new PassivationManager();
-    const dead = await startPid(new Collector());
-    const alive = await startPid(new Collector());
+    const dead = await startPid(new Collector(), new TimeBasedStrategy(40));
+    const alive = await startPid(new Collector(), new TimeBasedStrategy(140));
 
-    manager.register(dead, new TimeBasedStrategy(40));
-    manager.register(alive, new TimeBasedStrategy(140));
+    manager.register(dead);
+    manager.register(alive);
     await dead.shutdown();
 
     // The timer fires for the stopped actor, prunes its entry, and keeps
@@ -343,9 +340,9 @@ describe("PassivationManager scheduling", () => {
 
     const manager = new PassivationManager();
     const actor = new Busy();
-    const pid = await startPid(actor);
+    const pid = await startPid(actor, new TimeBasedStrategy(50));
 
-    manager.register(pid, new TimeBasedStrategy(50));
+    manager.register(pid);
     external.tell(pid, "work");
 
     // The deadline passes while the message is still being processed.
@@ -371,10 +368,10 @@ describe("PassivationManager scheduling", () => {
 
     const manager = new PassivationManager();
     const actor = new Faulty();
-    const pid = makePid(actor);
+    const pid = makePid(actor, new TimeBasedStrategy(50));
     await pid.start();
 
-    manager.register(pid, new TimeBasedStrategy(50));
+    manager.register(pid);
 
     // A fault with no parent to decide the directive suspends the actor.
     external.tell(pid, "boom");
@@ -392,24 +389,39 @@ describe("PassivationManager scheduling", () => {
     manager.stop();
   });
 
-  it("unregister tolerates an entry that is missing from the heap", async () => {
+  it("unregister is harmless for an actor that was never scheduled", async () => {
     const manager = new PassivationManager();
     const pid = await startPid(new Collector());
 
-    manager.register(pid, new TimeBasedStrategy(60_000));
-
-    // Force the inconsistent state the guard protects against: the entry
-    // is tracked but claims not to be enqueued.
-    const internals = manager as unknown as {
-      entries: Map<string, { index: number }>;
-    };
-    for (const entry of internals.entries.values()) {
-      entry.index = -1;
-    }
-
+    expect(pid.passivationSlot()).toBe(-1);
     expect(() => manager.unregister(pid)).not.toThrow();
+    expect(pid.passivationSlot()).toBe(-1);
 
     manager.stop();
     await pid.shutdown();
+  });
+
+  it("keeps each scheduled actor's slot current and releases it on stop", async () => {
+    const manager = new PassivationManager();
+    const slow = await startPid(new Collector(), new TimeBasedStrategy(60_000));
+    const fast = await startPid(new Collector(), new TimeBasedStrategy(1_000));
+
+    // The later registration has the earlier deadline, so it takes the root
+    // and the first one sinks to the next slot.
+    manager.register(slow);
+    manager.register(fast);
+    expect(fast.passivationSlot()).toBe(0);
+    expect(slow.passivationSlot()).toBe(1);
+
+    // Removing the root promotes the survivor into it.
+    manager.unregister(fast);
+    expect(fast.passivationSlot()).toBe(-1);
+    expect(slow.passivationSlot()).toBe(0);
+
+    manager.stop();
+    expect(slow.passivationSlot()).toBe(-1);
+
+    await slow.shutdown();
+    await fast.shutdown();
   });
 });

@@ -1,6 +1,6 @@
 <h2 align="center">
   <img src="assets/nodeakt.svg" alt="nodeakt" width="480"/><br/>
-  Distributed Actor framework for TypeScript
+  Actor framework for TypeScript
 </h2>
 
 <p align="center">

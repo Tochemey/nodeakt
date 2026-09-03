@@ -137,6 +137,8 @@ export async function systemPlacement(
 
     stopActor: (name) => pool.stopPlaced(name),
 
+    collectMetrics: () => pool.collectMetrics(),
+
     stop: () => pool.stop(),
   };
 }

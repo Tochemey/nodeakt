@@ -30,6 +30,7 @@ import { Codec } from "./codec";
 import type { WireMessage } from "./envelope";
 import { ActorNotFoundError, ActorNotRegisteredError, ErrDead, ErrRequestTimeout } from "./errors";
 import { Terminated } from "./messages";
+import { ConnTotals } from "./net/conn";
 import {
   type DataEnvelope,
   ERROR_APPLICATION,
@@ -49,6 +50,7 @@ import { NetServer } from "./net/server";
 import { ErrAskTimeout, PeerError, REVISION_CURRENT, type Session } from "./net/session";
 import type { TlsConfig } from "./net/tls";
 import { ByteReader, ByteWriter, decodeValue, encodeValue } from "./net/values";
+import type { RemotingMetrics } from "./observability/metric.snapshot";
 import { deserializePassivation, type SerializedPassivation } from "./passivation";
 import { type Path, parsePath } from "./path";
 import type { PID } from "./pid";
@@ -475,6 +477,11 @@ export class Remoting {
    * teardown hooks. */
   private _closed: boolean = false;
 
+  /** Frame and byte totals of the connections this node no longer
+   * holds: a reclaimed peer's, and each accepted session's, folded in
+   * as they go so the node's counters stay monotonic over its life. */
+  private readonly _closedTotals: ConnTotals = new ConnTotals();
+
   private constructor(
     system: ActorSystem,
     server: NetServer,
@@ -551,6 +558,43 @@ export class Remoting {
    * reclaim tests. */
   get peerCount(): number {
     return this._peers.size;
+  }
+
+  /**
+   * This node's transport metrics, read at collection: the nodes it
+   * holds a dialed peer or an accepted session with, the frame and byte
+   * totals over every connection it has ever held (live ones summed now,
+   * closed ones folded in when they went), and the bytes its live
+   * connections have accepted but not yet handed to the kernel.
+   *
+   * @internal
+   */
+  metrics(): RemotingMetrics {
+    const totals: ConnTotals = new ConnTotals();
+    totals.add(this._closedTotals);
+    const nodes: Set<string> = new Set<string>(this._peers.keys());
+    let sendQueueBytes: number = 0;
+    for (const peer of this._peers.values()) {
+      totals.add(peer.counters());
+      sendQueueBytes += peer.outstandingBytes;
+    }
+
+    for (const [node, sessions] of this._inboundSessions) {
+      nodes.add(node);
+      for (const session of sessions) {
+        totals.add(session.counters());
+        sendQueueBytes += session.outstandingBytes;
+      }
+    }
+
+    return {
+      peers: nodes.size,
+      messagesSent: totals.framesSent,
+      messagesReceived: totals.framesReceived,
+      bytesSent: totals.bytesSent,
+      bytesReceived: totals.bytesReceived,
+      sendQueueBytes,
+    };
   }
 
   /**
@@ -858,6 +902,9 @@ export class Remoting {
       }
     }
 
+    // A reclaimable peer holds no live session, so its counters are
+    // exactly the closed sessions it folded; keep them with the node.
+    this._closedTotals.add(peer.counters());
     this._peers.delete(node);
     const carrier: Carrier | undefined = this._carriers.get(node);
     if (carrier?.peer === peer) {
@@ -1509,6 +1556,7 @@ export class Remoting {
    * signal a control-lane peer close is: the path to the node is gone.
    */
   private onInboundClose(session: Session): void {
+    this._closedTotals.add(session.counters());
     this.sweepInbound(session);
     const remote: Hello = session.remote as Hello;
     const key: string = nodeKey(remote.host, remote.port);

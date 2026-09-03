@@ -25,7 +25,8 @@
 import { afterAll, describe, expect, it } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem } from "../src/actor.system";
-import { printBlock, printMachine } from "./harness";
+import { discardLogger } from "../src/discard.logger";
+import { forceGc, printBlock, printMachine } from "./harness";
 
 /**
  * Resident density of idle actors: how much heap one spawned, started,
@@ -43,7 +44,18 @@ class Empty implements Actor {
   postStop(): void {}
 }
 
-const gc = (globalThis as { gc?: () => void }).gc;
+/** The forced collection the measurement depends on; null only on a
+ * runtime that offers none, which the test reports instead of measuring
+ * uncollected garbage. */
+const gc: (() => void) | null = forceGc();
+
+/** Lets the event loop turn once, so anything the spawns left pending
+ * (deferred drains, timers) has run before the heap is measured. */
+function settle(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+}
 
 describe("idle actor density", () => {
   let system: ActorSystem | undefined;
@@ -53,10 +65,17 @@ describe("idle actor density", () => {
   });
 
   it("reports heap bytes per idle empty actor", async () => {
-    system = new ActorSystem("density");
+    // The number is only a footprint when the heap has been collected: a
+    // launch path that cannot force a collection fails here with the
+    // reason, rather than failing the target on uncollected spawn garbage.
+    expect(gc, "the density measurement needs a forced garbage collection").not.toBeNull();
+    const collect: () => void = gc as () => void;
+
+    system = new ActorSystem("density", { logger: discardLogger });
     await system.start();
 
-    gc?.();
+    await settle();
+    collect();
     const before = process.memoryUsage();
 
     const batch = 1_000;
@@ -69,7 +88,8 @@ describe("idle actor density", () => {
       await Promise.all(spawned);
     }
 
-    gc?.();
+    await settle();
+    collect();
     const after = process.memoryUsage();
     const heap = after.heapUsed - before.heapUsed;
     const rss = after.rss - before.rss;
@@ -84,7 +104,6 @@ describe("idle actor density", () => {
       rssMB: Math.round(rss / 1024 / 1024),
       millionActorsHeapGB: Number(((heapPer * 1_000_000) / 1024 / 1024 / 1024).toFixed(2)),
       millionActorsRssGB: Number(((rssPer * 1_000_000) / 1024 / 1024 / 1024).toFixed(2)),
-      gcExposed: typeof gc === "function",
     };
 
     printMachine();
@@ -100,9 +119,7 @@ describe("idle actor density", () => {
         ["heap at 1M actors", `${report.millionActorsHeapGB} GB`],
         ["rss at 1M actors", `${report.millionActorsRssGB} GB`],
       ],
-      report.gcExposed
-        ? "·  target: idle actor heap <= 512 B"
-        : "·  figures need --expose-gc for accurate heap; run through `pnpm bench`",
+      "·  target: idle actor heap <= 512 B, measured after a forced collection",
     );
 
     expect(heapPer, "idle actor heap target is ≤ 512 bytes").toBeLessThanOrEqual(512);

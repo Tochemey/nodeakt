@@ -28,7 +28,6 @@ if (err === ErrDead || err === ErrMailboxFull) {
 | `ErrInvalidInterval` | [`schedule` / `scheduleOnce`](actor/scheduling.md) with a delay or interval that is not a positive number. |
 | `ErrInvalidPoolSize` | [`spawnRouter`](actor/routers.md) with a pool size that is not a positive integer, or an `AdjustRouterPoolSize` whose size is not a non-negative integer. |
 | `ErrInvalidReentrancyMode` | An unknown [reentrancy](actor/reentrancy.md) mode at spawn or on request options. |
-| `ErrInvalidRouteeDirective` | [`spawnRouter`](actor/routers.md) with an unknown routee directive. |
 | `ErrInvalidRoutingStrategy` | [`spawnRouter`](actor/routers.md) with an unknown routing strategy. |
 | `ErrInvalidTimeout` | Reserved. [`ask`](actor/messaging.md) and `request` now fall back to the system [`askTimeout`](actor-system/index.md) for a non-positive timeout instead of raising this. |
 | `ErrMailboxDisposed` | Enqueue on a [mailbox](actor/mailboxes.md) after the actor stopped, or [`ctx.stash`](actor/behaviors.md) while the actor is stopping. |

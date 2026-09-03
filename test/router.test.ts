@@ -30,11 +30,10 @@ import {
   ErrDead,
   ErrFanOutAsk,
   ErrInvalidPoolSize,
-  ErrInvalidRouteeDirective,
   ErrInvalidRoutingStrategy,
   ErrRoutingKeyRequired,
 } from "../src/errors";
-import { Deadletter, PostStart, Terminated } from "../src/messages";
+import { Deadletter, PanicSignal, PostStart, Terminated } from "../src/messages";
 import type { PID } from "../src/pid";
 import { Props } from "../src/props";
 import {
@@ -156,12 +155,6 @@ describe("spawnRouter", () => {
 
   it("rejects consistent hashing without a routing key extractor", async () => {
     await expect(spawnPool(2, { strategy: "consistentHash" })).rejects.toBe(ErrRoutingKeyRequired);
-  });
-
-  it("rejects an unknown routee directive", async () => {
-    await expect(spawnPool(2, { directive: "escalate" as unknown as "stop" })).rejects.toBe(
-      ErrInvalidRouteeDirective,
-    );
   });
 
   it("rejects routees that are not Props", async () => {
@@ -386,7 +379,7 @@ describe("router management", () => {
 });
 
 describe("routee supervision", () => {
-  it("stops a failing routee by default, shrinking the rotation", async () => {
+  it("drops a failing routee, shrinking the rotation", async () => {
     const router: PID = await spawnPool(3);
 
     system.noSender().tell(router, new Job("boom"));
@@ -404,34 +397,17 @@ describe("routee supervision", () => {
     expect(survivors.size).toBe(2);
   });
 
-  it("restarts a failing routee in place with the restart directive", async () => {
-    const router: PID = await spawnPool(1, { directive: "restart" });
-    await expect(livePaths(router)).resolves.toHaveLength(1);
+  it("ignores a forged panic signal whose sender is not a routee", async () => {
+    const router: PID = await spawnPool(2);
+    await expect(livePaths(router)).resolves.toHaveLength(2);
 
-    const routee: PID = router.children()[0] as PID;
-
-    system.noSender().tell(router, new Job("boom"));
-
-    await vi.waitFor(() => {
-      expect(routee.restartCount()).toBe(1);
-    });
-
-    await expect(livePaths(router)).resolves.toHaveLength(1);
-    const reply = (await system.noSender().ask(router, new Job("ok"), TIMEOUT)) as Echoed;
-    expect(reply.key).toBe("ok");
-  });
-
-  it("resumes a failing routee with the resume directive", async () => {
-    const router: PID = await spawnPool(1, { directive: "resume" });
-    await expect(livePaths(router)).resolves.toHaveLength(1);
-
-    const routee: PID = router.children()[0] as PID;
-
-    system.noSender().tell(router, new Job("boom"));
+    // A PanicSignal told from outside carries a non-routee sender; it must
+    // neither drop a pool member nor fault the router.
+    system.noSender().tell(router, new PanicSignal(new Error("forged")));
 
     const reply = (await system.noSender().ask(router, new Job("ok"), TIMEOUT)) as Echoed;
     expect(reply.key).toBe("ok");
-    expect(routee.restartCount()).toBe(0);
+    await expect(livePaths(router)).resolves.toHaveLength(2);
   });
 });
 

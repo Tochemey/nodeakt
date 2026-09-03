@@ -69,7 +69,6 @@ export {
   ErrInvalidInterval,
   ErrInvalidPoolSize,
   ErrInvalidReentrancyMode,
-  ErrInvalidRouteeDirective,
   ErrInvalidRoutingStrategy,
   ErrInvalidTimeout,
   ErrMailboxDisposed,
@@ -113,6 +112,18 @@ export {
   PostStart,
   Terminated,
 } from "./messages";
+export type { MetricsOptions } from "./observability/metric.options";
+export type {
+  ActorFleetMetrics,
+  ActorMetrics,
+  ClusterMetrics,
+  HistogramBucket,
+  HistogramData,
+  MailboxMetrics,
+  MessageMetrics,
+  MetricsSnapshot,
+  RemotingMetrics,
+} from "./observability/metric.snapshot";
 export {
   DefaultPassivationTimeout,
   LongLivedStrategy,
@@ -147,7 +158,6 @@ export {
   FanOutRouting,
   RandomRouting,
   RoundRobinRouting,
-  type RouteeDirective,
   type RouterOptions,
   type RoutingKeyFunc,
   type RoutingStrategy,

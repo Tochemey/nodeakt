@@ -40,6 +40,8 @@ pnpm example examples/helloworld/main.ts
 | [iot](iot/main.ts)                   | A device hierarchy; every query is a short-lived actor                      |
 | [props](props/main.ts)               | Construction as data with `Props`                                           |
 | [multicore](multicore/main.ts)       | One CPU-bound actor per core                                                |
+| [passivation](passivation/main.ts)   | Idle actors passivate to reclaim memory; one session actor per user         |
+| [metrics](metrics/main.ts)           | The runtime reports on itself; scrape `collectMetrics` on a timer           |
 | [remoting](remoting/README.md)       | Checkout and payments on two nodes: remoting over TCP with Docker Compose   |
 | [dns-cluster](dns-cluster/README.md) | DNS-discovered three-node cluster with Docker Compose                       |
 | [dns-actors](dns-actors/README.md)   | Distributed three-node actor systems over a DNS cluster with Docker Compose |

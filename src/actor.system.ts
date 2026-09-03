@@ -67,7 +67,17 @@ import type { Extension } from "./extension/extension";
 import { ExtensionRegistry } from "./extension/registry";
 import type { Logger } from "./logger";
 import { Deadletter, PostStart, RuntimeCommand, Terminated } from "./messages";
+import { MetricRegistry } from "./metric.registry";
 import { NoSender } from "./no.sender";
+import type { MetricsOptions } from "./observability/metric.options";
+import {
+  emptyMetricsSnapshot,
+  type IsolateGauges,
+  type IsolateMetrics,
+  type MetricsSnapshot,
+  mergeMetrics,
+} from "./observability/metric.snapshot";
+import { LongLivedStrategy } from "./passivation";
 import { PassivationManager } from "./passivation.manager";
 import { isValidActorName, newPathAt, type Path, type PathAddress, parsePath } from "./path";
 import { PID } from "./pid";
@@ -239,6 +249,10 @@ export class ActorSystem {
   private readonly _logger: Logger;
   private readonly _events: EventStream;
 
+  /** The isolate's metrics, or null when metrics were not enabled; PIDs
+   * cache this reference and read it on the message hot path. */
+  private readonly _metricsRegistry: MetricRegistry | null;
+
   /** The fallback deadline for an ask or request whose own timeout is
    * omitted or non-positive; always a positive duration. */
   private readonly _askTimeout: number;
@@ -362,6 +376,10 @@ export class ActorSystem {
     this._events = new EventStream((err) => {
       this._logger.error("event subscriber failed", { error: err });
     });
+    this._metricsRegistry =
+      options?.metrics?.enabled === true
+        ? new MetricRegistry(this._events, options.metrics.processingDuration === true)
+        : null;
   }
 
   /** Returns the actor system name. */
@@ -637,6 +655,114 @@ export class ActorSystem {
     return this._deadletter;
   }
 
+  /**
+   * Returns this isolate's metrics registry, or null when metrics were
+   * not enabled. A PID caches the reference at construction and reads it
+   * on the message hot path. Runtime plumbing for the message loop.
+   *
+   * @internal
+   */
+  metricRegistry(): MetricRegistry | null {
+    return this._metricsRegistry;
+  }
+
+  /**
+   * Returns the metrics configuration to enable on a worker isolate, or
+   * null when metrics are off, so every isolate counts its own actors for
+   * the machine-wide snapshot. Runtime plumbing for the worker boot.
+   *
+   * @internal
+   */
+  metricsConfig(): MetricsOptions | null {
+    const registry = this._metricsRegistry;
+    return registry === null ? null : { enabled: true, processingDuration: registry.timing };
+  }
+
+  /**
+   * Returns this isolate's raw metrics contribution, or null when metrics
+   * are off: the registry's counters plus the live-actor gauges this
+   * isolate reads from its own tree. The main isolate merges these across
+   * every isolate; a worker answers a metrics request with them.
+   *
+   * @internal
+   */
+  isolateMetrics(): IsolateMetrics | null {
+    const registry = this._metricsRegistry;
+    return registry === null ? null : registry.isolateMetrics(this.isolateGauges());
+  }
+
+  /**
+   * Returns a snapshot of the runtime's own metrics: actor counts,
+   * message throughput, mailbox depth, and dead letters. The snapshot is
+   * plain readonly data an adapter maps onto its backend from outside the
+   * runtime, which takes on no metrics dependency of its own.
+   *
+   * A system that never enabled metrics answers a valid, zeroed snapshot,
+   * so an adapter can be wired unconditionally.
+   *
+   * @throws The {@link ErrActorSystemNotStarted} sentinel when the system
+   * is not running.
+   */
+  async collectMetrics(): Promise<MetricsSnapshot> {
+    if (!this.isRunning()) {
+      throw ErrActorSystemNotStarted;
+    }
+
+    const registry = this._metricsRegistry;
+    if (registry === null) {
+      return emptyMetricsSnapshot(this._name);
+    }
+
+    const mine = registry.isolateMetrics(this.isolateGauges());
+    const placement = this._placement;
+    const workers = placement === null ? [] : await placement.collectMetrics();
+    const snapshot = mergeMetrics(this._name, mine, workers);
+
+    // Remoting and the cluster engine live on this isolate, so their sections
+    // are read here and attached after the isolate merge, the way dead letters
+    // are. A worker isolate carries neither, so the merge never touches them.
+    const remoting = this._remoting;
+    const clusterNode = this._clusterNode;
+    return {
+      ...snapshot,
+      ...(remoting === null ? {} : { remoting: remoting.metrics() }),
+      ...(clusterNode === null ? {} : { cluster: clusterNode.metrics(registry.clusterCounters()) }),
+    };
+  }
+
+  /**
+   * Reads the live-actor gauges for a metrics snapshot: how many user
+   * actors are alive, how many of those are suspended, and their mailbox
+   * depth. A suspended actor is alive and is counted, so its retained
+   * backlog still shows up in the mailbox depth.
+   *
+   * @internal
+   */
+  private isolateGauges(): IsolateGauges {
+    let active = 0;
+    let suspended = 0;
+    let mailboxTotalDepth = 0;
+    let mailboxMaxDepth = 0;
+
+    // collectMetrics only reaches here on a running system, so the user
+    // guardian is set; every user actor is a descendant of it.
+    const guardian = this._userGuardian as PID;
+    for (const pid of this._tree.descendants(guardian)) {
+      active++;
+      if (pid.isSuspended()) {
+        suspended++;
+      }
+
+      const depth = pid.mailboxSize();
+      mailboxTotalDepth += depth;
+      if (depth > mailboxMaxDepth) {
+        mailboxMaxDepth = depth;
+      }
+    }
+
+    return { active, suspended, mailboxTotalDepth, mailboxMaxDepth };
+  }
+
   /** Reports whether the system has been started and is not stopping. */
   isRunning(): boolean {
     return this._started && !this._stopping;
@@ -690,9 +816,10 @@ export class ActorSystem {
       };
     }
 
-    // Runtime actors rely on the long-lived default strategy and never
-    // passivate. The tree records that the system and user guardians are
-    // children of the root guardian and that the NoSender actor is a
+    // Runtime actors are created here through configPID, which never
+    // schedules passivation, so they never passivate regardless of the
+    // default strategy. The tree records that the system and user guardians
+    // are children of the root guardian and that the NoSender actor is a
     // child of the system guardian; guardians are supervision parents
     // only, so they never appear in the path of an actor beneath them.
     this._rootGuardian = await this.configPID(rootGuardianName, new RootGuardian(), null);
@@ -1167,7 +1294,7 @@ export class ActorSystem {
    * @internal
    */
   schedulePassivation(pid: PID): void {
-    this._passivation.register(pid, pid.passivationStrategy());
+    this._passivation.register(pid);
   }
 
   /**
@@ -1275,11 +1402,11 @@ export class ActorSystem {
    * Two management messages are consumed by the router itself:
    * `GetRoutees`, answered with a `Routees` message listing the live
    * routees, and `AdjustRouterPoolSize`, which grows or shrinks the
-   * pool in place. A routee that fails while processing is handled by
-   * the routee directive chosen at spawn time, `stop` by default, so
-   * the pool shrinks; a dead routee leaves the rotation, and once no
-   * routee is left every subsequent send becomes a dead letter until
-   * `AdjustRouterPoolSize` restores capacity.
+   * pool in place. A routee that fails while processing escalates to the
+   * router, which drops it from the pool, so the pool shrinks; a dead
+   * routee leaves the rotation, and once no routee is left every
+   * subsequent send becomes a dead letter until `AdjustRouterPoolSize`
+   * restores capacity.
    *
    * ```ts
    * const router = await system.spawnRouter("workers", 8, Props.create(Worker), {
@@ -1293,15 +1420,14 @@ export class ActorSystem {
    * @param poolSize - How many routees to start with; a positive
    * integer.
    * @param routees - How to construct each routee, as `Props`.
-   * @param options - The routing strategy, the routing key extractor of
-   * a consistent-hash router, and the routee directive.
+   * @param options - The routing strategy and the routing key extractor
+   * of a consistent-hash router.
    *
    * @returns A promise of the router's PID. It rejects with everything
    * {@link spawn} rejects with, a `TypeError` when `routees` is not a
    * `Props`, and the {@link ErrInvalidPoolSize},
-   * {@link ErrInvalidRoutingStrategy}, {@link ErrRoutingKeyRequired},
-   * and {@link ErrInvalidRouteeDirective} sentinels when the
-   * configuration is invalid.
+   * {@link ErrInvalidRoutingStrategy}, and {@link ErrRoutingKeyRequired}
+   * sentinels when the configuration is invalid.
    */
   async spawnRouter(
     name: string,
@@ -1313,7 +1439,11 @@ export class ActorSystem {
       throw ErrActorSystemNotStarted;
     }
 
-    return this.spawn(name, createRouter(poolSize, routees, options));
+    // A router is standing infrastructure that owns a pool: it must outlive
+    // idle windows, so it never passivates, just like its routees.
+    return this.spawn(name, createRouter(poolSize, routees, options), {
+      passivationStrategy: new LongLivedStrategy(),
+    });
   }
 
   /**
@@ -1430,6 +1560,9 @@ export class ActorSystem {
       ...options,
       relocatable: true,
       singleton: true,
+      // A singleton is cluster infrastructure that must stay available, so it
+      // never passivates, whatever the caller passed.
+      passivationStrategy: new LongLivedStrategy(),
     };
 
     for (let attempt: number = 0; attempt < SINGLETON_CLAIM_ATTEMPTS; attempt++) {

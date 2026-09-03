@@ -27,12 +27,12 @@ import {
   ErrDead,
   ErrFanOutAsk,
   ErrInvalidPoolSize,
-  ErrInvalidRouteeDirective,
   ErrInvalidRoutingStrategy,
   ErrRoutingKeyRequired,
 } from "./errors";
 import { HashRing } from "./hash.ring";
-import { PostStart, Terminated } from "./messages";
+import { PanicSignal, PostStart, Terminated } from "./messages";
+import { LongLivedStrategy } from "./passivation";
 import type { PID } from "./pid";
 import { type ActorClass, Props } from "./props";
 import { type ReceiveContext, rejectAsk } from "./receive.context";
@@ -42,12 +42,11 @@ import {
   FanOutRouting,
   RandomRouting,
   RoundRobinRouting,
-  type RouteeDirective,
   type RouterOptions,
   type RoutingKeyFunc,
   type RoutingStrategy,
 } from "./router.options";
-import { Supervisor } from "./supervisor";
+import { EscalateDirective, Supervisor } from "./supervisor";
 
 /** Prefix of the names a router mints for its routees; the counter
  * suffix is never reused within one router. */
@@ -85,8 +84,8 @@ export class Router implements Actor {
    * so the hot path runs no branching chain. */
   private readonly _route: (ctx: ReceiveContext) => void;
 
-  /** The supervisor every routee is spawned with: the routee directive
-   * as its catch-all rule, shared by the whole pool. */
+  /** The supervisor every routee is spawned with: any failure escalates
+   * to the router, which then drops the routee from the pool. */
   private readonly _routeeSupervisor: Supervisor;
 
   /** The routees in spawn order; a dead routee leaves the list when its
@@ -110,13 +109,12 @@ export class Router implements Actor {
     routees: Props,
     strategy: RoutingStrategy,
     routingKey: RoutingKeyFunc | null,
-    directive: RouteeDirective,
   ) {
     this._poolSize = poolSize;
     this._routees = routees;
     this._strategy = strategy;
     this._routingKey = routingKey;
-    this._routeeSupervisor = new Supervisor({ anyErrorDirective: directive });
+    this._routeeSupervisor = new Supervisor({ anyErrorDirective: EscalateDirective });
     this._ring = strategy === ConsistentHashRouting ? new HashRing([]) : null;
 
     switch (strategy) {
@@ -158,6 +156,10 @@ export class Router implements Actor {
 
     if (msg instanceof AdjustRouterPoolSize) {
       return this.resize(ctx, msg.poolSize);
+    }
+
+    if (msg instanceof PanicSignal) {
+      return this.dropFailed(ctx);
     }
 
     this._route(ctx);
@@ -310,6 +312,9 @@ export class Router implements Actor {
       const name: string = `${ROUTEE_PREFIX}${this._minted++}`;
       const routee: PID = await ctx.spawn(name, this.buildRoutee(), {
         supervisor: this._routeeSupervisor,
+        // Routees are managed pool members, not idle-passivatable actors:
+        // one dropping out on an idle window would silently shrink the pool.
+        passivationStrategy: new LongLivedStrategy(),
       });
 
       ctx.watch(routee);
@@ -359,6 +364,22 @@ export class Router implements Actor {
 
     await Promise.all(excess.map((member) => ctx.stop(member)));
     this.rebuildRing();
+  }
+
+  /**
+   * Drops a routee that escalated a failure. Stopping it removes it from
+   * the pool through the same `Terminated` path a dead routee takes, so
+   * the pool shrinks; `AdjustRouterPoolSize` grows it back. A signal whose
+   * sender is not a current routee is ignored, covering a forged one.
+   */
+  private dropFailed(ctx: ReceiveContext): Promise<void> | undefined {
+    const failed: PID = ctx.sender as PID;
+    const member: PID | undefined = this._members.find((routee) => routee.equals(failed));
+    if (member === undefined) {
+      return undefined;
+    }
+
+    return ctx.stop(member);
   }
 
   /**
@@ -420,8 +441,6 @@ export class Router implements Actor {
  * strategy.
  * @throws The {@link ErrRoutingKeyRequired} sentinel when the strategy
  * is consistent hashing and no routing key extractor is given.
- * @throws The {@link ErrInvalidRouteeDirective} sentinel for an unknown
- * routee directive.
  *
  * @internal
  */
@@ -449,10 +468,5 @@ export function createRouter(poolSize: number, routees: Props, options?: RouterO
     throw ErrRoutingKeyRequired;
   }
 
-  const directive: RouteeDirective = options?.directive ?? "stop";
-  if (directive !== "stop" && directive !== "restart" && directive !== "resume") {
-    throw ErrInvalidRouteeDirective;
-  }
-
-  return new Router(poolSize, routees, strategy, routingKey, directive);
+  return new Router(poolSize, routees, strategy, routingKey);
 }

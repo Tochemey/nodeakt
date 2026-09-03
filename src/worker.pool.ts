@@ -30,12 +30,14 @@ import { ControlPlane, mainWorkerId } from "./control.plane";
 import { ActorNotFoundError, ErrActorAlreadyExists, ErrDead } from "./errors";
 import { Mesh } from "./mesh";
 import type { MessageRegistry } from "./message.registry";
+import type { IsolateMetrics } from "./observability/metric.snapshot";
 import { addressOf, newPathAt, parsePath } from "./path";
 import {
   type ActorRecipe,
   CONTROL_CLAIMED,
   CONTROL_CONNECT,
   CONTROL_DISCONNECT,
+  CONTROL_METRICS,
   CONTROL_NAME_ADDED,
   CONTROL_NAME_FREED,
   CONTROL_PLACED,
@@ -48,6 +50,7 @@ import {
   WORKER_CLAIM,
   WORKER_CONTROLLED,
   WORKER_DEADLETTER,
+  WORKER_METRICS,
   WORKER_PLACE,
   WORKER_READY,
   WORKER_SPAWN_FAILED,
@@ -182,6 +185,13 @@ export class WorkerPool {
   private readonly _controls = new Map<
     number,
     { workerId: number; resolve: () => void; reject: (error: Error) => void }
+  >();
+
+  /** Metrics requests awaiting a worker's `metrics-reply`, by sequence; a
+   * worker that dies mid-collection resolves to null and drops out. */
+  private readonly _metricsPending = new Map<
+    number,
+    { workerId: number; resolve: (metrics: IsolateMetrics | null) => void }
   >();
 
   /** Names whose placement is in flight on this isolate, so the claim
@@ -379,6 +389,7 @@ export class WorkerPool {
       port: this._system.port(),
       quiet: this._options.quiet ?? false,
       setup: this._options.setup ?? null,
+      metrics: this._system.metricsConfig(),
     };
     const worker = new Worker(this._options.entry, {
       workerData: boot,
@@ -461,6 +472,26 @@ export class WorkerPool {
   }
 
   /**
+   * Gathers every live worker's raw metrics for a machine-wide snapshot.
+   * Each worker answers with its own isolate's numbers; a worker that dies
+   * before answering contributes null and is dropped from the merge, so a
+   * collection never hangs on a departed isolate.
+   */
+  collectMetrics(): Promise<(IsolateMetrics | null)[]> {
+    return Promise.all([...this._workers.keys()].map((id) => this.metricsFrom(id)));
+  }
+
+  /** Requests one worker's metrics and settles on its reply. */
+  private metricsFrom(workerId: number): Promise<IsolateMetrics | null> {
+    const seq = this._nextSeq++;
+    const reply = new Promise<IsolateMetrics | null>((resolve) => {
+      this._metricsPending.set(seq, { workerId, resolve });
+    });
+    this.send(workerId, { kind: CONTROL_METRICS, seq });
+    return reply;
+  }
+
+  /**
    * Restarts the placed top-level actor in place on its owning worker:
    * same PID, same incarnation, fresh state through its lifecycle
    * hooks. Rejects with {@link ActorNotFoundError} for a name no
@@ -530,6 +561,17 @@ export class WorkerPool {
 
     if (message.kind === WORKER_DEADLETTER) {
       this.republish(message);
+      return;
+    }
+
+    if (message.kind === WORKER_METRICS) {
+      const pending = this._metricsPending.get(message.seq);
+      if (pending === undefined || pending.workerId !== workerId) {
+        return;
+      }
+
+      this._metricsPending.delete(message.seq);
+      pending.resolve(message.metrics);
       return;
     }
 
@@ -649,6 +691,18 @@ export class WorkerPool {
         pending.reject(ErrDead);
       }
     }
+
+    /* v8 ignore start -- a worker answers a metrics request synchronously,
+       so a death in the window between the request and its reply cannot be
+       forced by a test; the arm drops the worker from the in-flight
+       collection instead of stranding it. */
+    for (const [seq, pending] of this._metricsPending) {
+      if (pending.workerId === workerId) {
+        this._metricsPending.delete(seq);
+        pending.resolve(null);
+      }
+    }
+    /* v8 ignore stop */
 
     if (!this._stopping) {
       for (const id of this._workers.keys()) {

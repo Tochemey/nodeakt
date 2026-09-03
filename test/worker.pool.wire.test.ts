@@ -338,6 +338,31 @@ describe("WorkerPool control-plane hardening", () => {
     }
   }, 30_000);
 
+  it("ignores late and forged metrics replies", async () => {
+    const system = new ActorSystem("meters", { logger: discardLogger });
+    await system.start();
+    const pool = new WorkerPool(system, new MessageRegistry(), { size: 1, entry, quiet: true });
+    await pool.start();
+    const internals = pool as unknown as PoolInternals;
+
+    try {
+      // A reply for a sequence nothing awaits is a no-op.
+      internals.onMessage(1, { kind: "metrics-reply", seq: 999, metrics: null });
+
+      const collecting = pool.collectMetrics();
+      const seq = ((pool as unknown as { _nextSeq: number })._nextSeq - 1) as number;
+      // A reply for the live request from the wrong worker must not settle it.
+      internals.onMessage(99, { kind: "metrics-reply", seq, metrics: null });
+
+      // The genuine reply from worker 1 still lands; this system runs
+      // without metrics, so the worker's contribution is null.
+      await expect(collecting).resolves.toEqual([null]);
+    } finally {
+      await pool.stop();
+      await system.stop();
+    }
+  }, 30_000);
+
   it("settles a failing restart with the worker's own error", async () => {
     const system = new ActorSystem("orders", { logger: discardLogger });
     await system.start();

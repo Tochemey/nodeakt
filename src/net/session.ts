@@ -32,7 +32,7 @@ import {
   type ReassemblyOutcome,
   splitLogicalFrame,
 } from "./chunk";
-import { ErrConnClosed, FramedConn, type OutboundFrame } from "./conn";
+import { type ConnCounters, ErrConnClosed, FramedConn, type OutboundFrame } from "./conn";
 import { CreditWindow } from "./credit";
 import {
   type DataEnvelope,
@@ -365,6 +365,16 @@ export class Session {
   /** The connection's negotiated lane byte. */
   get lane(): number {
     return this._lane;
+  }
+
+  /** Bytes accepted for sending and not yet handed to the kernel, frames parked awaiting credit included. */
+  get outstandingBytes(): number {
+    return this.heldBytes();
+  }
+
+  /** The connection's cumulative frame and byte totals, still readable once it has closed. */
+  counters(): ConnCounters {
+    return this._conn.counters();
   }
 
   /** Allocates the next correlation id on this side's parity. */

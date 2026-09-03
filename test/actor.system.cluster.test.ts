@@ -25,7 +25,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem, clusterNodeOptions } from "../src/actor.system";
-import { NodeJoined } from "../src/cluster.events";
+import { NodeJoined, RelocationCompleted } from "../src/cluster.events";
 import { type Companion, decodeCompanion, encodeCompanion } from "../src/clustering.companion";
 import { ClusterEventType } from "../src/clustering.events";
 import { ClusterNode, type ClusterNodeOptions } from "../src/clustering.host";
@@ -43,6 +43,8 @@ import {
 } from "../src/errors";
 import { EventStream } from "../src/eventstream";
 import type { ClusterMember } from "../src/kv/ports";
+import type { MetricsSnapshot } from "../src/observability/metric.snapshot";
+import { LongLivedStrategy } from "../src/passivation";
 import type { PID } from "../src/pid";
 import { Props } from "../src/props";
 import { registerActor } from "../src/registration";
@@ -186,6 +188,76 @@ describe("ActorSystem clustering", () => {
     ).toThrow(ErrClusterRequiresRemote);
   });
 
+  it("reports this node's membership view in the metrics snapshot", async (): Promise<void> => {
+    const system: ActorSystem = new ActorSystem("orders", {
+      logger: discardLogger,
+      remote: { host: "127.0.0.1", port: 0 },
+      metrics: { enabled: true },
+      cluster: {
+        discovery: new StaticDiscovery([]),
+        gossipPort: 0,
+        dataPort: 0,
+        bootstrapTimeout: 0,
+        replicaCount: 1,
+        writeQuorum: 1,
+        minimumMemberQuorum: 1,
+      },
+    });
+    running.push(system);
+    await system.start();
+
+    await eventually(async (): Promise<boolean> => {
+      const snapshot: MetricsSnapshot = await system.collectMetrics();
+      return snapshot.cluster?.alive === 1;
+    }, 5_000);
+
+    const snapshot: MetricsSnapshot = await system.collectMetrics();
+    expect(snapshot.cluster).toBeDefined();
+    expect(snapshot.cluster?.members).toBe(1);
+    expect(snapshot.cluster?.alive).toBe(1);
+    expect(snapshot.cluster?.suspect).toBe(0);
+    expect(snapshot.cluster?.dead).toBe(0);
+    expect(snapshot.cluster?.left).toBe(0);
+    expect(snapshot.cluster?.isCoordinator).toBe(true);
+    expect(snapshot.cluster?.relocationsTotal).toBe(0);
+  }, 30_000);
+
+  it("counts coordinator changes and relocations in the cluster section", async (): Promise<void> => {
+    const system: ActorSystem = new ActorSystem("orders", {
+      logger: discardLogger,
+      remote: { host: "127.0.0.1", port: 0 },
+      metrics: { enabled: true },
+      cluster: {
+        discovery: new StaticDiscovery([]),
+        gossipPort: 0,
+        dataPort: 0,
+        bootstrapTimeout: 0,
+        replicaCount: 1,
+        writeQuorum: 1,
+        minimumMemberQuorum: 1,
+      },
+    });
+    running.push(system);
+    await system.start();
+
+    const before: MetricsSnapshot = await system.collectMetrics();
+    if (before.cluster === undefined) {
+      throw new Error("expected the cluster section on a clustered system");
+    }
+
+    // One coordinator change the cluster runtime reports, and one relocation
+    // pass the relocation actor publishes, each land in the counters.
+    system.onClusterEvent({
+      type: ClusterEventType.coordinatorChanged,
+      coordinator: "10.9.9.9:9998",
+    });
+    system.publishEvent(new RelocationCompleted("10.9.9.9:9998", ["a", "b"], Date.now()));
+
+    const after: MetricsSnapshot = await system.collectMetrics();
+    expect(after.cluster?.coordinatorChanges).toBe(before.cluster.coordinatorChanges + 1);
+    expect(after.cluster?.relocationsTotal).toBe(2);
+  }, 30_000);
+
   it("records a clustered placement at the node's data address and frees it on stop", async (): Promise<void> => {
     // One isolate, so the placement lands on the main isolate and its own stop
     // drives the pool release that deletes the registry record.
@@ -323,6 +395,10 @@ describe("ActorSystem clustering", () => {
     const first: PID = await system.spawnSingleton("sequencer", Props.create(Registered, "one"));
     expect(await system.noSender().ask(first, "hi", 5000)).toBe("one:hi");
     expect(await registry.getActor("sequencer")).toBe(node.address);
+
+    // A singleton is cluster infrastructure: it is forced long-lived so it
+    // never passivates out from under the cluster.
+    expect(first.passivationStrategy()).toBeInstanceOf(LongLivedStrategy);
 
     // Idempotent: a later create hands back the SAME instance rather than a duplicate
     // error, and the loser's props are ignored (the winner's "one" answers, not "two").
