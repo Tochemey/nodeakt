@@ -103,6 +103,33 @@ describe("ActorSystem.collectMetrics", () => {
     expect(snapshot.actors.startedTotal).toBe(0);
     expect(snapshot.messages.processedTotal).toBe(0);
     expect(snapshot.deadlettersTotal).toBe(0);
+    expect(snapshot.remoting).toBeUndefined();
+    expect(snapshot.cluster).toBeUndefined();
+
+    await system.stop();
+  });
+
+  it("answers a metrics request with null when metrics are disabled", async () => {
+    const system: ActorSystem = new ActorSystem("sys", { logger: discardLogger });
+    await system.start();
+
+    // A worker isolate answers the main isolate's metrics request with its
+    // raw contribution; one that never enabled metrics has none to give.
+    expect(system.isolateMetrics()).toBeNull();
+
+    await system.stop();
+  });
+
+  it("carries neither a remoting nor a cluster section on a local system", async () => {
+    const system: ActorSystem = new ActorSystem("sys", {
+      logger: discardLogger,
+      metrics: { enabled: true },
+    });
+    await system.start();
+
+    const snapshot = await system.collectMetrics();
+    expect(snapshot.remoting).toBeUndefined();
+    expect(snapshot.cluster).toBeUndefined();
 
     await system.stop();
   });

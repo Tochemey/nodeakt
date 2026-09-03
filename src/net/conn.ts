@@ -93,6 +93,42 @@ export interface OutboundFrame {
 }
 
 /**
+ * The cumulative frame and byte totals of one connection, or of a set
+ * of them summed. Frames are counted where the connection already
+ * accounts them for flow control; bytes are the socket's own read and
+ * written counts, so nothing is maintained for them at all.
+ */
+export interface ConnCounters {
+  /** Frames handed to the kernel. */
+  readonly framesSent: number;
+  /** Frames parsed and handed to the owner. */
+  readonly framesReceived: number;
+  /** Bytes written to the socket. */
+  readonly bytesSent: number;
+  /** Bytes read from the socket. */
+  readonly bytesReceived: number;
+}
+
+/**
+ * A running sum of {@link ConnCounters}, for an owner that folds each
+ * connection's final totals in when it closes so its own totals stay
+ * monotonic over the connections it has held.
+ */
+export class ConnTotals implements ConnCounters {
+  framesSent: number = 0;
+  framesReceived: number = 0;
+  bytesSent: number = 0;
+  bytesReceived: number = 0;
+
+  add(counters: ConnCounters): void {
+    this.framesSent += counters.framesSent;
+    this.framesReceived += counters.framesReceived;
+    this.bytesSent += counters.bytesSent;
+    this.bytesReceived += counters.bytesReceived;
+  }
+}
+
+/**
  * One accepted frame in the send queue: the frame's header fields
  * flattened beside its body and confirmation callback, so accepting a
  * frame allocates exactly one object. Structurally a
@@ -178,6 +214,11 @@ export class FramedConn {
   private _closeError: Error | null = null;
   private _closeReported: boolean = false;
 
+  /** Frames handed to the kernel, bumped once per flushed batch. */
+  private _framesSent: number = 0;
+  /** Frames parsed and handed to the owner. */
+  private _framesReceived: number = 0;
+
   constructor(socket: Socket, handlers: FramedConnHandlers, options: FramedConnOptions = {}) {
     this._socket = socket;
     this._handlers = handlers;
@@ -215,6 +256,20 @@ export class FramedConn {
 
   get closed(): boolean {
     return this._closed;
+  }
+
+  /**
+   * The connection's cumulative frame and byte totals. The byte counts
+   * are the socket's own, which it keeps past close, so a closed
+   * connection still reports its final totals for the owner to fold in.
+   */
+  counters(): ConnCounters {
+    return {
+      framesSent: this._framesSent,
+      framesReceived: this._framesReceived,
+      bytesSent: this._socket.bytesWritten,
+      bytesReceived: this._socket.bytesRead,
+    };
   }
 
   /** Rebinds the inbound length bound after negotiation. */
@@ -360,6 +415,7 @@ export class FramedConn {
     }
 
     this._queuedBytes -= batched;
+    this._framesSent += frames;
     if (largeBody === null) {
       this.writeOut(this._batch.bytes().slice(), batched, wrote);
       return;
@@ -540,6 +596,7 @@ export class FramedConn {
     this._header = null;
     this._bodyBytes = null;
     this._bodyFill = 0;
+    this._framesReceived++;
     this._handlers.onFrame(header, body);
   }
 }

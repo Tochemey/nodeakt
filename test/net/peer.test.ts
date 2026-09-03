@@ -24,6 +24,7 @@
 
 import type { Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ConnCounters } from "../../src/net/conn";
 import {
   type DataEnvelope,
   decodeHello,
@@ -543,6 +544,64 @@ describe("peer teardown", () => {
       expect(deadLetters.length).toBe(1);
     });
     expect(peer.reclaimable).toBe(false);
+  });
+});
+
+describe("peer counters", () => {
+  it("sums its live lanes and keeps a closed session's totals across a redial", async () => {
+    const counts: Map<number, number> = new Map<number, number>();
+    let server: NetServer = await startEchoServer(0, counts);
+    const port: number = server.address.port;
+    const peer: Peer = makePeer(port, {}, { backoffInitialMs: 50 });
+
+    // A peer that has never dialed has nothing to count.
+    expect(peer.counters()).toEqual({
+      framesSent: 0,
+      framesReceived: 0,
+      bytesSent: 0,
+      bytesReceived: 0,
+    });
+    expect(peer.outstandingBytes).toBe(0);
+
+    peer.tell(seqEnvelope(1));
+    await vi.waitFor((): void => {
+      expect(counts.get(1)).toBe(1);
+    });
+
+    // One lane is live: at least its HELLO and the DATA went out, and at
+    // least the HELLO_ACK came back.
+    const live: ConnCounters = peer.counters();
+    expect(live.framesSent).toBeGreaterThanOrEqual(2);
+    expect(live.framesReceived).toBeGreaterThanOrEqual(1);
+    expect(live.bytesSent).toBeGreaterThan(0);
+    expect(live.bytesReceived).toBeGreaterThan(0);
+    expect(peer.outstandingBytes).toBe(0);
+
+    // The session closes: its totals fold into the peer instead of vanishing
+    // with it, so the counters never run backward.
+    await server.shutdown(-1);
+    await vi.waitFor((): void => {
+      expect(peer.reclaimable).toBe(true);
+    });
+    const folded: ConnCounters = peer.counters();
+    expect(folded.framesSent).toBeGreaterThanOrEqual(live.framesSent);
+    expect(folded.framesReceived).toBeGreaterThanOrEqual(live.framesReceived);
+    expect(folded.bytesSent).toBeGreaterThanOrEqual(live.bytesSent);
+    expect(folded.bytesReceived).toBeGreaterThanOrEqual(live.bytesReceived);
+    expect(peer.outstandingBytes).toBe(0);
+
+    // A redial adds the new session on top of the folded totals.
+    server = await startEchoServer(port, counts);
+    await sleep(80);
+    peer.tell(seqEnvelope(2));
+    await vi.waitFor((): void => {
+      expect(counts.get(2)).toBe(1);
+    });
+    const redialed: ConnCounters = peer.counters();
+    expect(redialed.framesSent).toBeGreaterThan(folded.framesSent);
+    expect(redialed.framesReceived).toBeGreaterThan(folded.framesReceived);
+    expect(redialed.bytesSent).toBeGreaterThan(folded.bytesSent);
+    expect(redialed.bytesReceived).toBeGreaterThan(folded.bytesReceived);
   });
 });
 

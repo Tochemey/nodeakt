@@ -122,6 +122,7 @@ export type {
   MailboxMetrics,
   MessageMetrics,
   MetricsSnapshot,
+  RemotingMetrics,
 } from "./observability/metric.snapshot";
 export {
   DefaultPassivationTimeout,

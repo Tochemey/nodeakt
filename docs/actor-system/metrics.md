@@ -48,6 +48,7 @@ interface MetricsSnapshot {
   messages: MessageMetrics;
   mailbox: MailboxMetrics;
   deadlettersTotal: number;
+  remoting?: RemotingMetrics;
   cluster?: ClusterMetrics;
 }
 ```
@@ -56,18 +57,37 @@ interface MetricsSnapshot {
 
 The distribution, when present, is a `HistogramData`: a total `count`, a `sum` of milliseconds, and cumulative `HistogramBucket` entries by upper bound.
 
+When remoting is enabled the snapshot also carries a `remoting` section, this node's own transport: how many remote nodes it currently holds a connection with, the frames and bytes that have crossed its connections, and what its live connections have accepted but not yet handed to the kernel. The totals are cumulative over the node's life and never run backward: a connection that closes folds its final counts in rather than taking them with it.
+
+```ts
+interface RemotingMetrics {
+  peers: number;             // remote nodes this node holds a connection with
+  messagesSent: number;      // frames sent over the node's life
+  messagesReceived: number;  // frames received over the node's life
+  bytesSent: number;         // bytes written to the wire, closed connections included
+  bytesReceived: number;     // bytes read from the wire, closed connections included
+  sendQueueBytes: number;    // accepted for sending, not yet handed to the kernel
+}
+```
+
+The message counts are frames on the wire, not actor messages: the transport coalesces a burst of tells to one actor into batch frames, and control traffic such as handshakes and credit grants rides frames of its own. Read them as the operation rate of the transport, the byte totals as its bandwidth, and their ratio as the average frame size. `sendQueueBytes` is the one gauge here; a value that keeps climbing means a peer is not keeping up with what this node sends it.
+
 On a clustered node the snapshot also carries a `cluster` section, this node's own view of the membership. It is metrics per node: each node reports its own view, and the backend aggregates across nodes the way it already scrapes one endpoint per pod.
 
 ```ts
 interface ClusterMetrics {
-  members: number;      // members this node knows, in every state
+  members: number;             // members this node knows, in every state
   alive: number;
   suspect: number;
-  dead: number;         // recently dead, within the retention window
-  left: number;         // gracefully departed, within the retention window
+  dead: number;                // recently dead, within the retention window
+  left: number;                // gracefully departed, within the retention window
   isCoordinator: boolean;
+  coordinatorChanges: number;  // times the coordinator this node sees has changed
+  relocationsTotal: number;    // actors this node has recreated as the coordinator
 }
 ```
+
+The member counts and the coordinator flag are read from the membership state when you collect. The two counters are derived from the cluster events the node publishes: `coordinatorChanges` goes up on every `CoordinatorChanged`, this node's own first election included, and `relocationsTotal` goes up by the number of actors each `RelocationCompleted` names, so it counts the recreations this node drove as the coordinator and stays at zero on every other node.
 
 The fleet snapshot carries no actor identity, so it never turns into a high-cardinality time series. Calling `collectMetrics` on a system that never enabled metrics resolves to a valid, zeroed snapshot, so an adapter can be wired unconditionally; calling it on a system that is not running rejects with `ErrActorSystemNotStarted`.
 
@@ -165,5 +185,7 @@ export function wireOpenTelemetry(system: ActorSystem): void {
   );
 }
 ```
+
+The optional sections map the same way: when `snapshot.remoting` or `snapshot.cluster` is present, observe its totals as counters and its gauges as gauges, and skip the instruments when the section is absent.
 
 The processing-duration histogram needs a different mapping: its buckets arrive already aggregated, so you do not re-record them into an OpenTelemetry histogram (that instrument expects raw observations). Expose each cumulative bucket as its own observable gauge keyed by the `leMs` upper bound, which is the shape a Prometheus histogram exports anyway, or publish the average from `sum / count` alongside the percentiles the reporter above computes. Either way the mapping stays in your adapter, and the core keeps handing out nothing but numbers.

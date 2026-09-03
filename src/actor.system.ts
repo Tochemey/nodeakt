@@ -708,11 +708,12 @@ export class ActorSystem {
       throw ErrActorSystemNotStarted;
     }
 
-    const mine = this.isolateMetrics();
-    if (mine === null) {
+    const registry = this._metricsRegistry;
+    if (registry === null) {
       return emptyMetricsSnapshot(this._name);
     }
 
+    const mine = registry.isolateMetrics(this.isolateGauges());
     const placement = this._placement;
     const workers = placement === null ? [] : await placement.collectMetrics();
     const snapshot = mergeMetrics(this._name, mine, workers);
@@ -720,8 +721,13 @@ export class ActorSystem {
     // Remoting and the cluster engine live on this isolate, so their sections
     // are read here and attached after the isolate merge, the way dead letters
     // are. A worker isolate carries neither, so the merge never touches them.
+    const remoting = this._remoting;
     const clusterNode = this._clusterNode;
-    return clusterNode === null ? snapshot : { ...snapshot, cluster: clusterNode.metrics() };
+    return {
+      ...snapshot,
+      ...(remoting === null ? {} : { remoting: remoting.metrics() }),
+      ...(clusterNode === null ? {} : { cluster: clusterNode.metrics(registry.clusterCounters()) }),
+    };
   }
 
   /**
@@ -1288,7 +1294,7 @@ export class ActorSystem {
    * @internal
    */
   schedulePassivation(pid: PID): void {
-    this._passivation.register(pid, pid.passivationStrategy());
+    this._passivation.register(pid);
   }
 
   /**

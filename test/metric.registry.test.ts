@@ -23,6 +23,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { CoordinatorChanged, RelocationCompleted } from "../src/cluster.events";
 import { eventsTopic } from "../src/deadletter";
 import { EventStream } from "../src/eventstream";
 import {
@@ -74,6 +75,20 @@ describe("MetricRegistry", () => {
     const metrics = registry.isolateMetrics(noGauges);
     expect(metrics.startedTotal).toBe(0);
     expect(metrics.deadlettersTotal).toBe(0);
+  });
+
+  it("counts cluster transitions from the cluster events on the stream", () => {
+    const events: EventStream = new EventStream();
+    const registry: MetricRegistry = new MetricRegistry(events, false);
+
+    expect(registry.clusterCounters()).toEqual({ coordinatorChanges: 0, relocationsTotal: 0 });
+
+    events.publish(eventsTopic, new CoordinatorChanged("10.0.0.1:7946", 1));
+    events.publish(eventsTopic, new CoordinatorChanged("10.0.0.2:7946", 2));
+    events.publish(eventsTopic, new RelocationCompleted("10.0.0.1:7946", ["a", "b", "c"], 3));
+    events.publish(eventsTopic, new RelocationCompleted("10.0.0.3:7946", [], 4));
+
+    expect(registry.clusterCounters()).toEqual({ coordinatorChanges: 2, relocationsTotal: 3 });
   });
 
   it("reports the processed counter it is handed on the hot path", () => {

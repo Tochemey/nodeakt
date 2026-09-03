@@ -25,6 +25,7 @@
 import { afterAll, describe, it } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
 import type { ReceiveContext } from "../src/receive.context";
 import { printBlock, printMachine } from "./harness";
 
@@ -111,7 +112,7 @@ class SilentActor implements Actor {
   postStop(): void {}
 }
 
-const system = new ActorSystem("bench");
+const system = new ActorSystem("bench", { logger: discardLogger });
 await system.start();
 
 afterAll(async () => {

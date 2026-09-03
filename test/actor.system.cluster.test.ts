@@ -25,7 +25,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem, clusterNodeOptions } from "../src/actor.system";
-import { NodeJoined } from "../src/cluster.events";
+import { NodeJoined, RelocationCompleted } from "../src/cluster.events";
 import { type Companion, decodeCompanion, encodeCompanion } from "../src/clustering.companion";
 import { ClusterEventType } from "../src/clustering.events";
 import { ClusterNode, type ClusterNodeOptions } from "../src/clustering.host";
@@ -219,6 +219,43 @@ describe("ActorSystem clustering", () => {
     expect(snapshot.cluster?.dead).toBe(0);
     expect(snapshot.cluster?.left).toBe(0);
     expect(snapshot.cluster?.isCoordinator).toBe(true);
+    expect(snapshot.cluster?.relocationsTotal).toBe(0);
+  }, 30_000);
+
+  it("counts coordinator changes and relocations in the cluster section", async (): Promise<void> => {
+    const system: ActorSystem = new ActorSystem("orders", {
+      logger: discardLogger,
+      remote: { host: "127.0.0.1", port: 0 },
+      metrics: { enabled: true },
+      cluster: {
+        discovery: new StaticDiscovery([]),
+        gossipPort: 0,
+        dataPort: 0,
+        bootstrapTimeout: 0,
+        replicaCount: 1,
+        writeQuorum: 1,
+        minimumMemberQuorum: 1,
+      },
+    });
+    running.push(system);
+    await system.start();
+
+    const before: MetricsSnapshot = await system.collectMetrics();
+    if (before.cluster === undefined) {
+      throw new Error("expected the cluster section on a clustered system");
+    }
+
+    // One coordinator change the cluster runtime reports, and one relocation
+    // pass the relocation actor publishes, each land in the counters.
+    system.onClusterEvent({
+      type: ClusterEventType.coordinatorChanged,
+      coordinator: "10.9.9.9:9998",
+    });
+    system.publishEvent(new RelocationCompleted("10.9.9.9:9998", ["a", "b"], Date.now()));
+
+    const after: MetricsSnapshot = await system.collectMetrics();
+    expect(after.cluster?.coordinatorChanges).toBe(before.cluster.coordinatorChanges + 1);
+    expect(after.cluster?.relocationsTotal).toBe(2);
   }, 30_000);
 
   it("records a clustered placement at the node's data address and frees it on stop", async (): Promise<void> => {

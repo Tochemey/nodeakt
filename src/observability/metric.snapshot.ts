@@ -132,6 +132,47 @@ export interface ClusterMetrics {
 
   /** Whether this node is the cluster coordinator. */
   readonly isCoordinator: boolean;
+
+  /**
+   * How many times the coordinator this node sees has changed over the
+   * node's life, its own first election included.
+   */
+  readonly coordinatorChanges: number;
+
+  /**
+   * How many actors this node has recreated on survivors as the
+   * coordinator relocating a departed node's actors, over the node's life.
+   */
+  readonly relocationsTotal: number;
+}
+
+/**
+ * RemotingMetrics is this node's own transport: the nodes it holds a
+ * connection with, the frames and bytes that have crossed those
+ * connections over the node's life, and what is currently waiting to be
+ * sent. Present only when remoting is enabled. Bytes come from the
+ * sockets, frame counts from the transport's per-frame accounting, and
+ * queue depth from its flow control, so nothing here touches the message
+ * path beyond a counter increment.
+ */
+export interface RemotingMetrics {
+  /** The remote nodes this node currently holds a connection with. */
+  readonly peers: number;
+
+  /** Frames sent over the node's life, closed connections included. */
+  readonly messagesSent: number;
+
+  /** Frames received over the node's life, closed connections included. */
+  readonly messagesReceived: number;
+
+  /** Bytes written to the wire over the node's life, closed connections included. */
+  readonly bytesSent: number;
+
+  /** Bytes read from the wire over the node's life, closed connections included. */
+  readonly bytesReceived: number;
+
+  /** Bytes accepted for sending and not yet handed to the kernel, across every live connection. */
+  readonly sendQueueBytes: number;
 }
 
 /**
@@ -161,6 +202,9 @@ export interface MetricsSnapshot {
 
   /** The count of dead letters over the system's life. */
   readonly deadlettersTotal: number;
+
+  /** This node's transport; absent when remoting is not enabled. */
+  readonly remoting?: RemotingMetrics;
 
   /** This node's cluster membership view; absent on an unclustered system. */
   readonly cluster?: ClusterMetrics;
@@ -214,6 +258,19 @@ export interface IsolateGauges {
   readonly suspended: number;
   readonly mailboxTotalDepth: number;
   readonly mailboxMaxDepth: number;
+}
+
+/**
+ * The event-derived counters of the cluster section, kept by the main
+ * isolate's registry off the cluster events on its event stream and
+ * joined at collection with the membership counts the cluster node
+ * reads live.
+ *
+ * @internal
+ */
+export interface ClusterCounters {
+  readonly coordinatorChanges: number;
+  readonly relocationsTotal: number;
 }
 
 /**

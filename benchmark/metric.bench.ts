@@ -25,6 +25,7 @@
 import { afterAll, describe, it } from "vitest";
 import type { Actor } from "../src/actor";
 import { ActorSystem } from "../src/actor.system";
+import { discardLogger } from "../src/discard.logger";
 import type { PID } from "../src/pid";
 import { printReport, runScenario, type Scenario, type ScenarioReport } from "./harness";
 
@@ -87,13 +88,17 @@ class SilentActor implements Actor {
   postStop(): void {}
 }
 
-const offSystem = new ActorSystem("bench-metrics-off");
+const offSystem = new ActorSystem("bench-metrics-off", { logger: discardLogger });
 await offSystem.start();
 
-const onSystem = new ActorSystem("bench-metrics-on", { metrics: { enabled: true } });
+const onSystem = new ActorSystem("bench-metrics-on", {
+  logger: discardLogger,
+  metrics: { enabled: true },
+});
 await onSystem.start();
 
 const timingSystem = new ActorSystem("bench-metrics-timing", {
+  logger: discardLogger,
   metrics: { enabled: true, processingDuration: true },
 });
 await timingSystem.start();

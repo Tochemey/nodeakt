@@ -25,6 +25,8 @@
 import type { Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  type ConnCounters,
+  ConnTotals,
   ErrConnClosed,
   ErrWriteTimeout,
   FramedConn,
@@ -35,6 +37,7 @@ import {
   encodeFrameHeader,
   FLAG_EXPECTS_REPLY,
   FRAME_DATA,
+  FRAME_HEADER_SIZE,
   FRAME_PING,
   type FrameHeader,
   LANE_CONTROL,
@@ -154,6 +157,66 @@ describe("FramedConn round-trips", () => {
       expect(receiver.frames.length).toBe(1);
     });
     expect(receiver.frames[0]?.body).toEqual(body);
+  });
+});
+
+describe("FramedConn counters", () => {
+  it("counts frames both ways and reports the socket's bytes, kept past close", async () => {
+    const { client, server } = await socketPair();
+    const sender: Recorder = new Recorder(client, { maxFrameSize: 1024 * 1024 });
+    const receiver: Recorder = new Recorder(server, { maxFrameSize: 1024 * 1024 });
+    const untouched: ConnCounters = {
+      framesSent: 0,
+      framesReceived: 0,
+      bytesSent: 0,
+      bytesReceived: 0,
+    };
+    expect(sender.conn.counters()).toEqual(untouched);
+    expect(receiver.conn.counters()).toEqual(untouched);
+
+    expect(sender.conn.send(ping(0))).toBeNull();
+    expect(sender.conn.send(data(1, Uint8Array.from([1, 2, 3])))).toBeNull();
+    expect(receiver.conn.send(ping(2))).toBeNull();
+    await vi.waitFor((): void => {
+      expect(receiver.frames.length).toBe(2);
+      expect(sender.frames.length).toBe(1);
+    });
+
+    const forward: number = FRAME_HEADER_SIZE * 2 + 3;
+    const senderCounters: ConnCounters = {
+      framesSent: 2,
+      framesReceived: 1,
+      bytesSent: forward,
+      bytesReceived: FRAME_HEADER_SIZE,
+    };
+    const receiverCounters: ConnCounters = {
+      framesSent: 1,
+      framesReceived: 2,
+      bytesSent: FRAME_HEADER_SIZE,
+      bytesReceived: forward,
+    };
+    expect(sender.conn.counters()).toEqual(senderCounters);
+    expect(receiver.conn.counters()).toEqual(receiverCounters);
+
+    // The socket keeps its byte counts past close, so an owner folding a
+    // closed connection's totals in reads exactly what it sent and received.
+    sender.conn.destroy();
+    await vi.waitFor((): void => {
+      expect(receiver.closeCount).toBe(1);
+    });
+    expect(sender.conn.counters()).toEqual(senderCounters);
+    expect(receiver.conn.counters()).toEqual(receiverCounters);
+  });
+
+  it("sums connection totals in place", () => {
+    const totals: ConnTotals = new ConnTotals();
+    totals.add({ framesSent: 1, framesReceived: 2, bytesSent: 30, bytesReceived: 40 });
+    totals.add({ framesSent: 10, framesReceived: 20, bytesSent: 300, bytesReceived: 400 });
+
+    expect(totals.framesSent).toBe(11);
+    expect(totals.framesReceived).toBe(22);
+    expect(totals.bytesSent).toBe(330);
+    expect(totals.bytesReceived).toBe(440);
   });
 });
 

@@ -230,6 +230,8 @@ The same primitives (uvarint, string, the scratch writer) are what `net/envelope
 
 The engine never yields a frame to dispatch without bounding its own cadence: inbound frames dispatch in bounded batches per macrotask, because a hot socket must not starve the rest of the isolate. The batch size is a tunable verified by benchmark, not a guess.
 
+**Counters.** The connection reports its cumulative frame and byte totals on request: frames sent, bumped once per flushed batch by the number of frames it wrote; frames received, bumped once per frame handed to the owner; and bytes sent and received, which are the socket's own written and read counts, maintained by the runtime and kept past close. A closed connection therefore still answers with its final totals, which is what lets an owner fold them into its own running sum and keep that sum monotonic over the connections it has held. The session exposes the same totals unchanged, alongside the bytes it holds for sending (queued, in flight, and parked awaiting credit). Neither side of the counting reads a clock or allocates; the bench rule for the transport applies, and the remote tell throughput must stay within noise of the numbers before the counters existed.
+
 ## The server
 
 `net/server.ts` owns exactly the listener lifecycle; everything after accept is a session.
@@ -253,6 +255,7 @@ There is deliberately no accept-loop pool, no worker pool, no ballast, and no th
 - **Asks** register in the session's pending table keyed by correlation, with the caller's timeout armed on the transport's timer facility. Settlement is: REPLY resolves, ERROR rejects, timeout abandons the entry (a late reply then finds no entry and is dropped by design), connection teardown fails every entry with a connection-closed error. Whoever removes the entry settles the promise; there is no path that settles twice or leaks an entry.
 - **Teardown.** Closing the peer closes every lane, bumps a generation counter so a dial still in flight parks itself, and clears backoff state.
 - **Reclaim readiness.** The peer reports whether dropping it would lose nothing: no lane holds a live or dialing session, an armed backoff, or a tell parked for redelivery. The owner consults this to reclaim peers whose connections have all closed; a reclaimed peer is recreated whole by the next use, so reclaim is bookkeeping above the transport, never wire behavior.
+- **Counters.** The peer reports the frame and byte totals over every session it has held, and the bytes its live lanes hold for sending. Live lanes are summed on request; a lane's session folds its final totals into the peer the moment it closes, so a redial adds to the running sum rather than restarting it, and a reclaimable peer's totals are exactly those of the sessions it has lost, for the owner to fold in before dropping it.
 
 ## Reliability rules
 

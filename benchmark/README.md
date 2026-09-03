@@ -12,7 +12,7 @@ pnpm bench
 pnpm exec vitest run --config vitest.bench.config.ts benchmark/baseline.bench.ts
 ```
 
-Run through `pnpm bench` (or the command above): the config passes `--expose-gc`, which the allocation estimates need, and disables file parallelism so the numbers measure the runtime rather than sibling benchmark processes.
+Run through `pnpm bench` (or the command above): the config passes `--expose-gc` for the forced collections the allocation estimates and the density figure need, and disables file parallelism so the numbers measure the runtime rather than sibling benchmark processes. A bench launched without the flag switches it on at runtime and measures the same collected heap; only a runtime with no forced collection at all reports that instead of a number. Every bench runs its actor systems with logging discarded, so the numbers never include log output.
 
 Every report starts with the machine it was measured on (CPU, core topology, memory, Node and V8 versions). Throughput numbers mean nothing without that context; when quoting a number, quote the machine line with it.
 

@@ -22,6 +22,7 @@
  * SOFTWARE.
  */
 
+import { CoordinatorChanged, RelocationCompleted } from "./cluster.events";
 import { eventsTopic } from "./deadletter";
 import type { EventStream, StreamSubscriber } from "./eventstream";
 import {
@@ -32,6 +33,7 @@ import {
   Deadletter,
 } from "./messages";
 import {
+  type ClusterCounters,
   DURATION_BUCKETS_MS,
   type IsolateGauges,
   type IsolateMetrics,
@@ -40,12 +42,16 @@ import {
 /** The concrete class of a runtime event, used to route it to its counter. */
 type EventClass = new (...args: never[]) => object;
 
+/** Bumps the counter an event maps to, given that event. */
+type CounterBump = (event: object) => void;
+
 /**
  * MetricRegistry holds one isolate's metrics: the lifecycle counters it
  * derives from the event stream, the monotonic count of messages its
  * actors have processed, and, when timing is on, the distribution of how
- * long those messages took. It is framework state, constructed only when
- * metrics are enabled, and it never calls user code.
+ * long those messages took. On a clustered node it also counts the
+ * cluster transitions its event stream carries. It is framework state,
+ * constructed only when metrics are enabled, and it never calls user code.
  *
  * @internal
  */
@@ -67,6 +73,11 @@ export class MetricRegistry {
   private _passivatedTotal = 0;
   private _deadlettersTotal = 0;
 
+  /** Cluster transitions, counted from the cluster events the main
+   * isolate publishes; a worker isolate never sees one. */
+  private _coordinatorChanges = 0;
+  private _relocationsTotal = 0;
+
   /** Non-cumulative bucket counts for the processing-duration histogram;
    * written in place on the timing hot path. */
   private readonly _durationBuckets: Uint32Array = new Uint32Array(DURATION_BUCKETS_MS.length);
@@ -74,26 +85,45 @@ export class MetricRegistry {
   private _durationCount = 0;
 
   /** Routes an event to the counter it bumps, by the event's class. */
-  private readonly _dispatch: Map<EventClass, () => void>;
+  private readonly _dispatch: Map<EventClass, CounterBump>;
 
   constructor(events: EventStream, timing: boolean) {
     this.timing = timing;
-    this._dispatch = new Map<EventClass, () => void>([
+    this._dispatch = new Map<EventClass, CounterBump>([
       [ActorStarted, (): void => void this._startedTotal++],
       [ActorStopped, (): void => void this._stoppedTotal++],
       [ActorRestarted, (): void => void this._restartedTotal++],
       [ActorPassivated, (): void => void this._passivatedTotal++],
       [Deadletter, (): void => void this._deadlettersTotal++],
+      [CoordinatorChanged, (): void => void this._coordinatorChanges++],
+      [
+        RelocationCompleted,
+        (event: object): void => {
+          this._relocationsTotal += (event as RelocationCompleted).relocated.length;
+        },
+      ],
     ]);
 
     const onEvent: StreamSubscriber = (event: unknown): void => {
       const bump = this._dispatch.get((event as { constructor: EventClass }).constructor);
       if (bump !== undefined) {
-        bump();
+        bump(event as object);
       }
     };
 
     events.subscribe(onEvent, eventsTopic);
+  }
+
+  /**
+   * Returns the cluster transition counters this registry has derived
+   * from its event stream, for the main isolate to join with the
+   * membership counts read live at collection.
+   */
+  clusterCounters(): ClusterCounters {
+    return {
+      coordinatorChanges: this._coordinatorChanges,
+      relocationsTotal: this._relocationsTotal,
+    };
   }
 
   /**

@@ -25,6 +25,8 @@
 import { execSync } from "node:child_process";
 import { arch, availableParallelism, cpus, platform, release, totalmem } from "node:os";
 import { PerformanceObserver } from "node:perf_hooks";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 
 /** Reads one sysctl value, or undefined where sysctl does not exist. */
 function sysctl(name: string): string | undefined {
@@ -173,7 +175,35 @@ const SAMPLE_OPS = 200;
 /** Operations used for the allocation estimate. */
 const ALLOC_OPS = 5;
 
-const exposedGc = (globalThis as { gc?: () => void }).gc;
+/**
+ * A forced full garbage collection, or null on a runtime that offers
+ * none. The `gc` global that `--expose-gc` provides is used when present;
+ * otherwise the flag is switched on at runtime and the function taken
+ * from a fresh context, so a bench launched without the flag (an editor
+ * runner, a bare `vitest` invocation) still measures a collected heap
+ * instead of whatever garbage the last scavenge left behind. Bun has no
+ * such flag and is asked through its own collector.
+ */
+export function forceGc(): (() => void) | null {
+  const exposed = (globalThis as { gc?: () => void }).gc;
+  if (exposed !== undefined) {
+    return exposed;
+  }
+
+  const bun = (globalThis as { Bun?: { gc(force: boolean): void } }).Bun;
+  if (bun !== undefined) {
+    return (): void => bun.gc(true);
+  }
+
+  try {
+    setFlagsFromString("--expose-gc");
+    return runInNewContext("gc") as () => void;
+  } catch {
+    return null;
+  }
+}
+
+const exposedGc = forceGc();
 
 /**
  * Runs one scenario: warmup, an allocation estimate under forced garbage
@@ -251,7 +281,7 @@ export async function runScenario(scenario: Scenario): Promise<ScenarioReport> {
  * against a stray mid-operation scavenge.
  */
 async function estimateAllocation(scenario: Scenario): Promise<number | null> {
-  if (exposedGc === undefined) {
+  if (exposedGc === null) {
     return null;
   }
 
@@ -298,7 +328,7 @@ export function printReport(reports: ScenarioReport[], heading: string): void {
   const notes = [
     `each op sends and fully processes one batch (${SAMPLE_OPS} sampled, ${WARMUP_OPS} warmup)`,
     "spread is the relative standard deviation of op times; deltas within it are noise, not regressions",
-    exposedGc === undefined
+    exposedGc === null
       ? "alloc needs --expose-gc; run through `pnpm bench`"
       : `alloc is the median heap growth of ${ALLOC_OPS} freshly collected ops, divided by batch size`,
   ].map((note) => `·  ${note}`);
